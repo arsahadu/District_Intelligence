@@ -1,0 +1,32 @@
+sources:
+
+  dinamalar:
+    name: Dinamalar Madurai
+    domain: news
+    mode: public
+    enabled: true
+    url: https://www.dinamalar.com/news/tamil-nadu-district-news-madurai
+
+  open_meteo:
+    name: Open-Meteo
+    domain: weather
+    mode: public
+    enabled: true
+
+  agmarknet:
+    name: AGMARKNET
+    domain: agriculture
+    mode: public
+    enabled: true
+
+  flood_simulator:
+    name: Flood Simulator
+    domain: disaster
+    mode: simulated
+    enabled: true
+
+  imd:
+    name: India Meteorological Department
+    domain: weather
+    mode: restricted
+    enabled: false
