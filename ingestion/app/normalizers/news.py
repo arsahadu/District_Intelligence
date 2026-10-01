@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from app.models.common_record import CommonRecord, Location
-from app.models.source_article import SourceArticle
+from ingestion.app.models.common_record import CommonRecord, Location
+from ingestion.app.models.source_article import SourceArticle
 
 
 def article_to_common_record(
