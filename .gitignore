@@ -8,3 +8,6 @@ data/raw/*
 data/normalized/*
 
 !.gitkeep
+
+node_modules/
+dist/
