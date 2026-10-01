@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Any, Optional
 
@@ -17,7 +18,7 @@ class CommonRecord(BaseModel):
 
     title: str
 
-    event_time: Optional[str] = None
+    event_time: Optional[datetime] = None
 
     location: Location
 
@@ -28,6 +29,6 @@ class CommonRecord(BaseModel):
 
     source_url: Optional[str] = None
 
-    retrieved_at: str
+    retrieved_at: datetime
 
     raw_reference: Optional[str] = None

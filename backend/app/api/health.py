@@ -5,7 +5,4 @@ router = APIRouter()
 
 @router.get("/health")
 def get_health():
-    return {
-        "status": "ok",
-        "service": "district-intelligence-backend",
-    }
+    return {"status": "ok"}
