@@ -13,3 +13,15 @@ export async function getHealth() {
 
   return response.json()
 }
+
+export async function getRecords() {
+  const response = await fetch(`${API_BASE_URL}/records`, {
+    headers: { Accept: 'application/json' },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch records with status ${response.status}`)
+  }
+
+  return response.json()
+}
