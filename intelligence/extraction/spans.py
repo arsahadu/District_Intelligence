@@ -202,6 +202,22 @@ class SourceField(StrictModel):
             notes=notes,
         )
 
+    def metadata_evidence(
+        self,
+        *,
+        confidence: OptionalConfidence = None,
+        evidence_id: Optional[str] = None,
+        modality: Modality = Modality.TEXT,
+        notes: Optional[str] = None,
+    ) -> Evidence:
+        return build_metadata_evidence(
+            self,
+            confidence=confidence,
+            evidence_id=evidence_id,
+            modality=modality,
+            notes=notes,
+        )
+
 
 def derive_evidence_id(source: SourceField, span: Span, method: ExtractionMethod) -> str:
     """Deterministic id so the same fact from the same field always reuses it."""
@@ -301,6 +317,43 @@ def build_evidence(
         confidence=confidence,
         evidence_id=evidence_id,
         modality=modality,
+        notes=notes,
+    )
+
+
+def derive_metadata_evidence_id(source: SourceField) -> str:
+    """Deterministic id for field-level provenance, which has no span to key on."""
+    digest = hashlib.sha256(
+        "\x1f".join(
+            (source.record_id, source.field, ExtractionMethod.SOURCE_METADATA.value)
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"ev-{source.record_id}-{digest}"
+
+
+def build_metadata_evidence(
+    source: SourceField,
+    *,
+    confidence: OptionalConfidence = None,
+    evidence_id: Optional[str] = None,
+    modality: Modality = Modality.TEXT,
+    notes: Optional[str] = None,
+) -> Evidence:
+    """Field-level provenance for a value the record already carried, so it quotes nothing."""
+    return Evidence(
+        evidence_id=evidence_id or derive_metadata_evidence_id(source),
+        record_id=source.record_id,
+        source_id=source.source_id,
+        source_type=source.source_type,
+        field=source.field,
+        method=ExtractionMethod.SOURCE_METADATA,
+        field_text_hash=source.text_hash,
+        span_validation=SpanValidation.NOT_APPLICABLE,
+        modality=modality,
+        source_url=source.source_url,
+        raw_reference=source.raw_reference,
+        retrieved_at=source.retrieved_at,
+        confidence=confidence,
         notes=notes,
     )
 

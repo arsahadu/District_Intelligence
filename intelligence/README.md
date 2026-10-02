@@ -6,17 +6,19 @@ Owner: Member 1 (AI / Intelligence). This file is the durable technical record o
 the module. It documents only what is implemented **and tested** today, plus the
 contract guarantees later stages and other modules rely on.
 
-Current state: **Stages 1-3 complete — contracts, the evidence span primitive,
-and the language / text representation layer.** There is still no CommonRecord →
-Incident pipeline: nothing here reads a network, a database, or a file, and no
-text is classified as an event type, timed, located or scored for severity yet.
+Current state: **Stages 1-4 complete — contracts, the evidence span primitive,
+the language / text representation layer, and the temporal extraction layer.**
+There is still no CommonRecord → Incident pipeline: nothing here reads a network,
+a database, or a file, and no text is classified as an event type, located or
+scored for severity yet. What Stage 4 adds is the answer to *when*, with the same
+evidence discipline as *where it is written*.
 
 ```
 CommonRecord ──> [ Intelligence ] ──> Incident ──> Evidence / Provenance
                      │                    │
-              stages 1-3               dedup ──> trends / priority / summaries
-        contracts, spans, text                   │
-        representations                 Collector Copilot
+              stages 1-4               dedup ──> trends / priority / summaries
+        contracts, spans, text,                  │
+        time and roles                   Collector Copilot
 ```
 
 ---
@@ -38,11 +40,23 @@ metadata) and `transliteration.py` (Tamil-script English candidates). Stage 3
 decides *what language the text is in and what other spellings of it are legal*;
 it still decides nothing about what the text is *about*.
 
+**Stage 4** — the temporal layer, split in two on purpose.
+`intelligence/extraction/time_expressions.py` finds and parses temporal
+*surfaces* (Tamil and English dates, month-year, numeric dates, clock times,
+deictic words, offsets, windows, ranges, weekdays) and resolves relative ones
+against a caller-supplied reference; it never attaches a role to anything.
+`intelligence/extraction/temporal.py` decides *roles* — which moment a field
+establishes as event time, which one it merely printed as publication metadata,
+which one is reporting time, which one is retrieval — and assembles Stage 1
+`TimeValue`s with `method`, `confidence`, `precision`, `qualifier` and
+`evidence_ids`. Stage 4 answers *when the source says it happened*; it still
+does not say what happened.
+
 | Package | Purpose |
 | --- | --- |
 | `intelligence/models/` | Structure: field shapes, types, invariants. |
 | `intelligence/config/` | Taxonomy data: event families, department mapping, ordering. |
-| `intelligence/extraction/` | Evidence production and text representation: spans, hashes, verification, language, normalisation, morphology, stamps, transliteration. |
+| `intelligence/extraction/` | Evidence production, text representation and time: spans, hashes, verification, language, normalisation, morphology, stamps, transliteration, temporal surfaces, temporal roles. |
 | `intelligence/tests/` | Executable specification of every rule below. |
 
 The split is deliberate. `models/` must not change when the district adds an
@@ -79,13 +93,18 @@ intelligence/
     __init__.py                re-exports
   extraction/
     spans.py                   SourceField, Span, locate, build_evidence,
-                               compute_field_hash, verify_evidence, revalidate
+                               build_metadata_evidence, compute_field_hash,
+                               verify_evidence, revalidate
     language.py                script profiles, LanguageAssessment, detection,
                                LanguageInfo assembly, hint auditing
     normalize.py               MappedText, cluster_end, position-preserving normalize
     morphology.py              SUFFIX_RULES, tokenize, suffix/surface candidates
     boilerplate.py             ADDED/UPDATED stamps, BodySplit, body representation
     transliteration.py         script table, curated vocabulary, Latin candidates
+    time_expressions.py        temporal surfaces: find/resolve, precisions,
+                               qualifiers, intervals, cues - no semantics
+    temporal.py                temporal roles: TemporalMention,
+                               TemporalExtraction, extract, TimeValue assembly
     __init__.py                re-exports
   tests/
     conftest.py                fixtures
@@ -102,6 +121,8 @@ intelligence/
     test_normalization.py                   21 tests  (Stage 3)
     test_morphology_boilerplate.py          34 tests  (Stage 3)
     test_transliteration.py                 26 tests  (Stage 3)
+    test_time_expressions.py                90 tests  (Stage 4)
+    test_temporal_extraction.py             47 tests  (Stage 4)
 ```
 
 ---
@@ -189,6 +210,64 @@ not the exact `original` the mapping was derived from, so "we normalised before
 spanning" is a crash rather than a quiet bug. A hit found in derived text
 becomes a `Span` over the *printed* text after `project()`, which is what lets a
 Latin transliteration or a stripped stem cite Tamil source wording.
+
+**A temporal surface is not a temporal fact.** Stage 4 keeps the two halves in
+two files. `time_expressions.find()` returns `Expression`s — text, offsets,
+precision, qualifier, arithmetic — and no `TimeSemantics`; the test
+`test_semantics_is_never_claimed_by_the_pattern_layer` proves the module has no
+vocabulary for a role at all. `temporal.py` is the only place that says whether a
+moment is the event, the publication, the reporting or the retrieval. Splitting
+them means a parser cannot quietly promote the header it matched to an event
+time, and a role rule can be changed without touching a pattern.
+
+**A printed stamp is structurally incapable of becoming event time.** Matching
+runs on `boilerplate.split(field).body`, and the body is a `MappedText` built by
+*dropping* the stamp ranges from the original. So `event_time()` cannot find a
+stamp even if the whole stamp-matching vocabulary were wrong: the text it would
+have to match is not in the corpus the rules run over. Where `boilerplate`
+isolates only the label, because the timestamp that follows it is a shape its
+grammar does not parse, Stage 4 demotes whatever else sits on that stamp's line
+to `publication_time` — see §6. `publication_time()` is the only accessor that
+reads stamps, and `event_time()` records `STAMP_ONLY` when a field has a stamp
+and no body time — the abstention is documented in the value, not left to the
+caller to infer.
+
+**Relative expressions resolve only against a reference the caller supplies.**
+`நேற்று` with no `reference` produces `resolved=False`,
+`method=unresolved`, `value=None`, `needs_reference=True` and a reason naming the
+missing input; with `reference=datetime(2026, 10, 2, 9)` the same surface
+produces `2026-10-01T00:00` at `day` precision. Nothing in the module reads a
+clock, so "today" can never silently mean the day the test ran.
+`reporting_cue()` works the same way: a cue makes the *reported* moment distinct
+from the moment the article was retrieved, and the retrieval time is only a fact
+when the caller passes `retrieved_at`.
+
+**Precision declares what the source actually said.** Every resolved value is
+the *earliest instant* of the matched period — month precision yields the 1st at
+00:00, year precision yields Jan 1 — and `precision` is set from the surface, not
+from the arithmetic, so `அக் 2026` is `2026-10-01T00:00` at **month** precision
+with `qualifier=approximate`. It never pretends to a day it did not read, and a
+reviewer who needs the real period has the precision to reconstruct it. A range
+or a window is different again: `is_interval=True` and the endpoints are separate
+`Expression`s with their own spans, so `ஜூலை 20 முதல் 25 வரை` reports an
+interval with **no instant at all** rather than picking a side.
+
+**Ambiguity is reported, never resolved by silently picking.** `02.10.2026` is
+read day-first — the district's convention — but the surface keeps
+`ambiguous=True` and the mention's confidence drops to `0.6`, so a reviewer sees
+that `2026-10-02` was a choice. `28.09.2026` is *not* flagged, because 28 cannot
+be a month and only one reading exists. Where no reading is safe nothing is
+claimed: `ஜூ 2026` abbreviates two months identically, so it stays
+unresolved with `AMBIGUOUS_ABBREVIATION`, and a bare `2 ஆம் தேதி` is
+unresolved with `NO_MONTH`. Every one of those reason strings is carried into the
+`TimeValue.notes` the reviewer reads.
+
+**Time zone is configuration, never inference.** Precedence is the caller's
+`timezone` argument, then a zone spelled in the text (`timezone_cue()`), then
+`None`. Values stay naive: the module does not attach an offset it got from
+`zoneinfo`, because a Tamil district report's times are only comparable to each
+other, not to a UTC log. `TimeValue.timezone` records the name that was declared,
+and an undeclared naive value is exactly what `inconsistencies()` reports.
 
 ---
 
@@ -531,16 +610,175 @@ list is auditable.
 
 ---
 
-## 6. Verification
+## 6. Stage 4 — temporal intelligence
+
+```
+SourceField (untouched field text, optional retrieved_at)
+   │
+   ├── boilerplate.split(lowercase=True) ──> BodySplit { items: stamps, body: MappedText }
+   │        the stamp text is dropped from the body, so it cannot be matched by a
+   │        time rule at all; every body offset still points at the original field
+   │
+   ├── body ──> time_expressions.find() ──> [Expression]     surface + arithmetic only
+   │              18 rules, 10 kinds, longest-phrase-first, one surface per phrase
+   │              └── resolve(reference?) ──> Resolution {value, precision, qualifier,
+   │                                       resolved, ambiguous, reason, notes}
+   │
+   ├── body.project(start, end) ──> Span in ORIGINAL coordinates
+   │        └── body.evidence_at(source, span, method, confidence, notes) ──> Evidence
+   │
+   └── temporal.extract(source, reference=…, timezone=…) ──> TemporalExtraction
+             mentions (event_time | reported_time) + publication (stamps)
+             + retrieval (record metadata), each with its own Evidence
+```
+
+### Surfaces: `time_expressions.py`
+
+`find(text)` runs every rule over the whole text, then `_resolve_overlaps()`
+keeps one surface per phrase: longest match first, then earliest start, then the
+rule table's own precedence. `resolve(expression, reference=None)` turns one
+surface into a partially-known instant or explains why it cannot, and never
+raises — an unusable surface comes back `resolved=False` with a `reason`.
+
+| Kind | Rules | What the text has to say |
+| --- | --- | --- |
+| `absolute_date` | ISO, `28 செப்டம்பர் 2026`, `செப்டம்பர் 28, 2026`, `28.09.2026` / `28/9/2026` / `28-9-2026` | a day, a month and a year within `MIN_YEAR..MAX_YEAR` |
+| `month_day` | `அக் 2`, `2 ஆம் தேதி`, `Oct 2` | day and month, no year — resolved is *refused*, reason `NO_YEAR` / `NO_MONTH` |
+| `month_year` | `அக் 2026`, `October 2026` | a period, so precision `month` |
+| `year_only` | `2026 ஆம் ஆண்டு` | a bare `2026` is not a date; the marker is required |
+| `clock_time` | `10:45`, `4:30 PM`, `10 மணி`, `10.45 மணி`, `இரவு 10 மணிக்கு` | a time of day with no calendar — `NO_DATE` until a day holds it |
+| `relative_day` | `நேற்று`, `இன்று`, `நாளை`, `நேற்று முன்தினம்`, `yesterday`, `the day after tomorrow`, plus 15 fused forms (`நேற்றிரவு`, `tonight`) | an offset from the reference; a day part narrows it without naming an hour |
+| `relative_offset` | `2 மணி நேரம் முன்பு`, `3 days later`, `in two days`, `இரண்டு நாட்களுக்குப் பிறகு`, `ஒரு வாரத்திற்கு அடுத்து` | a counted shift; a bare duration with no marker is rejected |
+| `relative_window` | `கடந்த இரண்டு நாட்களாக`, `last 3 days`, `this month` | an interval whose value is its start, `qualifier=ongoing` |
+| `weekday` | `திங்கள்`, `திங்கட்கிழமை`, `next Friday`, `வெள்ளியன்று` | a name, not a day: always unresolved (`NO_ANCHOR`) unless the text anchors it |
+| `date_range` | `ஜூலை 20 முதல் 25 வரை`, `January 5, 2026 to January 10, 2026` | an interval with two endpoint `Expression`s, each with its own span; the opening endpoint has to be a readable date on its own, so `20 முதல் 22 வரை` yields only `22 வரை` |
+
+Matching is done on the normalised body, so `செப்டம்பர்`, `செப்.` and
+`செப்` are one month; the hit is projected back for citation. Tamil word
+boundaries cannot use `\b` — a dependent vowel sign is a spacing mark (`Mc`), so
+a word boundary lands *inside* a declined word — and every rule is wrapped in
+`_LEAD` / `_TRAIL` code-point class guards instead. Direction words
+(`முன்பு`, `பிறகு`, `ago`, `later`) are kept on the surface rather than folded
+into the arithmetic, so a reviewer can see what the text said. A Tamil dative unit
+puts an explicit euphonic consonant before a forward marker — `நாட்களுக்குப்
+பிறகு`, not `நாட்களுக்கு பிறகு` — so `_OFFSET` accepts an optional `ப்|க்|ட்|ய்`
+between the unit and the marker, which is what makes the forward count readable
+while `பிறகு அவர் பேசினார்` ("then he spoke") stays a non-surface. A colon clock that
+begins right after a sign is refused, because the `+05:30` of an ISO timestamp is
+a zone offset and not a time of day.
+
+`timezone_cue(text)` reads a zone only when the text names one
+(`இந்திய நேரப்படி`, `IST`, `Indian Standard Time`); `reporting_cue(text, start,
+end)` returns the attributing verb only when one is within
+`REPORTING_CUE_WINDOW = 90` characters in the *same sentence*
+(`SENTENCE_BREAKS` stops it reaching into the next one). Both return `None`
+rather than a guess, and both are read from vocabularies that a drift test
+(`test_the_boilerplate_month_names_are_read_by_the_time_rules_too`) keeps in step
+with `boilerplate.py`'s month names.
+
+### Roles: `temporal.py`
+
+`extract(source, *, reference=None, timezone=None, split=None)` returns a
+`TemporalExtraction`, which is the only Stage 4 object a later stage should
+touch. It refuses a `split` derived from a different field (`TemporalError`), and
+re-uses one the caller already built rather than normalising twice.
+
+| Role | Produced from | Guarantee |
+| --- | --- | --- |
+| `event_time` | a body surface with no reporting cue | `event_time()` never falls back to a stamp; with no body time it returns `unresolved_time()` carrying `NO_EVENT_TIME` and, when a stamp exists, `STAMP_ONLY` |
+| `reported_time` | a body surface with a same-sentence reporting cue | kept in a separate accessor, so "the police said it happened on the 28th" is not quietly the incident's timestamp |
+| `publication_time` | a `boilerplate` stamp's printed timestamp | `STAMP_SEMANTICS` is a module constant pinned to `publication_time`; `_stamp_note()` writes "…never event time" into the Evidence itself; the value is the *latest* parseable stamp |
+| `retrieval_time` | `SourceField.retrieved_at` | `method=source_metadata`, `confidence=1.0`, field-level Evidence (`span_validation=not_applicable`, no quote) — it is a record fact, not a text fact |
+| unresolved | anything the text does not settle | `value=None`, `method=unresolved`, `semantics=unknown`, `confidence=None`, reason in `notes` |
+
+`boilerplate` isolates a stamp *label* even when its timestamp is a shape its own
+grammar does not parse, so `ADDED : 2026-10-02 09:46` used to leave that bare
+timestamp in the body — where a time rule found it and, being minute-precise,
+**won the event slot**. That is the exact failure requirement 4 forbids, so
+`extract()` now treats the rest of a stamp's own line as publication material:
+`_stamp_residue()` takes the original text from the label to the next newline,
+any body surface inside it is demoted to `publication_time` with the note
+"publication metadata printed in a shape the stamp grammar does not parse, never
+event time", and the line boundary means `ADDED : …` cannot swallow the article
+text below it. The residue rule is what makes the invariant hold for stamp shapes
+nobody has seen yet; widening `boilerplate`'s grammar would only have moved the
+hole.
+
+`TemporalMention` is the per-surface record: `kind / rule / raw_text /
+char_start / char_end / precision / qualifier / value / resolved / reason /
+ambiguous / needs_reference / is_interval / notes / method / confidence /
+evidence_ids`, plus `interval()` (the two endpoint instants of a range) and
+`time_value()` — the Stage 1 `TimeValue`, which is what `Incident.event_time`
+will hold in Stage 8. `as_dict()` on the extraction serialises the roles and the
+provenance as separate blocks, including `stamps` straight from
+`split.stamps_as_dicts()`, so a stamp can always be told apart from a mention.
+
+Method and confidence are mechanical, not judged: a matched calendar surface is
+`regex`, a surface whose meaning needs arithmetic against a reference is `rule`,
+and an unresolved mention carries `unresolved` with **no** confidence at all.
+Resolved values read `0.95` with a clock, `0.9` for a date, `0.85` for a
+month/year period, `0.8` for a relative expression, `0.6` when the surface could
+be read two ways, and `1.0` only for record metadata.
+
+### Evidence discipline in Stage 4
+
+Every mention is cited through `body.evidence_at(source, body.project(...))`, so
+offsets are *projected*, never typed: the pattern layer works in normalised
+coordinates and the `Evidence` quotes the untouched field. Stamps are cited with
+`build_evidence_at()` over `item.timestamp_span()`. Retrieval time uses the new
+`build_metadata_evidence()` in `spans.py`, which is the one legal way to produce
+`method=source_metadata` Evidence without a quote — it derives the evidence id
+and the `field_text_hash` from the field and leaves `span_validation` at
+`not_applicable`. `test_every_time_value_points_at_evidence_that_exists` walks
+every emitted `TimeValue` and checks each `evidence_id` resolves, re-verifies
+against the source, and quotes exactly its own `raw_text`.
+
+### Stage 4 behaviours, and where each is pinned
+
+| Required behaviour | Test |
+| --- | --- |
+| Tamil and English named dates | `test_named_dates_are_read_in_both_orders_and_both_scripts`, `test_a_named_date_is_whole_even_when_both_orders_could_read_it` |
+| Numeric dates, both readings | `test_numeric_dates_are_read_day_first_and_flagged`, `test_a_numeric_date_that_cannot_be_day_first_is_read_the_other_way`, `test_only_one_surface_is_cut_from_a_numeric_date` |
+| ISO dates and impossible calendars | `test_an_iso_date_is_read_whole`, `test_an_impossible_calendar_date_is_refused_not_repaired`, `test_numbers_that_are_not_dates_produce_nothing` |
+| Month names and month-year | `test_a_month_and_year_keeps_the_month_as_the_smallest_true_unit`, `test_an_abbreviation_that_names_two_months_claims_neither`, `test_the_boilerplate_month_names_are_read_by_the_time_rules_too` |
+| Year-only and day-only | `test_a_year_alone_never_becomes_a_day`, `test_a_day_of_the_month_is_only_a_day_when_the_text_marks_it`, `test_a_day_and_month_without_a_year_stays_unresolved` |
+| Explicit times, with and without a meridiem | `test_a_clock_reading_is_kept_from_the_calendar`, `test_a_meridiem_supplies_the_hour_that_the_clock_lacks`, `test_a_clock_without_a_meridiem_says_so`, `test_an_iso_zone_offset_is_not_a_clock_reading` |
+| Date + clock as one phrase | `test_a_day_part_and_a_clock_are_one_phrase_not_two`, `test_an_english_date_and_time_is_one_surface`, `test_a_period_does_not_join_a_date_and_a_clock_across_a_sentence` |
+| Tamil and English relative expressions | `test_relative_days_are_counted_from_the_reference`, `test_a_fused_day_part_keeps_the_day_approximate`, `test_a_relative_day_and_a_clock_are_one_phrase`, `test_now_is_today_and_carries_the_clock_of_the_reference` |
+| Relative stays relative without a reference | `test_a_day_word_without_a_date_still_needs_a_reference`, `test_a_relative_expression_stays_relative_without_a_reference`, `test_the_same_relative_expression_resolves_once_a_reference_is_given`, `test_relative_arithmetic_uses_the_reference_it_was_given` |
+| Offsets, ongoing windows, ranges | `test_hour_offsets_move_the_clock_of_the_reference`, `test_a_tamil_forward_offset_is_read_through_its_euphonic_consonant`, `test_a_direction_word_alone_is_not_an_offset`, `test_a_duration_without_a_marker_is_not_a_point_in_time`, `test_an_ongoing_window_is_reported_as_its_start`, `test_a_range_is_an_interval_and_claims_no_instant`, `test_a_range_gives_its_endpoints_their_own_spans` |
+| Weekdays and their ambiguity | `test_a_weekday_name_is_never_one_specific_day`, `test_a_fused_tamil_weekday_adverb_is_still_a_weekday`, `test_a_full_tamil_weekday_is_not_treated_as_ambiguous`, `test_an_english_weekday_is_not_read_by_the_tamil_rule`, `test_weekdays_also_make_a_range` |
+| Mixed Tamil / English text | `test_named_dates_are_read_in_both_orders_and_both_scripts`, `test_an_english_weekday_is_not_read_by_the_tamil_rule`, `test_the_finest_true_reading_wins_the_event_slot`, `test_tamil_printing_survives_the_whole_extraction` |
+| Publication and update stamps are never event time | `test_the_stamp_fixture_carries_no_event_time`, `test_stamps_are_publication_time_and_never_anything_else`, `test_the_latest_stamp_is_the_publication_time`, `test_stamp_text_never_reaches_the_body_mentions`, `test_a_field_without_stamps_says_so_instead_of_inventing_one`, `test_a_timestamp_the_stamp_grammar_misses_is_still_not_event_time`, `test_a_stamp_timestamp_that_could_be_read_two_ways_keeps_the_publication_role`, `test_a_stamp_line_owns_only_its_own_line`, `test_a_reused_split_still_demotes_its_stamp_lines` |
+| Reporting time separated from event time | `test_a_statement_attributed_to_a_reporting_verb_is_not_the_event`, `test_event_and_reported_times_are_kept_apart_in_one_field`, `test_a_reporting_verb_in_the_same_sentence_is_found_next_to_a_surface`, `test_a_cue_in_the_next_sentence_does_not_reach_back` |
+| Retrieval time as a separate role | `test_the_retrieval_clock_is_its_own_role`, `test_a_field_without_a_retrieval_clock_has_no_retrieval_time` |
+| Precision and qualifier preserved | `test_the_finest_true_reading_wins_the_event_slot`, `test_a_day_part_narrows_the_day_without_inventing_an_hour`, `test_an_hour_only_clock_is_less_precise_than_a_minute_clock`, `test_a_clock_without_a_date_is_left_unplaced` |
+| Ambiguous expressions flagged | `test_a_numeric_date_that_could_be_read_both_ways_is_flagged`, `test_a_numeric_date_with_only_one_possible_reading_is_not_flagged`, `test_an_abbreviation_that_names_two_months_claims_neither` |
+| Evidence offsets and quote preservation | `test_every_mention_quotes_the_untouched_field_at_original_offsets`, `test_evidence_is_one_per_surface_and_unique`, `test_every_time_value_points_at_evidence_that_exists`, `test_a_demoted_stamp_line_is_still_cited_in_the_untouched_field` |
+| Normalised match, original offsets cited | `test_a_body_match_is_cited_in_original_coordinates_after_normalization`, `test_the_original_field_is_never_replaced_by_the_body` |
+| Unresolved claims nothing | `test_an_unresolved_value_never_claims_a_method_or_confidence`, `test_unresolved_time_is_the_honest_default`, `test_a_field_that_says_nothing_about_time_is_recorded_as_silent` |
+| Time zone declared, not inferred | `test_a_declared_zone_is_attached_without_touching_the_naive_value`, `test_a_zone_named_in_the_text_is_read_when_the_caller_does_not_declare_one`, `test_a_zone_the_caller_declares_beats_the_one_the_text_names`, `test_a_time_zone_nobody_declared_stays_undeclared` |
+| Contracts stay language-independent | `test_semantics_is_never_claimed_by_the_pattern_layer`, `test_the_serialised_shape_keeps_roles_and_provenance_apart`, `test_extraction_is_deterministic` |
+
+Stage 4 adds no dependency and no LLM call: surfaces are `re` over Unicode code
+points, arithmetic is `datetime`, and the only new standard-library import is
+`timedelta`.
+
+---
+
+## 7. Verification
 
 ```
 python -m pytest intelligence/tests -q
 python -m compileall intelligence
 ```
 
-Result at this commit: **269 passed** in ~0.6s, 0 failed (112 Stage 1 contracts,
-55 Stage 2 spans, 102 Stage 3 language and text representation); `compileall`
-reports no errors.
+Result at this commit: **406 passed** in ~0.7s, 0 failed (112 Stage 1 contracts,
+55 Stage 2 spans, 102 Stage 3 language and text representation, 137 Stage 4
+temporal — 90 surfaces in `test_time_expressions.py`, 47 roles in
+`test_temporal_extraction.py`); `compileall` reports no errors. The Stage 1–3
+coverage tables below are unchanged; Stage 4's behaviour table is in §6 because
+its rules are the subject, not a side effect.
 
 The suite is the specification, and it runs against real Dinamalar Madurai
 content rather than synthetic English prose. `tests/builders.py` stores
@@ -605,20 +843,47 @@ alongside the ones it builds itself, which would have stored the same field text
 twice under two ids — `language_info()` now refuses it, because a duplicated
 source is how the "original text is canonical" invariant quietly dies.
 
+Stage 4 found seven defects in its own pattern layer while the tests were written,
+each one now pinned by the test that fails without the fix: day-part absorption
+widened a date and a clock into two overlapping phrases, so
+`28 செப்டம்பர் 2026 இரவு 10 மணிக்கு` never became one surface (absorption
+now widens in place, and each pass sees the boundaries the previous pass made);
+`last night` sat in the day-offset table, which dropped the night and resolved
+`exact` (it is a fused form now — `day`, `approximate`); the Tamil weekday rule
+also matched English weekday names, so `next Friday` was attributed to a Tamil
+rule (the alternation is restricted to Tamil code points); a bare duration
+(`இரண்டு நாட்கள்`) was read as a shift with an invented direction (a lead
+preposition or an `ago`/`later` marker is now required); `2 ஆம் தேதி` reported
+the missing *year* when what was missing was the month (now `NO_MONTH`, a
+different question with a different fix); and merging a clock into a date
+discarded the day part's meridiem, so `இன்றிரவு 2 மணிக்கு` resolved as 02:00
+instead of 14:00 (`DAY_PART_MERIDIEM` carries `am`/`pm` through the merge); and
+the colon-clock rule read the `+05:30` tail of an ISO timestamp as a clock
+reading, so a clock may no longer start immediately after a sign.
+
+The most consequential Stage 4 finding came from an edge-case probe rather than a
+failing test: a publish stamp whose timestamp is ISO or `dd/mm/yyyy` shaped is
+*label-isolated* by Stage 3 but leaves its bare timestamp in the body, and because
+that timestamp is minute-precise it outranked the article's real event date in
+`event_time()`. Stage 3's grammar is not wrong — it declines to parse what it does
+not recognise — so Stage 4 now owns the consequence with the stamp-line residue
+rule in §6, which holds for stamp shapes neither layer has seen.
+
 ---
 
-## 7. Known limitations
+## 8. Known limitations
 
 - **No pipeline.** Nothing converts a `CommonRecord` into an `Incident` yet.
-  Stage 3 reads and re-represents text a caller hands it, but no stage decides
-  what an article is about, and `tests/builders.py` is still hand-written
+  Stages 3 and 4 read and re-represent text a caller hands them, but no stage
+  decides what an article is about, and `tests/builders.py` is still hand-written
   evidence: a real stage picks the quotes. Resolving a dotted `field` path
   against a record object is deliberately not implemented — that is the
   CommonRecord → Intelligence seam, still a later stage.
-- **Spans are exact-substring only.** No case-insensitive, diacritic-insensitive
-  or fuzzy location: `normalize()` now exists to build the representation such a
-  match runs against, and the hit is projected back onto the original — but no
-  stage calls it that way yet.
+- **`spans.locate()` is exact-substring only.** Stage 4 is the first consumer of
+  the other pattern — it matches over normalised text and cites the original — but
+  `locate()` itself is still case- and diacritic-sensitive, and no fuzzy or
+  approximate location exists anywhere in the module. A future entity or place
+  stage has to decide whether it wants `locate()` or `MappedText.project()`.
 - **A span outlives its field silently.** `verify_evidence` detects drift, but
   nothing calls it yet. Stage 9 persistence and Stage 8 re-clustering are where a
   stored Incident gets re-verified against a re-fetched source, and an offline
@@ -635,7 +900,10 @@ source is how the "original text is canonical" invariant quietly dies.
   `EventType` values; score ranges and normalisation are a Stage 6 concern.
 - **No time-zone policy enforcement.** `TimeValue` requires a *declared*
   timezone or an explicit naive-timestamp inconsistency note; it does not decide
-  that India is `Asia/Kolkata`. That belongs to Stage 4 configuration.
+  that India is `Asia/Kolkata`. Stage 4 carries a declaration through — the
+  caller's `timezone`, or a zone the text names — and will not invent one, so the
+  policy is still the pipeline's: every record from an Indian feed has to be
+  extracted with the same argument or the stored times stop being comparable.
 - **Gazetteer fields are placeholders.** `LocationMention.gazetteer_matched` /
   `gazetteer_source` record a match the module does not perform.
 - **Vocabulary is a first draft.** The 70 event types and 33 departments cover
@@ -669,8 +937,47 @@ source is how the "original text is canonical" invariant quietly dies.
   `UPDATED`, `PUBLISHED` with Tamil or Latin month abbreviations, `month d, yyyy`
   dates and `h:mm AM/PM` times (a stamp wrapped over a newline still matches).
   Indian `dd/mm/yyyy`, ISO `2026-10-02T09:46` and bare weekday names are not
-  recognised as timestamps; the label is still isolated, so the body stays clean
-  and Stage 4 sees the miss as a `None` timestamp rather than a wrong time.
+  recognised as timestamps; the label is still isolated, and Stage 4's
+  stamp-line residue rule keeps the unparsed timestamp out of the event slot — so
+  the miss costs a `publication_time`, never a wrong `event_time`. A label that
+  is not one of the three words (`PUBLISHED ON`, `வெளியானது`) is not a stamp at
+  all, and its timestamp is then read as ordinary body text.
+- **The event slot is a ranking rule, not a reading of the article.** A field
+  with several dates gives `event_time()` to the finest, then the unambiguous,
+  then the earliest — `செப் 28 … செப் 30 …` picks the 28th because it is printed
+  first, not because the writer meant it. Nothing binds a date to the clause it
+  is about; that needs subject/verb attachment, which is a later stage's problem,
+  and the runner-up mentions stay visible in `TemporalExtraction.mentions`.
+- **`reference` is taken on trust.** Every relative surface is arithmetic against
+  the datetime the caller passes, and the module never checks that the reference
+  agrees with the absolute dates printed in the same field. A wrong reference
+  silently shifts `நேற்று`; the natural guard is a Stage 8 sanity check that
+  `reference` is not in the future relative to the article's own stamps.
+- **A reporting cue is 17 phrases inside a 90-character sentence.** No verb
+  morphology, no dependency parse, no hearsay grading. An unlisted paraphrase
+  leaves the mention `event_time`: `தெரிவித்தனர்` (they informed) is a cue,
+  `தெரிவித்தார்` (he/she informed) is not, so the same sentence changes role with
+  its subject. That is the safe direction only because the alternative is
+  demoting real event times.
+- **Two calendars and one era are missing.** Tamil month names of the traditional
+  calendar (`ஆவணி`, `புரட்டாசி`, `மார்கழி`) produce no surface at all, the
+  Christian-era assumption is silent (`5482 ஆம் ஆண்டு` is out of
+  `MIN_YEAR..MAX_YEAR` and simply vanishes), and two-digit years (`28.09.26`)
+  are refused rather than guessed. Each is a vocabulary or rule addition, not a
+  contract change.
+- **Weekdays and bare clocks are never placed.** `திங்கட்கிழமை` is always
+  unresolved (`NO_ANCHOR`) and `காலை 10:30 மணிக்கு` always `NO_DATE`, because
+  picking "the next Monday" or "the day of publication" would be an invented
+  fact. They are still emitted as mentions with their spans so a reviewer sees
+  the shape that was not resolvable. The fused adverbial is only half covered:
+  `வெள்ளியன்று` and `சனியன்று` read as weekdays, but `செவ்வாயன்று`,
+  `புதனன்று` and `வியாழன்று` do not, because their stems lose a `்` before the
+  suffix and `WEEKDAYS` stores the pulli spelling — the same elision Stage 3
+  morphology lists as unmodelled.
+- **No time arithmetic across fields.** Stage 4 reads one field at a time, so a
+  title's date cannot corroborate or contradict the body's, and
+  `Incident.reported_at` cannot be assembled from a record until the mapping
+  stage decides which field wins.
 - **The transliteration table is a press convention, not a standard.** `த`→`th`
   and `ட`→`t` distinguish the two series, `ண`/`ன`/`ந` all collapse toward `n`,
   and inherent vowels appear unless a pulli kills them - so `kamishannar` is a
@@ -687,7 +994,7 @@ source is how the "original text is canonical" invariant quietly dies.
   vocabulary is the loanwords and place names visible in the current fixtures; a
   new district term is a code change, not a learning step.
 
-## 8. External integration dependencies
+## 9. External integration dependencies
 
 Reported, not fixed. The repository outside `intelligence/` was not modified.
 
@@ -733,40 +1040,63 @@ Reported, not fixed. The repository outside `intelligence/` was not modified.
    `article.content` verbatim) *and* is what `published_at` was built from, so the
    same timestamp reaches Intelligence twice with different shapes. Stage 3 keeps
    both visible: `boilerplate.split()` isolates the stamp from the body and
-   `timestamp_evidence()` cites it as printed. Stage 4 needs ingestion to stop
-   dropping the raw string before it can compare the two (owner: ingestion).
+   `timestamp_evidence()` cites it as printed. Stage 4 now reads the in-content
+   one and files it as `publication_time`, so the two only meet at the mapping
+   stage — which needs ingestion to stop dropping the raw string in order to
+   compare them and report a disagreement (owner: ingestion).
 
-## 9. Next: Stage 4 — event time
+## 10. Next: Stage 5 — place and actor mentions
 
-Stage 3 leaves Stage 4 two clean inputs per record: a stamp-free body
-representation whose offsets still point at the original field, and every
-printed stamp pinned as `publication_time` Evidence with the note "not event
-time".
+Stage 4 hands the pipeline one honest answer per field: `event_time`,
+`reported_time`, `publication_time` and `retrieval_time`, each either a cited
+`TimeValue` or an explicit absence, plus the mentions it could not resolve and the
+reason for each. Stage 5 does for *where* and *who* what Stage 4 did for *when*:
+deterministic surfaces in one module, decisions in another, and no coordinate,
+department or name that the text did not print.
 
-1. `intelligence/extraction/time_expressions.py` — deterministic surface
-   patterns: Tamil and Latin month forms, day + year, clock times, and deictic
-   words (ின்ரு, நேர்று, கலை, பிறன், இன்னெ) carrying an
-   explicit `TimeQualifier`. Every hit is cut with `locate()` over the original
-   field, so a `TimeValue.raw_text` is always citable.
-2. Semantics is the decision, not parsing. A `boilerplate` stamp can only become
-   `TimeValue(semantics=publication_time)`; an expression inside the body may be
-   `event_time`, `reporting_time` or `unresolved`, chosen by a stated rule and
-   recorded with `method` and `evidence_ids`. A timestamp is never promoted to
-   event time because nothing better was found — that is what
-   `derive_review_reasons()` reports today.
-3. Matching runs on derived text, citation on original text: month and weekday
-   lookups use `normalize_field()` and project the hit back, so "அக்." and
-   "அக்டோபர்" share one code path without bending offsets.
-4. Time zone is configuration, not inference. `TimeValue.timezone` is declared
-   (`Asia/Kolkata`) where the pipeline assumes it; a naive stamp keeps its
-   explicit naive-timestamp inconsistency note rather than silently gaining an
-   offset.
-5. Precision comes from what the surface says. `TimeValue.precision` is `minute`,
-   `hour`, `day`, `month` or `year` according to the matched text; a vague "last
-   week" stays `approximate` or `unresolved` instead of an invented midnight.
-6. Still no incident assembly. Stage 4 emits `TimeValue`s and their Evidence;
-   relevance, classification, location, dedup and the CommonRecord → Incident
-   mapping remain Stages 5–9.
+1. `intelligence/extraction/place_expressions.py` — location surfaces over the
+   same stamp-free body: Tamil place words carrying a case suffix (`மதுரையில்`,
+   `கும்பகோணத்திலிருந்து`), `… மாவட்டம்` / `… district`, habituation words
+   (`தென்`, `வட`, `அருகே`), and route or number-plate markers. Reuse
+   `morphology.suffix_candidates()` as the candidate generator it is: a place
+   phrase is matched through derived text and cited with `MappedText.project()` +
+   `evidence_at()`, never by re-typing an offset.
+2. `intelligence/extraction/places.py` — the role layer, mirroring `temporal.py`:
+   `LocationMention`s with `role` set by a stated rule, `SpatialHint.district_hint`
+   filled only from a phrase that says *district*, and `GisResolution` left
+   `pending_gis` because geocoding is not this module's to invent.
+   `best_event_location_mention_id` is set only when one mention is unambiguously
+   the event place; "Madurai High Court bench" stays a mention, not a location.
+3. `intelligence/extraction/actors.py` — `Actor` surfaces: official titles in both
+   scripts (`கமிஷனர்`, `Collector`, `மேயர்`), department names reachable through
+   `config.vocabularies`, and the Tamil postpositions morphology already models
+   (`-இடம்`, `-சார்`, `-விடம்`). An actor with no cited span is not an actor.
+4. The reference clock finally gets an owner. `திங்கட்கிழமை` and a bare
+   `காலை 10:30 மணிக்கு` stay unresolved until something supplies `reference`, and
+   the only defensible pair is `retrieved_at` plus `publication_time()` — that is a
+   Stage 8 mapping decision, and Stage 5 should leave the same `None` behaviour
+   intact rather than paper over it.
+5. Still no event type, severity, dedup or incident assembly. Relevance and
+   classification stay Stage 6, `CommonRecord` → `Incident` stays Stage 8, and
+   `category_scores` stays empty until the taxonomy is reviewed with the
+   collector's office.
 
-Stage 4 adds no dependency: date surfaces are matched with `re`, the Unicode
-tables already in `boilerplate.py`, and `datetime` from the standard library.
+Carried forward, because each one is a decision and not a pattern:
+
+- **Reference policy** (item 4) and the time-zone declaration — both belong to the
+  mapping stage, and both need to be constant across a feed for stored times to be
+  comparable.
+- **Stamp label vocabulary.** `PUBLISHED ON` and a Tamil `வெளியானது` are not
+  labels, so their timestamps are read as body text; the residue rule catches the
+  line-local case, not the unlabelled one.
+- **Traditional Tamil month names** (`ஆவணி`, `புரட்டாசி`, `மார்கழி`) produce no
+  surface at all — a vocabulary addition, but only worth doing if the collector's
+  office actually receives such reports.
+- **Cross-field time reconciliation.** A title date and a body date that disagree
+  is a review signal, and `derive_review_reasons()` has no reason for it yet.
+- **A place-name gazetteer** is the first thing Stage 5 will be tempted to add.
+  It is a dependency decision for the team, not a file to drop into `config/`.
+
+Stage 5 adds no dependency: place and actor surfaces are `re`, the dictionaries
+already in `config/` and `extraction/morphology.py`, and the same `MappedText`
+projection Stage 3 built.
