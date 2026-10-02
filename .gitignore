@@ -1,10 +1,21 @@
 .venv/
+backend/.venv/
+venv/
 __pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
+*.pyd
 
 .env
+*.env
+backend/.env
 
+.data/
 data/raw/*
 data/normalized/*
 
 !.gitkeep
+
+node_modules/
+dist/

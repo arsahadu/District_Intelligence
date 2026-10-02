@@ -3,9 +3,9 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
 
-from app.models.source_article import SourceArticle
-from app.normalizers.news import article_to_common_record
-from app.storage.raw_storage import save_json
+from ingestion.app.models.source_article import SourceArticle
+from ingestion.app.normalizers.news import article_to_common_record
+from ingestion.app.storage.raw_storage import save_json
 
 
 # --------------------------------------------------
