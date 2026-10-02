@@ -1,18 +1,17 @@
+import re
 import requests
+
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 from datetime import datetime
 
-from ingestion.app.models.source_article import SourceArticle
-from ingestion.app.normalizers.news import article_to_common_record
-from ingestion.app.storage.raw_storage import save_json
+from app.models.source_article import SourceArticle
+from app.storage.raw_storage import save_json
 
-
-# --------------------------------------------------
-# Configuration
-# --------------------------------------------------
 
 DINAMALAR_URL = "https://www.dinamalar.com/district/291"
+
+SOURCE_ID = "dinamalar"
+SOURCE_TYPE = "news"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
@@ -21,11 +20,11 @@ HEADERS = {
 REQUEST_TIMEOUT = 20
 
 
-# --------------------------------------------------
-# Fetch webpage
-# --------------------------------------------------
+# ---------------------------------------------------------
+# Fetch
+# ---------------------------------------------------------
 
-def fetch_page(url: str) -> str:
+def fetch_page(url):
 
     response = requests.get(
         url,
@@ -38,365 +37,355 @@ def fetch_page(url: str) -> str:
     return response.text
 
 
-# --------------------------------------------------
-# Extract Madurai article URLs
-# --------------------------------------------------
+# ---------------------------------------------------------
+# Cleaning
+# ---------------------------------------------------------
 
-def extract_articles(html: str) -> list[dict]:
+def clean_text(value):
 
-    soup = BeautifulSoup(html, "html.parser")
+    if not value:
+        return ""
 
-    articles = []
-    seen_urls = set()
+    return " ".join(value.split())
 
-    for link in soup.find_all("a", href=True):
 
-        title = link.get_text(" ", strip=True)
-        href = link.get("href")
+# ---------------------------------------------------------
+# Dinamalar date parser
+# ---------------------------------------------------------
 
-        if not title or not href:
+DINAMALAR_MONTHS = {
+    "ஜன": 1,
+    "பிப்": 2,
+    "மார்": 3,
+    "ஏப்": 4,
+    "மே": 5,
+    "ஜூன்": 6,
+    "ஜூலை": 7,
+    "ஆக": 8,
+    "செப்": 9,
+    "அக்": 10,
+    "நவ": 11,
+    "டிச": 12,
+}
+
+
+def parse_dinamalar_date(text):
+
+    if not text:
+        return None
+
+    text = clean_text(text)
+
+    match = re.search(
+        r"ADDED\s*:\s*"
+        r"([^\s]+)\s+"
+        r"(\d{1,2}),\s*"
+        r"(\d{4})\s+"
+        r"(\d{1,2}):(\d{2})\s*"
+        r"(AM|PM)",
+        text,
+        re.IGNORECASE
+    )
+
+    if not match:
+        return None
+
+    month_text = match.group(1)
+    day = int(match.group(2))
+    year = int(match.group(3))
+    hour = int(match.group(4))
+    minute = int(match.group(5))
+    am_pm = match.group(6).upper()
+
+    month = DINAMALAR_MONTHS.get(month_text)
+
+    if month is None:
+        return None
+
+    # Convert 12-hour clock → 24-hour clock
+    if am_pm == "PM" and hour != 12:
+        hour += 12
+
+    if am_pm == "AM" and hour == 12:
+        hour = 0
+
+    return datetime(
+        year,
+        month,
+        day,
+        hour,
+        minute
+    )
+
+
+# ---------------------------------------------------------
+# Extract article links
+# ---------------------------------------------------------
+
+def extract_article_links(html):
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
+
+    links = []
+
+    for anchor in soup.find_all(
+        "a",
+        href=True
+    ):
+
+        href = anchor["href"]
+
+        # Only Madurai district article URLs
+        if (
+            "/news/tamil-nadu-district-news-madurai/"
+            not in href
+        ):
             continue
 
-        url = urljoin(DINAMALAR_URL, href)
+        if href.startswith("/"):
 
-        # Only Madurai district news articles
-        if "/news/tamil-nadu-district-news-madurai/" not in url:
-            continue
+            href = (
+                "https://www.dinamalar.com"
+                + href
+            )
 
-        # Remove duplicates
-        if url in seen_urls:
-            continue
+        if href not in links:
 
-        # Ignore very short titles
-        if len(title) < 10:
-            continue
+            links.append(href)
 
-        seen_urls.add(url)
-
-        articles.append({
-            "source": "dinamalar",
-            "title": title,
-            "url": url
-        })
-
-    return articles
+    return links
 
 
-# --------------------------------------------------
+# ---------------------------------------------------------
 # Extract individual article
-# --------------------------------------------------
+# ---------------------------------------------------------
 
-def extract_article(article: dict) -> dict:
+def extract_article(html, url):
 
-    html = fetch_page(article["url"])
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
 
-    soup = BeautifulSoup(html, "html.parser")
-
-    # ----------------------------------------------
+    # -------------------------
     # Title
-    # ----------------------------------------------
+    # -------------------------
+
+    title = ""
 
     title_tag = soup.find("h1")
 
     if title_tag:
 
-        title = title_tag.get_text(
-            " ",
-            strip=True
+        title = clean_text(
+            title_tag.get_text(
+                " ",
+                strip=True
+            )
         )
 
-    else:
-
-        title = article["title"]
-
-
-    # ----------------------------------------------
-    # Published time
-    # ----------------------------------------------
+    # -------------------------
+    # Published date
+    # -------------------------
 
     published_at = None
 
-    page_text = soup.get_text(
-        " ",
-        strip=True
+    added_text = soup.find(
+        string=lambda text:
+            text and "ADDED" in text
     )
 
-    added_index = page_text.find("ADDED")
+    if added_text:
 
-    if added_index != -1:
+        published_at = parse_dinamalar_date(
+            added_text
+        )
 
-        published_at = page_text[
-            added_index:added_index + 80
-        ]
-
-
-    # ----------------------------------------------
-    # Article content
-    # ----------------------------------------------
+    # -------------------------
+    # Content
+    # -------------------------
 
     paragraphs = []
 
-    for p in soup.find_all("p"):
+    for paragraph in soup.find_all("p"):
 
-        text = p.get_text(
-            " ",
-            strip=True
+        text = clean_text(
+            paragraph.get_text(
+                " ",
+                strip=True
+            )
         )
 
-        if len(text) > 40:
+        if text:
 
             paragraphs.append(text)
 
+    content = " ".join(paragraphs)
 
-    content = "\n".join(paragraphs)
+    # -------------------------
+    # SourceArticle
+    # -------------------------
 
-
-    # ----------------------------------------------
-    # Return source-specific record
-    # ----------------------------------------------
-
-    return {
-        "source": "dinamalar",
-        "url": article["url"],
-        "title": title,
-        "published_at": published_at,
-        "content": content
-    }
+    return SourceArticle(
+        source=SOURCE_ID,
+        url=url,
+        title=title,
+        published_at=published_at,
+        content=content
+    )
 
 
-# --------------------------------------------------
-# Main pipeline
-# --------------------------------------------------
+# ---------------------------------------------------------
+# Main
+# ---------------------------------------------------------
 
 def main():
 
     print("\n" + "=" * 60)
-    print("DINAMALAR MADURAI DATA CONNECTOR")
+    print("DINAMALAR MADURAI NEWS CONNECTOR")
     print("=" * 60)
 
-
-    # ----------------------------------------------
+    # -----------------------------------------------------
     # 1. Fetch district page
-    # ----------------------------------------------
+    # -----------------------------------------------------
 
-    print("\n[1] Fetching Madurai district page...")
+    print(
+        "\n[1] Fetching Dinamalar Madurai page..."
+    )
 
-    html = fetch_page(DINAMALAR_URL)
+    html = fetch_page(
+        DINAMALAR_URL
+    )
 
     print(
         f"    Downloaded: {len(html):,} characters"
     )
 
-
-    # ----------------------------------------------
-    # 2. Find article URLs
-    # ----------------------------------------------
-
-    print("\n[2] Extracting Madurai articles...")
-
-    articles = extract_articles(html)
+    # -----------------------------------------------------
+    # 2. Extract article links
+    # -----------------------------------------------------
 
     print(
-        f"    Articles found: {len(articles)}"
+        "\n[2] Extracting Madurai article links..."
     )
 
-    if not articles:
+    article_links = extract_article_links(
+        html
+    )
 
-        print("    No articles found.")
-        return
+    print(
+        f"    Articles found: {len(article_links)}"
+    )
 
+    # -----------------------------------------------------
+    # 3. Fetch articles
+    # -----------------------------------------------------
 
-    # ----------------------------------------------
-    # 3. Fetch individual articles
-    # ----------------------------------------------
+    print(
+        "\n[3] Fetching articles..."
+    )
 
-    print("\n[3] Fetching article content...")
+    articles = []
 
-    collected_articles = []
+    errors = []
 
-    failed_articles = []
-
-    for index, article in enumerate(
-        articles,
+    for index, url in enumerate(
+        article_links,
         start=1
     ):
 
-        print(
-            f"\n    [{index}/{len(articles)}] "
-            f"{article['title']}"
-        )
-
         try:
 
-            raw_article = extract_article(
-                article
+            article_html = fetch_page(
+                url
             )
 
-            # Validate with Pydantic
-            source_article = SourceArticle(
-                **raw_article
+            article = extract_article(
+                article_html,
+                url
             )
 
-            collected_articles.append(
-                source_article.model_dump()
-            )
+            articles.append(article)
 
-            print("        ✓ Collected")
+            print(
+                f"    [{index}/{len(article_links)}] "
+                f"{article.title[:70]}"
+            )
 
         except Exception as error:
 
-            failed_articles.append({
-                "url": article["url"],
-                "title": article["title"],
+            errors.append({
+                "url": url,
                 "error": str(error)
             })
 
             print(
-                f"        ✗ Failed: {error}"
+                f"    [{index}/{len(article_links)}] "
+                f"FAILED: {url}"
             )
 
-
-    # ----------------------------------------------
-    # 4. Summary
-    # ----------------------------------------------
-
-    print("\n" + "=" * 60)
-    print("COLLECTION SUMMARY")
-    print("=" * 60)
+    # -----------------------------------------------------
+    # 4. Save raw SourceArticle data
+    # -----------------------------------------------------
 
     print(
-        f"Found      : {len(articles)}"
+        "\n[4] Saving raw SourceArticle data..."
     )
 
-    print(
-        f"Collected  : {len(collected_articles)}"
-    )
+    raw_records = [
+        article.model_dump(
+            mode="json"
+        )
+        for article in articles
+    ]
 
-    print(
-        f"Failed     : {len(failed_articles)}"
-    )
-
-
-    if not collected_articles:
-
-        print("\nNo articles were collected.")
-        return
-
-
-    # ----------------------------------------------
-    # 5. Save RAW data
-    # ----------------------------------------------
-
-    print("\n[4] Saving RAW data...")
-
-    raw_file = save_json(
-        data=collected_articles,
+    raw_path = save_json(
+        raw_records,
         category="raw",
-        source="dinamalar"
+        source=SOURCE_ID
     )
 
     print(
-        f"    Saved: {raw_file}"
+        f"    Raw data saved: {raw_path}"
     )
 
+    # -----------------------------------------------------
+    # 5. Save errors
+    # -----------------------------------------------------
 
-    # ----------------------------------------------
-    # 6. Convert → CommonRecord
-    # ----------------------------------------------
+    if errors:
 
-    print("\n[5] Converting to CommonRecord...")
-
-    common_records = []
-
-    for index, article_data in enumerate(
-        collected_articles,
-        start=1
-    ):
-
-        article = SourceArticle(
-            **article_data
-        )
-
-        common_record = article_to_common_record(
-            article=article,
-            index=index
-        )
-
-        common_records.append(
-            common_record.model_dump()
-        )
-
-
-    print(
-        f"    CommonRecords created: "
-        f"{len(common_records)}"
-    )
-
-
-    # ----------------------------------------------
-    # 7. Save normalized data
-    # ----------------------------------------------
-
-    print("\n[6] Saving NORMALIZED data...")
-
-    normalized_file = save_json(
-        data=common_records,
-        category="normalized",
-        source="dinamalar"
-    )
-
-    print(
-        f"    Saved: {normalized_file}"
-    )
-
-
-    # ----------------------------------------------
-    # 8. Failed article log
-    # ----------------------------------------------
-
-    if failed_articles:
-
-        failed_file = save_json(
-            data=failed_articles,
+        error_path = save_json(
+            errors,
             category="errors",
-            source="dinamalar"
+            source=SOURCE_ID
         )
 
         print(
-            f"\n    Failed article log: "
-            f"{failed_file}"
+            f"    Errors saved: {error_path}"
         )
 
-
-    # ----------------------------------------------
-    # Finished
-    # ----------------------------------------------
+    # -----------------------------------------------------
+    # 6. Summary
+    # -----------------------------------------------------
 
     print("\n" + "=" * 60)
-    print("DINAMALAR PIPELINE COMPLETED")
+    print("DINAMALAR CONNECTOR COMPLETE")
     print("=" * 60)
 
     print(
-        f"\nRaw records        : "
-        f"{len(collected_articles)}"
+        f"Articles extracted : {len(articles)}"
     )
 
     print(
-        f"CommonRecords      : "
-        f"{len(common_records)}"
+        f"Articles failed    : {len(errors)}"
     )
 
-    print(
-        f"Failed             : "
-        f"{len(failed_articles)}"
-    )
+    print("=" * 60)
 
-    print("\nDone.")
-
-
-# --------------------------------------------------
-# Entry point
-# --------------------------------------------------
 
 if __name__ == "__main__":
     main()
