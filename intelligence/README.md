@@ -6,35 +6,43 @@ Owner: Member 1 (AI / Intelligence). This file is the durable technical record o
 the module. It documents only what is implemented **and tested** today, plus the
 contract guarantees later stages and other modules rely on.
 
-Current state: **Stage 1 complete — contracts.** No pipeline code exists yet.
-Nothing here reads a network, a database, or a file.
+Current state: **Stages 1-2 complete — contracts plus the evidence span
+primitive.** There is still no CommonRecord → Incident pipeline: nothing here
+reads a network, a database, or a file, and no text is classified, normalised or
+extracted yet.
 
 ```
 CommonRecord ──> [ Intelligence ] ──> Incident ──> Evidence / Provenance
                      │                    │
-                 Stage 1              dedup ──> trends / priority / summaries
+                Stage 1 + 2            dedup ──> trends / priority / summaries
                                                    │
                                           Collector Copilot
 ```
 
 ---
 
-## 1. What Stage 1 provides
+## 1. What is implemented
 
-A versioned, strictly-validated Pydantic v2 data contract for a structured
-**Incident** and its **Evidence**, plus the controlled vocabularies that classify
-them.
+**Stage 1** — a versioned, strictly-validated Pydantic v2 data contract for a
+structured **Incident** and its **Evidence**, plus the controlled vocabularies
+that classify them.
+
+**Stage 2** — `intelligence/extraction/spans.py`: the evidence span primitive
+that *produces* that `Evidence`, deriving offsets and hashes from the source
+text and verifying them against it later.
 
 | Package | Purpose |
 | --- | --- |
 | `intelligence/models/` | Structure: field shapes, types, invariants. |
 | `intelligence/config/` | Taxonomy data: event families, department mapping, ordering. |
+| `intelligence/extraction/` | Evidence production: spans, hashes, verification. |
 | `intelligence/tests/` | Executable specification of every rule below. |
 
 The split is deliberate. `models/` must not change when the district adds an
-event category; `config/` must not change when a field gains a validator.
-`config.vocabularies.vocabulary_integrity_errors()` returns the drift list when
-the two disagree, and a test asserts it is empty.
+event category; `config/` must not change when a field gains a validator;
+`extraction/` holds the only code allowed to turn "the source says X" into an
+`Evidence` object. `config.vocabularies.vocabulary_integrity_errors()` returns
+the drift list when models and taxonomy disagree, and a test asserts it is empty.
 
 ### Files
 
@@ -62,6 +70,10 @@ intelligence/
   config/
     vocabularies.py            TAXONOMY_VERSION, families, department map, helpers
     __init__.py                re-exports
+  extraction/
+    spans.py                   SourceField, Span, locate, build_evidence,
+                               compute_field_hash, verify_evidence, revalidate
+    __init__.py                re-exports
   tests/
     conftest.py                fixtures
     builders.py                real-Tamil-content incident factories
@@ -72,11 +84,12 @@ intelligence/
     test_incident.py                        15 tests
     test_serialization.py                    8 tests
     test_vocabularies.py                    15 tests
+    test_spans.py                           55 tests  (Stage 2)
 ```
 
 ---
 
-## 2. Design decisions that shape everything after Stage 1
+## 2. Design decisions that shape every later stage
 
 **Evidence is a record of the source, not a claim by the extractor.**
 `Evidence` carries `record_id / source_id / source_type / field / quote /
@@ -222,23 +235,142 @@ until Stage 8 computes them.
 
 ---
 
-## 4. Verification
+## 4. Stage 2 — the evidence span primitive
+
+`intelligence/extraction/spans.py` is the only code allowed to produce an
+`Evidence` that quotes a source. An extractor says *what the source says*; this
+layer decides *where it says it*.
+
+```
+SourceField (record + field + untouched text)
+        │
+        ├── locate(text, quote, occurrence=None) ──> Span(char_start, char_end, quote)
+        │
+        └── build_evidence(source, quote, method=…, confidence=…)
+                        │  offsets + field hash derived here, never typed
+                        ▼
+                   Evidence(span_validation=validated)
+                        │
+                        ├── verify_evidence(evidence, current_field_text) ──> SpanCheck
+                        └── revalidate(evidence, current_field_text)      ──> (Evidence, SpanCheck)
+```
+
+### Inputs the producer accepts
+
+`SourceField` carries `record_id`, `source_id`, `source_type`, `field` (dotted
+path, same convention as `Evidence.field`), `text` (the untouched original), and
+optional `source_url`, `raw_reference`, `retrieved_at`. `build_evidence` adds the
+`quote`, the `method`, an optional `confidence`, an optional `occurrence`, and
+an optional `evidence_id` / `modality` / `notes`. That is the full list the
+future pipeline needs; nothing else is inferred.
+
+`SourceField` is frozen on purpose. A span is only meaningful against the text it
+was cut from, so mutating `text` after building Evidence must be impossible
+rather than merely inadvisable.
+
+### How offsets are calculated
+
+Python character indices into the text exactly as stored. Not byte offsets, not
+code-unit pairs, not indices into a normalised copy. A Tamil grapheme is often
+several code points (`நீ` is `ந` + U+0BC0, `ம்` is `ம` + U+0BCD), so byte
+arithmetic would land the end offset mid-syllable; `test_offsets_are_code_points_not_bytes`
+pins that distinction against real fixture text.
+
+Two entry points, one rule:
+
+- `build_evidence(source, quote, …)` searches for the quote and derives the
+  range. The caller supplies no numbers.
+- `build_evidence_at(source, span, …)` is for stages that already know a range
+  (a regex match object, an OCR word box mapped to a transcript). It trusts the
+  span for *where*, never for *whether*: the range must reproduce
+  `span.quote` in the source text or the call raises. A lying range cannot
+  become Evidence.
+
+The Stage 1 invariant `len(quote) == char_end - char_start` is what makes a
+hand-written span detectable, and this layer is what makes it unnecessary.
+
+### How the hash is used
+
+`field_text_hash` is the sha256 of the UTF-8 encoding of the **whole field**,
+not of the quote. Two quotes from one article share it, so one recomputation
+verifies every Evidence derived from that field, and a changed headline or an
+edited paragraph is detectable even when the recorded offsets still slice to
+something plausible. The definition is identical to the one Stage 1's fixtures
+used (`tests/builders.field_hash`), verified by
+`test_stage_two_output_matches_the_handbuilt_stage_one_fixture`.
+
+### Verification, and why a mismatch is never repaired
+
+`verify_evidence` replays one Evidence against the text the field holds now and
+returns a `SpanCheck(validation, reason, expected_hash, actual_hash)`:
+
+| Condition | `span_validation` |
+| --- | --- |
+| hash matches and `text[start:end] == quote` | `validated` |
+| hash differs (field edited after extraction) | `mismatch` |
+| hash matches but offsets hold other text | `mismatch` |
+| no hash recorded, so field identity is unproven | `unvalidated` |
+| no span at all (field-level metadata provenance) | `not_applicable` |
+
+`revalidate` returns the Evidence rebuilt with that verdict plus the reason in
+`notes`, and returns the *same object* when the verdict is unchanged so repeated
+replays cannot append the same note forever. It never re-locates the quote:
+silently finding "மதுரையில்" somewhere else in an edited article would make an
+altered source look like it always said what we recorded. Re-anchoring is an
+explicit re-extraction through `build_evidence`, which mints a new id.
+
+### Ambiguity
+
+`find_spans` reports every occurrence, overlapping included (`"aa"` in `"aaa"`
+is two). `locate` with more than one match and no `occurrence` index raises
+`AmbiguousQuoteError`, which carries the offsets in the message and on
+`.occurrences`, so the caller can pick deliberately (`occurrence=1`, negative
+indices allowed) instead of inheriting whichever match Python found first. An
+out-of-range index raises `OccurrenceOutOfBoundsError`.
+
+Rejections: `EmptyQuoteError` for `""` and for whitespace-only quotes;
+`QuoteNotFoundError` for a quote that is absent, matched case-sensitively and
+without Unicode normalisation. When a quote *would* match after normalisation,
+the error says which form (NFC/NFD/NFKC/NFKD) would have made it work — a
+diagnosis, not a repair. Stage 3 gets its own normalised representations; spans
+stay anchored to the untouched original.
+
+### Producer discipline
+
+- `method=unresolved` cannot produce Evidence: "unresolved" is a state on a fact,
+  not a way of quoting a source.
+- `llm` and `statistical` output must carry a confidence; exact-match methods
+  (`regex`, `rule`, `dictionary`, `source_metadata`, `human`) may omit it rather
+  than imply a false precision of 1.0.
+- `evidence_id` defaults to a deterministic digest of
+  record + field + offsets + method + quote, so re-running a stage over unchanged
+  text reuses the id instead of creating a second identity for one quote — which
+  is what lets Stage 8 merge incidents without another reconciliation step.
+- `modality` is declarable (`audio_transcript`, `image`, …) so an OCR or audio
+  stage feeds the same span machinery without changing it.
+
+CommonRecord → Intelligence integration is still a later stage: this layer takes
+field text from its caller and does not read, resolve or import a `CommonRecord`.
+
+---
+
+## 5. Verification
 
 ```
 python -m pytest intelligence/tests -q
 ```
 
-Result at this commit: **112 passed** in ~0.4s.
+Result at this commit: **167 passed** in ~0.4s (112 Stage 1 contracts, 55 Stage 2
+spans).
 
 The suite is the specification, and it runs against real Dinamalar Madurai
 content rather than synthetic English prose. `tests/builders.py` stores
 `CONTENT_TA` (a Tamil road-marker protest report containing the
 `ADDED :` / `UPDATED :` publish-stamp boilerplate, a transliterated
-`லேண்ட்` and a `4800 மனுக்கள்` quantity) and `BENCH_CONTENT_TA` (a Kumbakonam
-incident whose text also mentions the Madurai High Court bench). Every
-span-backed evidence offset in the fixtures is derived with
-`source_text.index(quote)` rather than typed, so the span arithmetic is tested
-against real Tamil character counts including combining vowel signs.
+`லேண்ட்` and a `4800 மனுக்களை` quantity) and `BENCH_CONTENT_TA` (a Kumbakonam
+incident whose text also mentions the Madurai High Court bench). Stage 1 derived
+those fixture offsets with `source_text.index(quote)`; Stage 2 reproduces them
+through the producer and asserts they are identical, offset for offset.
 
 Coverage of the twelve required Stage 1 validations:
 
@@ -257,22 +389,61 @@ Coverage of the twelve required Stage 1 validations:
 | Invalid confidence rejected | `test_evidence.py` |
 | Serialisation round-trip | `test_serialization.py` |
 
-Three real contract gaps were found and closed while writing these tests:
-Pydantic's lax float coercion turned the string `"0.9"` into a valid confidence
-(fixed with a `BeforeValidator` numeric-type gate in `models/base.py`);
+Coverage of the twenty-three required Stage 2 span behaviours, all in
+`test_spans.py`:
+
+| Behaviour | Test |
+| --- | --- |
+| English / Tamil / mixed exact span | `test_english_exact_span_has_exact_offsets`, `test_tamil_exact_span_reproduces_the_quote`, `test_mixed_tamil_english_span` |
+| Combining vowel signs, not byte offsets | `test_offsets_are_code_points_not_bytes` |
+| Newlines inside and around the quote | `test_span_survives_a_newline_inside_the_quote` |
+| Quote at start / middle / end | `test_tamil_quote_at_the_very_start_of_the_field`, `test_english_exact_span_has_exact_offsets`, `test_tamil_quote_at_the_very_end_of_the_field` |
+| Repeated quote ambiguity + explicit occurrence | `test_repeated_quote_raises_instead_of_choosing_silently`, `test_occurrence_can_be_selected_explicitly`, `test_occurrence_accepts_negative_indexes` |
+| Empty / whitespace-only / missing quote rejected | `test_empty_quote_is_rejected`, `test_whitespace_only_quote_is_rejected`, `test_missing_quote_is_rejected`, `test_matching_is_case_sensitive` |
+| Correct `char_start` / `char_end` | asserted numerically in each of the above |
+| Correct `field_text_hash` | `test_field_hash_is_sha256_of_the_whole_original_field`, `test_hash_covers_the_field_not_the_quote` |
+| Verification succeeds | `test_verification_passes_against_the_unchanged_field` |
+| Verification after the field changed | `test_verification_detects_a_changed_source_field`, `test_a_mismatch_is_never_repaired` |
+| Tamil serialisation survives | `test_tamil_evidence_serialises_without_escaping`, `test_tamil_quote_survives_a_json_round_trip` |
+| Record id and source metadata copied | `test_evidence_carries_the_record_and_source_provenance` |
+| Method preserved | `test_probabilistic_methods_must_quote_a_confidence`, `test_stage_two_output_matches_the_handbuilt_stage_one_fixture` |
+| Confidence preserved | `test_evidence_carries_the_record_and_source_provenance`, `test_exact_match_methods_may_omit_confidence` |
+| Original whitespace preserved | `test_surrounding_whitespace_is_preserved_not_stripped`, `test_source_text_is_never_altered_by_the_builder` |
+
+Four real contract gaps were found and closed while writing these tests.
+Stage 1: Pydantic's lax float coercion turned the string `"0.9"` into a valid
+confidence (fixed with a `BeforeValidator` numeric-type gate in `models/base.py`);
 fingerprint ownership was duplicated between `Incident` and `DedupMetadata`
 (resolved in favour of `Incident`); and `LanguageInfo` accepted a resolved
 `primary_language` with no `detection` record, which is exactly how ingestion's
-hardcoded `data.language` would have been laundered into a detection claim. A
-resolved language now requires a detection record that agrees with it.
+hardcoded `data.language` would have been laundered into a detection claim.
+Stage 2: verifying a span without a recorded field hash would have reported
+`validated`, which Stage 1 reserves for hash-backed spans — it now reports
+`unvalidated`, because the offsets may be right while the field's identity is
+not.
 
 ---
 
-## 5. Known limitations
+## 6. Known limitations
 
-- **No pipeline.** Nothing converts a `CommonRecord` into an `Incident` yet.
-  `tests/builders.py` is hand-written evidence, not extraction output; it exists
-  to prove the contract holds against real Tamil text.
+- **No pipeline.** Nothing converts a `CommonRecord` into an `Incident` yet, and
+  no text is extracted yet. `tests/builders.py` is hand-written evidence and
+  `test_spans.py` quotes strings that were chosen by hand; a real stage picks the
+  quotes. Resolving a dotted `field` path against a record object is deliberately
+  not implemented — that is the CommonRecord → Intelligence seam, still a later
+  stage.
+- **Spans are exact-substring only.** No case-insensitive, diacritic-insensitive
+  or fuzzy location: a stage that wants one must build a normalised
+  representation first and span against the right text, not bend these offsets.
+- **A span outlives its field silently.** `verify_evidence` detects drift, but
+  nothing calls it yet. Stage 9 persistence and Stage 8 re-clustering are where a
+  stored Incident gets re-verified against a re-fetched source, and an offline
+  re-verification needs the original field text, which is not stored inside
+  `Evidence` by design.
+- **Byte-level source drift is all the hash can prove.** `field_text_hash`
+  identifies the text, not the record: if a source edits a headline, every
+  Evidence over that field reports `mismatch` together, with no per-quote
+  attribution beyond the offsets.
 - **Optional is still optional.** A field whose value is unknown can be left
   unset where absence and `UNRESOLVED` mean the same thing. Consumers should
   read the enum members, not rely on `None`, for the four epistemic states.
@@ -291,7 +462,7 @@ resolved language now requires a detection record that agrees with it.
   diagnostics with `PYTHONIOENCODING=utf-8`. Later stages that print extracted
   text must not assume a UTF-8 console.
 
-## 6. External integration dependencies
+## 7. External integration dependencies
 
 Reported, not fixed. The repository outside `intelligence/` was not modified.
 
@@ -327,13 +498,38 @@ Reported, not fixed. The repository outside `intelligence/` was not modified.
 6. No LLM API key or OCR toolchain is available in this environment, which the
    design assumes and does not depend on.
 
-## 7. Next: Stage 2 — evidence span primitive
+## 8. Next: Stage 3 — the language layer
 
-Stage 2 turns the `Evidence` *record* into an evidence *producer*: a
-`TextSpan` / `EvidenceBuilder` layer that takes a field's original text, a
-matched quote and an extraction method, and returns a hash-pinned `Evidence`
-with offsets computed — never hand-typed — plus a verifier that re-hashes the
-source field and transitions `span_validation` between `validated` and
-`mismatch`. Expected files: `intelligence/extraction/spans.py` (offset
-arithmetic over combining characters, field hashing, Windows-safe UTF-8 IO) and
-its tests. Stage 2 adds no extraction rules; those are Stage 3 onward.
+Stage 3 is the first stage that reads text and decides something about it, and
+every decision it makes will be pinned with a span from Stage 2.
+
+Planned modules, inside `intelligence/extraction/`:
+
+- `language.py` — script-ratio detection over code points (Tamil Unicode block
+  U+0B80–U+0BFF vs Latin), producing `LanguageDetection` with a `method` and a
+  `confidence`. `LanguageInfo.primary_language` now requires an agreeing
+  detection record, so this stage is the only legitimate way to resolve a
+  language; ingestion's `data.language` goes to `inherited_language_hint` and is
+  never trusted.
+- `normalise.py` — Unicode normalisation and whitespace control as **new
+  `TextRepresentation`s** with `role=normalized` and `derived_from` pointing at
+  the source representation. Never in place: the source offsets must stay valid,
+  and a normalised variant is exactly what the case- and diacritic-insensitive
+  matching that `spans.py` refuses to do will run against.
+- `morphology.py` — Tamil case and postposition suffix stripping
+  (`-இல்`, `-ஐ`, `-உக்கு`, `-ஆன்`) as a candidate generator. Because bare stems
+  are not quotes, a morphology hit produces a normalised-form suggestion that is
+  then re-located in the original text and spanned, so the evidence still points
+  at the inflected word the article actually printed.
+- `boilerplate.py` — removal of the `ADDED :` / `UPDATED :` publish-stamp
+  patterns seen in the real Madurai corpus, recorded as a normalised
+  representation rather than a mutation, and handed to Stage 4 as the reason a
+  timestamp is publication time and not event time.
+- `transliteration.py` — Tamil-script English terms (`லேண்ட்`, `கமிஷனர்`) mapped
+  to their Latin candidates, keeping both representations.
+
+No keyword rules, no event classification and no severity logic in Stage 3; the
+layer only turns record text into trustworthy, language-tagged representations
+that later stages can match against. Stage 3 adds no optional dependency: script
+detection and suffix stripping are done with Unicode ranges and a small
+vocabulary, so the module keeps working with `pydantic` and `pytest` alone.
