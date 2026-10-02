@@ -1,0 +1,12 @@
+# Intelligence module dependencies.
+# Stage 1 is contracts only, so the runtime surface is deliberately tiny.
+
+# Model definition and validation (models/, config/).
+pydantic>=2.7,<3
+
+# Test only.
+pytest>=8.0
+
+# Declared here so later stages add to this file rather than assuming packages
+# exist in the developer environment. Nothing network-, database-, ML- or
+# OCR-related is required to build or validate an Incident.
