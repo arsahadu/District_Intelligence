@@ -1,21 +1,4 @@
-"""The Incident contract: the Intelligence module's output.
-
-An Incident is assembled only from ``Evidence``. Every semantic claim in it
-points at evidence ids, and evidence points back at one ``CommonRecord`` field
-and character range, so a Collector-facing number can always be answered with
-"which report said that, and what exactly did it say".
-
-Two kinds of rule live here:
-
-* **Hard invariants** (raise) - dangling evidence references, duplicate ids, a
-  self-referential merge, an unresolved field asserting authority.
-* **Soft quality checks** (``inconsistencies()`` / ``derive_review_reasons()``)
-  - things that are legal states but need a human: no event location, only a
-  publication timestamp, severity unresolved, GIS resolution still pending.
-
-Legal-but-weak states must never raise, or a pipeline would be forced to
-fabricate data to get past validation.
-"""
+"""The Incident contract: the Intelligence module's output."""
 
 from __future__ import annotations
 
@@ -49,41 +32,30 @@ class Incident(StrictModel):
     schema_version: str = SCHEMA_VERSION
 
     incident_id: str
-    #: Deterministic dedup key. None until the fingerprint stage has run; a
-    #: placeholder hash would silently corrupt deduplication.
     fingerprint: Optional[str] = None
     status: IncidentStatus = IncidentStatus.CANDIDATE
     origin: DataOrigin = DataOrigin.PIPELINE
 
-    # --- what the source said, and in which language it was said ---
     language: LanguageInfo = Field(default_factory=LanguageInfo)
     title: TitleInfo = Field(default_factory=TitleInfo)
     summary: SummaryInfo = Field(default_factory=SummaryInfo)
 
-    # --- what happened (language-independent, inferred) ---
     relevance: RelevanceInfo = Field(default_factory=RelevanceInfo)
     classification: ClassificationInfo = Field(default_factory=ClassificationInfo)
     actors: list[Actor] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
 
-    # --- when ---
     event_time: TimeValue = Field(default_factory=TimeValue)
-    #: Copied from CommonRecord.retrieved_at: when the platform obtained the
-    #: record. Distinct from both event time and publication time.
     reported_at: Optional[datetime] = None
 
-    # --- where (mentions only; canonical geography belongs to GIS) ---
     spatial: SpatialHint = Field(default_factory=SpatialHint)
 
-    # --- how serious ---
     severity: Severity = Field(default_factory=Severity)
 
-    # --- provenance ---
     evidence: list[Evidence] = Field(default_factory=list)
     supporting_record_ids: list[str] = Field(default_factory=list)
     contradicts_record_ids: list[str] = Field(default_factory=list)
 
-    # --- downstream bookkeeping ---
     dedup: DedupMetadata = Field(default_factory=DedupMetadata)
     confidence: ConfidenceSummary = Field(default_factory=ConfidenceSummary)
     review: ReviewInfo = Field(default_factory=ReviewInfo)
@@ -91,10 +63,6 @@ class Incident(StrictModel):
 
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-
-    # ------------------------------------------------------------------ #
-    # hard invariants
-    # ------------------------------------------------------------------ #
 
     @model_validator(mode="after")
     def _check_identity_and_references(self) -> "Incident":
@@ -179,10 +147,6 @@ class Incident(StrictModel):
                 )
         return self
 
-    # ------------------------------------------------------------------ #
-    # accessors
-    # ------------------------------------------------------------------ #
-
     def evidence_by_id(self) -> dict[str, Evidence]:
         return {e.evidence_id: e for e in self.evidence}
 
@@ -208,10 +172,6 @@ class Incident(StrictModel):
     @property
     def primary_language(self) -> str:
         return self.language.primary_language
-
-    # ------------------------------------------------------------------ #
-    # soft quality checks: legal states that a reviewer should see
-    # ------------------------------------------------------------------ #
 
     def derive_review_reasons(self, low_confidence_threshold: float = 0.6) -> list[ReviewReason]:
         reasons: list[ReviewReason] = []

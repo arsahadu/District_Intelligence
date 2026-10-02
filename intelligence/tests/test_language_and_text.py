@@ -45,7 +45,6 @@ def source_rep(text: str = CONTENT_TA, **overrides) -> TextRepresentation:
 def translation_rep(**overrides) -> TextRepresentation:
     payload = {
         "representation_id": "rep-en",
-        # A translation carries the English rendering for display only.
         "text": "Sanitation workers staged a protest at the corporation office.",
         "role": TextRole.TRANSLATION,
         "language": "en",

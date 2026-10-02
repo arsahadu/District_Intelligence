@@ -1,11 +1,4 @@
-"""Controlled vocabulary data for Intelligence.
-
-``intelligence.models`` defines *structure*; this package defines *knowledge
-data* - which event types exist as a taxonomy, which families they belong to,
-and which departments usually own them. Later stages read these mappings
-instead of hard-coding them inside extractors and classifiers, so a taxonomy
-revision stays a config change rather than a code rewrite.
-"""
+"""Controlled vocabulary data for Intelligence."""
 
 from intelligence.config.vocabularies import (
     DEPARTMENT_LABELS,

@@ -1,9 +1,4 @@
-"""Reusable contract builders for Intelligence tests.
-
-Text is Tamil and realistic in shape (including the ``ADDED :`` boilerplate and
-an out-of-district mention), because Stage 1 contracts must survive the same
-strings the later extraction stages will actually receive.
-"""
+"""Reusable contract builders for Intelligence tests."""
 
 from __future__ import annotations
 
@@ -49,7 +44,6 @@ CONTENT_TA = (
 )
 
 #: A Kumbakonam incident reported through the Madurai bench of the High Court.
-#: The only mention of Madurai names the bench, not the incident location.
 BENCH_CONTENT_TA = (
     "கும்பகோணத்தில் அரசின் மதுபான விடுதியை காலி செய்ய மறுத்ததால் விடுதி "
     "உரிமையாளர் மீது வழக்கு தொடரப்பட்டது; உயர்நீதிமன்ற மதுரைக் கிளை "
@@ -72,11 +66,7 @@ def span_evidence(
     record_id: str = RECORD_ID,
     **overrides,
 ) -> Evidence:
-    """Build evidence with offsets computed from the real text.
-
-    Offsets are always derived, never typed by hand - the same discipline
-    Stage 2 will enforce through ``extraction/spans.py``.
-    """
+    """Build evidence with offsets computed from the real text."""
     start = source_text.index(quote)
     payload = {
         "evidence_id": evidence_id,
@@ -339,11 +329,7 @@ def unresolved_incident() -> Incident:
 
 
 def bench_incident() -> Incident:
-    """Kumbakonam incident reported via the Madurai bench.
-
-    Location is genuinely ambiguous here and the contract has to express that
-    without promoting the word "Madurai" to the incident district.
-    """
+    """Kumbakonam incident reported via the Madurai bench."""
     evidence = [
         span_evidence("ev-bench-case", quote="வழக்கு தொடரப்பட்டது", source_text=BENCH_CONTENT_TA),
         span_evidence(

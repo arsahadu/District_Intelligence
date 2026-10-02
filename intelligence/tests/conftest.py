@@ -1,9 +1,4 @@
-"""Pytest setup for the Intelligence contract tests.
-
-Adds the repository root to ``sys.path`` so ``import intelligence`` resolves
-when the suite is run as ``pytest intelligence/tests`` from the repository
-root, matching how ``ingestion`` is imported today.
-"""
+"""Pytest setup for the Intelligence contract tests."""
 
 from __future__ import annotations
 

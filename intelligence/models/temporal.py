@@ -1,10 +1,4 @@
-"""Time contracts.
-
-Real Dinamalar records expose only an ``ADDED : <Tamil month> DD, YYYY HH:MM AM/PM``
-stamp inside ``data.content``; ``CommonRecord.event_time`` is unusable in
-practice. The contract therefore has to say *which* moment a timestamp denotes
-and how precise it is, instead of presenting every datetime as an event time.
-"""
+"""Time contracts."""
 
 from __future__ import annotations
 
@@ -19,22 +13,15 @@ from intelligence.models.enums import TimeSemantics
 
 
 class TimeValue(StrictModel):
-    """A partially-known point in time.
-
-    ``value=None`` is a valid, complete answer: it means no time could be
-    established. A value is never allowed without declaring where it came from.
-    """
+    """A partially-known point in time."""
 
     value: Optional[datetime] = None
     precision: TimePrecision = TimePrecision.UNKNOWN
     qualifier: TimeQualifier = TimeQualifier.UNKNOWN
     semantics: TimeSemantics = TimeSemantics.UNKNOWN
 
-    #: Verbatim time expression as it appeared, Tamil month names included.
     raw_text: Optional[str] = None
 
-    #: IANA zone name. Left None rather than defaulting to UTC or IST: an
-    #: unaware timestamp from a local-language source is not a UTC timestamp.
     timezone: Optional[str] = None
 
     method: ExtractionMethod = ExtractionMethod.UNRESOLVED
@@ -70,11 +57,7 @@ class TimeValue(StrictModel):
 
     @property
     def is_publication_time_only(self) -> bool:
-        """True when the best available time is when the item was published.
-
-        This is the common case for the current news corpus and must not be
-        presented to the Collector as when the incident happened.
-        """
+        """True when the best available time is when the item was published."""
         return self.value is not None and self.semantics is TimeSemantics.PUBLICATION_TIME
 
     def as_display_string(self) -> str:

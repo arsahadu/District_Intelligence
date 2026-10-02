@@ -11,20 +11,12 @@ from intelligence.models.enums import ActorRole, ActorType, ExtractionMethod, Sc
 
 
 class Actor(StrictModel):
-    """A named participant, with the role the text gave it.
-
-    Roles describe what the source said, never what was found to be true: a
-    person named in a complaint is ``ACTION_SUBJECT``, not an offender.
-    """
+    """A named participant, with the role the text gave it."""
 
     actor_id: str
-    #: Name exactly as printed.
     name_text: str
-    #: NFC / honorific-stripped dictionary form.
     name_normalized: Optional[str] = None
     transliterated_latin: Optional[str] = None
-    #: Official position as stated, e.g. ``கலெக்டர்`` (Collector). Kept separate
-    #: from the name because Tamil reporting often uses title in place of name.
     official_title: Optional[str] = None
     official_title_transliterated: Optional[str] = None
 
@@ -33,12 +25,9 @@ class Actor(StrictModel):
     script: ScriptType = ScriptType.UNKNOWN
     language: str = Field(default="ta", min_length=2, max_length=3)
 
-    #: Affiliation as text, e.g. "Kumbakonam resident"; the place itself is a
-    #: LocationMention with role ACTOR_AFFILIATION, and this points at it.
     affiliation_mention_id: Optional[str] = None
     organization_mention_id: Optional[str] = None
 
-    #: False for "மாவட்ட நிர்வாகம்" (district administration) style references.
     is_named: bool = True
 
     method: ExtractionMethod = ExtractionMethod.UNRESOLVED

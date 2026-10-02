@@ -60,11 +60,6 @@ def field(text: str = CONTENT_TA, **overrides) -> SourceField:
     return SourceField(**payload)
 
 
-# --------------------------------------------------------------------------- #
-# exact matching, per script
-# --------------------------------------------------------------------------- #
-
-
 def test_english_exact_span_has_exact_offsets():
     text = "Madurai district collector office received the complaint"
     evidence = build_evidence(field(text), "district", method=RULE)
@@ -152,11 +147,6 @@ def test_source_text_is_never_altered_by_the_builder():
     assert CONTENT_TA == before
 
 
-# --------------------------------------------------------------------------- #
-# ambiguity and occurrence selection
-# --------------------------------------------------------------------------- #
-
-
 def test_repeated_quote_raises_instead_of_choosing_silently():
     text = "மதுரை ... மதுரை ..."
     with pytest.raises(AmbiguousQuoteError) as excinfo:
@@ -198,11 +188,6 @@ def test_overlapping_occurrences_are_both_reported():
     spans = find_spans("aaa", "aa")
 
     assert [(s.char_start, s.char_end) for s in spans] == [(0, 2), (1, 3)]
-
-
-# --------------------------------------------------------------------------- #
-# rejection
-# --------------------------------------------------------------------------- #
 
 
 def test_missing_quote_is_rejected():
@@ -251,11 +236,6 @@ def test_exact_match_methods_may_omit_confidence():
     evidence = build_evidence(field(), "மதுரையில", method=ExtractionMethod.REGEX)
 
     assert evidence.confidence is None
-
-
-# --------------------------------------------------------------------------- #
-# hash, offsets and producer discipline
-# --------------------------------------------------------------------------- #
 
 
 def test_field_hash_is_sha256_of_the_whole_original_field():
@@ -402,11 +382,6 @@ def test_modality_defaults_to_text_and_can_be_declared():
     assert transcript.modality is Modality.AUDIO_TRANSCRIPT
 
 
-# --------------------------------------------------------------------------- #
-# verification
-# --------------------------------------------------------------------------- #
-
-
 def test_verification_passes_against_the_unchanged_field():
     evidence = build_evidence(field(), "மதுரையில்", method=RULE)
     check = verify_evidence(evidence, CONTENT_TA)
@@ -501,11 +476,6 @@ def test_verification_works_through_serialisation():
 
     assert check.validation is SpanValidation.VALIDATED
     assert restored.field_text_hash == evidence.field_text_hash
-
-
-# --------------------------------------------------------------------------- #
-# Tamil survives the round trip, and the Incident accepts the output
-# --------------------------------------------------------------------------- #
 
 
 def test_tamil_evidence_serialises_without_escaping():

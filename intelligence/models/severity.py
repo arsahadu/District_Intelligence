@@ -1,9 +1,4 @@
-"""Severity contracts.
-
-Severity is advisory, evidence-based and allowed to be empty. A level may not
-exist without at least one cited cue, which is the structural form of "do not
-assign severity because a model thinks something looks severe".
-"""
+"""Severity contracts."""
 
 from __future__ import annotations
 
@@ -20,7 +15,6 @@ class SeveritySignal(StrictModel):
 
     signal_id: str
     category: SeverityCueCategory
-    #: Verbatim cue text, e.g. ``12 பேர் பாதிக்கப்பட்டனர்``.
     cue_text: str
     weight: Confidence = 1.0
     direction: str = Field(default="escalating", pattern="^(escalating|mitigating|neutral)$")
@@ -48,11 +42,8 @@ class Severity(StrictModel):
     score: Optional[Confidence] = None
     signals: list[SeveritySignal] = Field(default_factory=list)
 
-    #: Why these signals produce this level, for a reviewer or RTI-style query.
     rationale: Optional[str] = None
 
-    #: Intelligence output is never authoritative: the Collector and the
-    #: concerned department confirm severity.
     is_authoritative: bool = False
     confirmed_by: Optional[str] = None
 

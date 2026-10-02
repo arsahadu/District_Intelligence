@@ -1,8 +1,4 @@
-"""Public contract surface for the Intelligence module.
-
-Stage 1 deliberately contains structure and validation only. No extraction,
-storage, network or model-calling code belongs in this package.
-"""
+"""Public contract surface for the Intelligence module."""
 
 from intelligence.models.actors import Actor
 from intelligence.models.base import Confidence, OptionalConfidence, Ratio, StrictModel

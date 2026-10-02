@@ -32,11 +32,6 @@ from intelligence.models.metadata import (
 from intelligence.tests.builders import RECORD_ID, protest_evidence, protest_incident
 
 
-# --------------------------------------------------------------------------- #
-# relevance
-# --------------------------------------------------------------------------- #
-
-
 def test_unresolved_relevance_does_not_assert_a_verdict():
     relevance = RelevanceInfo()
 
@@ -85,11 +80,6 @@ def test_resolved_relevance_must_cite_evidence():
             method=ExtractionMethod.RULE,
             confidence=0.9,
         )
-
-
-# --------------------------------------------------------------------------- #
-# classification
-# --------------------------------------------------------------------------- #
 
 
 def test_unresolved_event_type_is_a_valid_classification():
@@ -194,11 +184,6 @@ def test_department_hint_carries_its_basis_and_strength():
         )
 
 
-# --------------------------------------------------------------------------- #
-# dedup
-# --------------------------------------------------------------------------- #
-
-
 def test_fingerprint_is_absent_until_computed_never_placeholdered():
     incident = Incident(incident_id="INC-1")
 
@@ -241,11 +226,6 @@ def test_similarity_features_are_bounded():
             similarity_features={"title_jaccard": 12.5},
             confidence=0.5,
         )
-
-
-# --------------------------------------------------------------------------- #
-# processing / LLM disclosure
-# --------------------------------------------------------------------------- #
 
 
 def test_processing_metadata_records_that_no_llm_was_used():
@@ -297,11 +277,6 @@ def test_input_record_hash_makes_a_run_reproducible():
     )
 
     assert protest.processing.input_record_hash == "a" * 64
-
-
-# --------------------------------------------------------------------------- #
-# review and confidence aggregation
-# --------------------------------------------------------------------------- #
 
 
 def test_review_reasons_require_the_flag_and_cannot_be_duplicated():

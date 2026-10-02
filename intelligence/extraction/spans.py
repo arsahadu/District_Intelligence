@@ -1,17 +1,4 @@
-"""Evidence span arithmetic - the only sanctioned producer of Stage 1 Evidence.
-
-An extractor states *what the source says*; this module decides *where it says
-it*. Callers never type ``char_start``, ``char_end`` or ``field_text_hash``: the
-offsets are derived from the original field text, so a span cannot drift from
-the quote it claims, and a later replay can prove the field still reads the way
-the Evidence recorded it.
-
-Offsets are Python character indices into the text exactly as the record stored
-it - not byte offsets, and not indices into a normalised copy. A Tamil grapheme
-can be several code points (``நீ`` is ``ந`` + U+0BC0), so byte arithmetic would
-land the end offset inside the wrong syllable, and normalising before spanning
-would break the Stage 1 invariant ``len(quote) == char_end - char_start``.
-"""
+"""Evidence span arithmetic - the only sanctioned producer of Stage 1 Evidence."""
 
 from __future__ import annotations
 
@@ -27,9 +14,6 @@ from intelligence.models.base import OptionalConfidence, StrictModel
 from intelligence.models.enums import ExtractionMethod, Modality, SpanValidation
 from intelligence.models.evidence import Evidence
 
-#: Methods whose output is a probability, so produced Evidence must carry a score.
-#: Exact-match methods (regex, rule, dictionary, verbatim copy, human) may leave
-#: confidence unset rather than imply a fake precision of 1.0.
 PROBABILISTIC_METHODS = frozenset({ExtractionMethod.LLM, ExtractionMethod.STATISTICAL})
 
 
@@ -88,11 +72,7 @@ class Span:
 
 
 def compute_field_hash(text: str) -> str:
-    """sha256 hex of the UTF-8 encoding of the *whole* original field text.
-
-    Field identity, not quote identity: two quotes from one article share this
-    hash, so one recomputation verifies all of them.
-    """
+    """sha256 hex of the UTF-8 encoding of the *whole* original field text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -109,11 +89,7 @@ def _normalisation_hint(text: str, quote: str) -> str:
 
 
 def find_spans(text: str, quote: str) -> list[Span]:
-    """Every occurrence of ``quote`` in ``text``, overlapping ones included.
-
-    Overlap matters: ``"aa"`` in ``"aaa"`` occurs twice, and reporting one match
-    would hide the ambiguity the caller needs to resolve.
-    """
+    """Every occurrence of ``quote`` in ``text``, overlapping ones included."""
     if not quote:
         raise EmptyQuoteError("an empty quote identifies nothing in the source")
     if not quote.strip():
@@ -130,12 +106,7 @@ def find_spans(text: str, quote: str) -> list[Span]:
 
 
 def locate(text: str, quote: str, *, occurrence: Optional[int] = None) -> Span:
-    """Cut one span out of ``text``, refusing to guess which occurrence is meant.
-
-    ``occurrence`` is an index into :func:`find_spans` results and may be
-    negative. With more than one match and no index, this raises - a silently
-    chosen first occurrence is how an extractor ends up citing the wrong place.
-    """
+    """Cut one span out of ``text``, refusing to guess which occurrence is meant."""
     spans = find_spans(text, quote)
     if not spans:
         raise QuoteNotFoundError(
@@ -156,12 +127,7 @@ def locate(text: str, quote: str, *, occurrence: Optional[int] = None) -> Span:
 
 
 class SourceField(StrictModel):
-    """One field of one record, exactly as stored - the only text a span may be cut from.
-
-    Frozen because a span is only meaningful against the text it was taken from:
-    mutating ``text`` after building Evidence would silently invalidate offsets
-    while the Evidence still claimed ``validated``.
-    """
+    """One field of one record, exactly as stored - the only text a span may be cut from."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -169,8 +135,6 @@ class SourceField(StrictModel):
     source_id: str
     source_type: str
 
-    #: Dotted path, matching ``Evidence.field``: ``title``, ``data.content``,
-    #: ``location.raw_text``.
     field: str
 
     #: The untouched original. Never stripped, never normalised.
@@ -240,12 +204,7 @@ class SourceField(StrictModel):
 
 
 def derive_evidence_id(source: SourceField, span: Span, method: ExtractionMethod) -> str:
-    """Deterministic id so the same fact from the same field always reuses it.
-
-    Re-running a stage over unchanged text therefore does not mint a second
-    identity for one quote, which is what lets Stage 8 merge incidents without
-    inventing another reconciliation step.
-    """
+    """Deterministic id so the same fact from the same field always reuses it."""
     digest = hashlib.sha256(
         "\x1f".join(
             (
@@ -283,12 +242,7 @@ def build_evidence_at(
     modality: Modality = Modality.TEXT,
     notes: Optional[str] = None,
 ) -> Evidence:
-    """Produce Evidence for a span the caller already located (regex, OCR, LLM offsets).
-
-    The span is still verified against the source text here. A caller-supplied
-    range is trusted for *where*, never for *whether*: if the range does not
-    reproduce ``span.quote``, this raises instead of emitting a plausible lie.
-    """
+    """Produce Evidence for a span the caller already located (regex, OCR, LLM offsets)."""
     _check_method(method, confidence)
 
     if span.char_start < 0 or span.char_end < span.char_start:
@@ -370,12 +324,7 @@ class SpanCheck:
 
 
 def verify_evidence(evidence: Evidence, source_text: str) -> SpanCheck:
-    """Check an Evidence against the text the field holds *now*.
-
-    A mismatch is reported, never repaired. Re-finding the quote elsewhere would
-    let an edited source pretend it always said what we recorded, which is the
-    failure mode an evidence layer exists to catch.
-    """
+    """Check an Evidence against the text the field holds *now*."""
     actual_hash = compute_field_hash(source_text)
 
     if not evidence.has_span:
@@ -391,8 +340,6 @@ def verify_evidence(evidence: Evidence, source_text: str) -> SpanCheck:
     observed = source_text[start:end]
 
     if evidence.field_text_hash is None:
-        # The offsets may still be right, but without a hash the field's identity
-        # is unproven, and Stage 1 reserves `validated` for hash-backed spans.
         detail = (
             "the span reproduces the quote"
             if observed == evidence.quote
@@ -433,13 +380,7 @@ def verify_evidence(evidence: Evidence, source_text: str) -> SpanCheck:
 
 
 def revalidate(evidence: Evidence, source_text: str) -> tuple[Evidence, SpanCheck]:
-    """Return the evidence in its honest validation state, plus the check.
-
-    Rebuilt through the model rather than by assignment so an impossible
-    downgrade still fails loudly instead of reaching storage. An unchanged
-    verdict returns the same object: replaying verification must not append the
-    same note to a record on every run.
-    """
+    """Return the evidence in its honest validation state, plus the check."""
     check = verify_evidence(evidence, source_text)
     if check.validation is evidence.span_validation:
         return evidence, check

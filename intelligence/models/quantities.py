@@ -12,12 +12,7 @@ from intelligence.models.enums import ObservationQualifier
 
 
 class Observation(StrictModel):
-    """A count, amount, area or measurement the source actually stated.
-
-    ``raw_text`` is always kept: a number without the phrase it came from is
-    not auditable, and Tamil quantifiers frequently carry the unit
-    (``4800 மனுக்கள்`` = 4,800 petitions).
-    """
+    """A count, amount, area or measurement the source actually stated."""
 
     observation_id: str
     kind: ObservationKind = ObservationKind.UNRESOLVED
@@ -26,11 +21,9 @@ class Observation(StrictModel):
     value_text: Optional[str] = None
     unit: Optional[str] = None
 
-    #: Verbatim phrase containing the quantity.
     raw_text: Optional[str] = None
     qualifier: ObservationQualifier = ObservationQualifier.UNKNOWN
 
-    #: True when the figure was attributed to someone else ("reportedly").
     attributed_instead_of_observed: bool = False
 
     method: ExtractionMethod = ExtractionMethod.UNRESOLVED

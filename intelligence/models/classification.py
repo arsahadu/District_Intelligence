@@ -12,11 +12,7 @@ from intelligence.models.enums import ExtractionMethod, RelevanceState
 
 
 class DepartmentHint(StrictModel):
-    """A suggested owning department. A hint, never an assignment.
-
-    ``TAXONOMY`` basis means "this event type usually belongs to X", which is
-    weaker than the source naming the department itself.
-    """
+    """A suggested owning department. A hint, never an assignment."""
 
     department: Department
     basis: DepartmentHintBasis = DepartmentHintBasis.UNRESOLVED
@@ -42,12 +38,7 @@ class DepartmentHint(StrictModel):
 
 
 class RelevanceInfo(StrictModel):
-    """Is this record an incident at all?
-
-    ``is_incident`` stays None while unresolved, so "we decided it is not an
-    incident" is never confused with "we have not looked". Ceremonial coverage
-    and award announcements are expected to resolve to False.
-    """
+    """Is this record an incident at all?"""
 
     state: RelevanceState = RelevanceState.UNRESOLVED
     is_incident: Optional[bool] = None
@@ -90,8 +81,6 @@ class ClassificationInfo(StrictModel):
     event_type: EventType = EventType.UNRESOLVED
     secondary_event_types: list[EventType] = Field(default_factory=list)
 
-    #: Full distribution over candidate event types, retained rather than
-    #: discarded after argmax: a reviewer needs to see the runner-up.
     category_scores: dict[str, Confidence] = Field(default_factory=dict)
     taxonomy_version: Optional[str] = None
     family: Optional[str] = None

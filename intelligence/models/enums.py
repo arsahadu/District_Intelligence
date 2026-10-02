@@ -1,13 +1,4 @@
-"""Controlled vocabularies for Intelligence contracts.
-
-Every enum carries an explicit unresolved/unknown member. "We could not tell"
-is a first-class result and must be representable without guessing and without
-using ``None`` where ``False``/``True`` would also be legal.
-
-Members are language-independent codes: Tamil and English text about the same
-event must land on the same member, so no vocabulary entry is keyed on the
-surface language of the source.
-"""
+"""Controlled vocabularies for Intelligence contracts."""
 
 from __future__ import annotations
 
@@ -17,7 +8,7 @@ from enum import Enum
 class ExtractionMethod(str, Enum):
     """How a value came to exist. Separates source facts from inferences."""
 
-    SOURCE_METADATA = "source_metadata"  # copied verbatim from CommonRecord
+    SOURCE_METADATA = "source_metadata"
     REGEX = "regex"
     RULE = "rule"
     DICTIONARY = "dictionary"
@@ -31,9 +22,9 @@ class SpanValidation(str, Enum):
     """Whether an evidence span has been re-checked against the source text."""
 
     UNVALIDATED = "unvalidated"
-    VALIDATED = "validated"  # offsets re-sliced and equal to the quote
-    MISMATCH = "mismatch"  # source text changed since extraction
-    NOT_APPLICABLE = "not_applicable"  # metadata evidence has no span
+    VALIDATED = "validated"
+    MISMATCH = "mismatch"
+    NOT_APPLICABLE = "not_applicable"
 
 
 class Modality(str, Enum):
@@ -49,17 +40,13 @@ class Modality(str, Enum):
 
 
 class TextRole(str, Enum):
-    """Why a representation of the text exists.
-
-    ``SOURCE`` is canonical and is never replaced; every other role is derived
-    and must record which role it derived from.
-    """
+    """Why a representation of the text exists."""
 
     SOURCE = "source"
-    NORMALIZED = "normalized"  # NFC, suffix-folded, boilerplate-stripped
-    TRANSLITERATED = "transliterated"  # same language, different script
-    TRANSLATION = "translation"  # different language, display/search only
-    OCR_OUTPUT = "ocr_output"  # machine read-back, not author-written text
+    NORMALIZED = "normalized"
+    TRANSLITERATED = "transliterated"
+    TRANSLATION = "translation"
+    OCR_OUTPUT = "ocr_output"
     UNRESOLVED = "unresolved"
 
 
@@ -74,9 +61,9 @@ class ScriptType(str, Enum):
 class SummaryKind(str, Enum):
     """A summary is inferred text, so its construction method is declared."""
 
-    EXTRACTIVE = "extractive"  # spans copied from source; near-authoritative
-    ABSTRACTIVE = "abstractive"  # rewritten; must be treated as inference
-    STRUCTURED = "structured"  # generated from resolved fields
+    EXTRACTIVE = "extractive"
+    ABSTRACTIVE = "abstractive"
+    STRUCTURED = "structured"
     UNRESOLVED = "unresolved"
 
 
@@ -104,12 +91,7 @@ class TimeQualifier(str, Enum):
 
 
 class TimeSemantics(str, Enum):
-    """Which moment a timestamp actually denotes.
-
-    Real Madurai news only exposes an ``ADDED :`` publication stamp, so
-    ``PUBLICATION_TIME`` must be distinguishable from a genuine event time
-    rather than silently promoted to one.
-    """
+    """Which moment a timestamp actually denotes."""
 
     EVENT_TIME = "event_time"
     PUBLICATION_TIME = "publication_time"
@@ -157,19 +139,13 @@ class MentionType(str, Enum):
 
 
 class MentionRole(str, Enum):
-    """What a place name is doing in the sentence.
-
-    A district appearing in an article is frequently not where the incident
-    happened: in the live corpus ``மதுரை`` in ``உயர்நீதிமன்ற மதுரைக் கிளை``
-    ("Madurai bench") sat in an article about an incident in Kumbakonam, a
-    different district. Role is therefore part of the contract, not a hint.
-    """
+    """What a place name is doing in the sentence."""
 
     EVENT_LOCATION = "event_location"
-    EVENT_CONTAINER = "event_container"  # larger area that contains the site
-    INSTITUTION_NAME = "institution_name"  # bench / office / head office
-    ACTOR_AFFILIATION = "actor_affiliation"  # "a Kumbakonam resident filed..."
-    REPORTING_ORIGIN = "reporting_origin"  # dateline, e.g. "மதுரையில் இருந்து"
+    EVENT_CONTAINER = "event_container"
+    INSTITUTION_NAME = "institution_name"
+    ACTOR_AFFILIATION = "actor_affiliation"
+    REPORTING_ORIGIN = "reporting_origin"
     MENTIONED_ONLY = "mentioned_only"
     UNRESOLVED = "unresolved"
 
@@ -188,17 +164,17 @@ class DistrictHintAuthority(str, Enum):
     """Where a district guess came from, so its trust level is explicit."""
 
     TEXT_EVIDENCE = "text_evidence"
-    SOURCE_CONFIGURATION = "source_configuration"  # e.g. CommonRecord.location
+    SOURCE_CONFIGURATION = "source_configuration"
     FEED_URL = "feed_url"
     MANUAL = "manual"
     NONE = "none"
 
 
 class IncidentStatus(str, Enum):
-    CANDIDATE = "candidate"  # assembled, not yet reviewed or deduplicated
+    CANDIDATE = "candidate"
     OPEN = "open"
     NEEDS_REVIEW = "needs_review"
-    DISMISSED = "dismissed"  # e.g. relevance gate said not an incident
+    DISMISSED = "dismissed"
     MERGED = "merged"
     ARCHIVED = "archived"
 
@@ -213,13 +189,11 @@ class RelevanceState(str, Enum):
 class EventType(str, Enum):
     """Language-independent incident taxonomy. Extend via code review only."""
 
-    # --- not incidents (informational news that must not be dropped silently) --
     CEREMONIAL_OR_AWARD_EVENT = "ceremonial_or_award_event"
     ANNOUNCEMENT_ONLY = "announcement_only"
     PERSONNEL_TRANSFER = "personnel_transfer"
     CULTURAL_OR_SPORTS_EVENT = "cultural_or_sports_event"
 
-    # --- disaster and environment ---
     FLOOD = "flood"
     URBAN_WATERLOGGING = "urban_waterlogging"
     CYCLONE_STORM_DAMAGE = "cyclone_storm_damage"
@@ -233,13 +207,11 @@ class EventType(str, Enum):
     WASTE_MANAGEMENT = "waste_management"
     DISASTER_RELIEF_OPERATION = "disaster_relief_operation"
 
-    # --- water ---
     DRINKING_WATER_SHORTAGE = "drinking_water_shortage"
     IRRIGATION_WATER_ISSUE = "irrigation_water_issue"
     CANAL_OR_WATER_BODY_ISSUE = "canal_or_water_body_issue"
     BOREWELL_OR_WELL_ISSUE = "borewell_or_well_issue"
 
-    # --- public health ---
     DISEASE_OUTBREAK = "disease_outbreak"
     HOSPITAL_SERVICE_GAP = "hospital_service_gap"
     MEDICINE_SHORTAGE = "medicine_shortage"
@@ -248,13 +220,11 @@ class EventType(str, Enum):
     MALNUTRITION = "malnutrition"
     SANITATION_HYGIENE = "sanitation_hygiene"
 
-    # --- education ---
     SCHOOL_INFRASTRUCTURE = "school_infrastructure"
     TEACHER_OR_STAFF_SHORTAGE = "teacher_or_staff_shortage"
     EXAM_OR_ADMISSION_DISRUPTION = "exam_or_admission_disruption"
     STUDENT_WELFARE_ISSUE = "student_welfare_issue"
 
-    # --- infrastructure and utilities ---
     ROAD_DAMAGE = "road_damage"
     BRIDGE_OR_CULVERT_SAFETY = "bridge_or_culvert_safety"
     PUBLIC_BUILDING_DAMAGE = "public_building_damage"
@@ -266,14 +236,12 @@ class EventType(str, Enum):
     TRANSPORT_SERVICE_ISSUE = "transport_service_issue"
     VEHICLE_ACCIDENT = "vehicle_accident"
 
-    # --- agriculture ---
     CROP_DAMAGE = "crop_damage"
     PEST_OR_DISEASE_OUTBREAK = "pest_or_disease_outbreak"
     AGRICULTURAL_COMPENSATION_ISSUE = "agricultural_compensation_issue"
     MARKET_PRICE_DISTRESS = "market_price_distress"
     FARM_LABOUR_DISPUTE = "farm_labour_dispute"
 
-    # --- law and order ---
     VIOLENT_CRIME = "violent_crime"
     PROPERTY_CRIME = "property_crime"
     SUBSTANCE_ABUSE_CASE = "substance_abuse_case"
@@ -284,7 +252,6 @@ class EventType(str, Enum):
     PROTEST_OR_STRIKE = "protest_or_strike"
     LEGAL_PROCEEDING_OR_ORDER = "legal_proceeding_or_order"
 
-    # --- revenue and land ---
     LAND_DISPUTE = "land_dispute"
     ILLEGAL_ENCROACHMENT = "illegal_encroachment"
     UNAUTHORISED_CONSTRUCTION = "unauthorised_construction"
@@ -292,7 +259,6 @@ class EventType(str, Enum):
     PAYOUT_OR_RECORDS_ISSUE = "payout_or_records_issue"
     FOREST_LAND_ISSUE = "forest_land_issue"
 
-    # --- governance and service delivery ---
     SERVICE_DELIVERY_DELAY = "service_delivery_delay"
     PUBLIC_SCHEME_GRIEVANCE = "public_scheme_grievance"
     PENSION_OR_WAGE_DISPUTE = "pension_or_wage_dispute"
@@ -301,16 +267,12 @@ class EventType(str, Enum):
     TRANSPARENCY_OR_ACCOUNTABILITY = "transparency_or_accountability"
     RELIEF_FUND_MISUSE = "relief_fund_misuse"
 
-    # --- fallback ---
     OTHER = "other"
     UNRESOLVED = "unresolved"
 
 
 class Department(str, Enum):
-    """Tamil Nadu district administration departments, as hint targets.
-
-    Hints never assign ownership; the Collector decides.
-    """
+    """Tamil Nadu district administration departments, as hint targets."""
 
     COLLECTORATE = "collectorate"
     REVENUE = "revenue"
@@ -348,8 +310,8 @@ class Department(str, Enum):
 
 
 class DepartmentHintBasis(str, Enum):
-    TAXONOMY = "taxonomy"  # derived from event type via config vocabulary
-    TEXT_MENTION = "text_mention"  # department named in the source itself
+    TAXONOMY = "taxonomy"
+    TEXT_MENTION = "text_mention"
     BOTH = "both"
     UNRESOLVED = "unresolved"
 
@@ -373,11 +335,7 @@ class ActorType(str, Enum):
 
 
 class ActorRole(str, Enum):
-    """Semantic role an actor plays. Deliberately free of verdicts.
-
-    ``ACTION_SUBJECT`` replaces what would otherwise be a guilt-asserting
-    label: a report that names someone is not a finding against them.
-    """
+    """Semantic role an actor plays. Deliberately free of verdicts."""
 
     REPORTED_BY = "reported_by"
     RESPONDING_AUTHORITY = "responding_authority"
@@ -492,7 +450,7 @@ class ReviewReason(str, Enum):
 class DataOrigin(str, Enum):
     """How an Incident draft came to exist. Guards against fabricated inputs."""
 
-    PIPELINE = "pipeline"  # produced by an extraction stage
-    MANUAL = "manual"  # entered or corrected by a reviewer
+    PIPELINE = "pipeline"
+    MANUAL = "manual"
     IMPORTED = "imported"
     UNKNOWN = "unknown"

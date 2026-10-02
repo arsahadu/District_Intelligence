@@ -8,17 +8,11 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict
 from pydantic import AfterValidator, BeforeValidator
 
-#: Field name that every evidence-referencing contract must use. Stage 2+ must
-#: not invent alternative names, otherwise reference integrity cannot be checked.
 EVIDENCE_REFERENCE_FIELD = "evidence_ids"
 
 
 def _reject_non_numeric(value: Any) -> Any:
-    """Block coercion before pydantic quietly turns "0.9" into 0.9.
-
-    A string confidence almost always means a model emitted prose ("high") or a
-    number as text, and both deserve to fail loudly at the boundary.
-    """
+    """Block coercion before pydantic quietly turns "0.9" into 0.9."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(
             "must be a real number in [0.0, 1.0], "
@@ -37,30 +31,19 @@ def _validate_unit_interval(value: Any) -> float:
     return number
 
 
-#: A probability-like score on [0, 1]. Used for confidence, weights and scores.
 Ratio = Annotated[
     float,
     BeforeValidator(_reject_non_numeric),
     AfterValidator(_validate_unit_interval),
 ]
 
-#: Semantic alias of `Ratio` for extractor/ classifier confidence.
 Confidence = Ratio
 
-#: Confidence that is legitimately absent (nothing was extracted yet).
 OptionalConfidence = Confidence | None
 
 
 class StrictModel(BaseModel):
-    """Base for every Intelligence contract.
-
-    ``extra="forbid"`` is the structural form of "do not invent facts": a
-    payload carrying an unexpected key is rejected instead of silently dropped.
-
-    ``str_strip_whitespace`` stays off on purpose. Evidence quotes are matched
-    back to character offsets in the source field, and stripping would break
-    ``len(quote) == char_end - char_start`` for edge-whitespace quotes.
-    """
+    """Base for every Intelligence contract."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -71,11 +54,7 @@ class StrictModel(BaseModel):
 
 
 def collect_evidence_references(obj: Any, *, acc: set[str] | None = None) -> set[str]:
-    """Walk nested contracts and return every referenced evidence id.
-
-    Generic on purpose: later stages add new nested models and their
-    ``evidence_ids`` lists are covered without touching this function.
-    """
+    """Walk nested contracts and return every referenced evidence id."""
     if acc is None:
         acc = set()
     if isinstance(obj, dict):

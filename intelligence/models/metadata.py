@@ -24,7 +24,6 @@ class ProcessingMetadata(StrictModel):
     modality: Modality = Modality.TEXT
     source_record_count: int = Field(default=0, ge=0)
 
-    #: Explicit, queryable statement of whether a model was involved at all.
     llm_used: bool = False
     llm_tasks: list[str] = Field(default_factory=list)
     llm_models: list[str] = Field(default_factory=list)
@@ -75,11 +74,7 @@ class ReviewInfo(StrictModel):
 
 
 class DedupMetadata(StrictModel):
-    """Merge and cluster bookkeeping. Populated by Stage 8.
-
-    The fingerprint itself lives on ``Incident.fingerprint``, since it is the
-    indexed identity of the incident rather than an attribute of a decision.
-    """
+    """Merge and cluster bookkeeping. Populated by Stage 8."""
 
     algorithm_version: Optional[str] = None
     decision: DedupDecision = DedupDecision.UNRESOLVED
@@ -89,7 +84,6 @@ class DedupMetadata(StrictModel):
     linked_incident_ids: list[str] = Field(default_factory=list)
     contradicting_incident_ids: list[str] = Field(default_factory=list)
 
-    #: Named similarity components, each normalised to [0, 1].
     similarity_features: dict[str, Confidence] = Field(default_factory=dict)
     max_similarity: Optional[Confidence] = None
 
@@ -119,17 +113,11 @@ class DedupMetadata(StrictModel):
 
 
 class ConfidenceSummary(StrictModel):
-    """Aggregate confidence, with the inputs that produced it.
-
-    ``overall`` may legitimately be None: an incident where nothing resolved
-    has no meaningful aggregate, and 0.0 would falsely imply a computed value.
-    """
+    """Aggregate confidence, with the inputs that produced it."""
 
     overall: OptionalConfidence = None
     components: dict[str, Confidence] = Field(default_factory=dict)
-    #: Human-readable formula, e.g. "min(event_type, spatial, severity)".
     rule: Optional[str] = None
-    #: Count of fields still unresolved - the reviewer-facing weakness signal.
     unresolved_field_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")

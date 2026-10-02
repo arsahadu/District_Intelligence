@@ -1,10 +1,4 @@
-"""Spatial contracts: raw mentions for GIS, plus a slot GIS writes back into.
-
-Intelligence reports place names it found, the role each one plays, and how
-sure it is. It never produces coordinates, canonical place ids or resolved
-names - ``GisResolution`` exists so those land in a labelled, attributable
-object instead of being improvised by an extractor.
-"""
+"""Spatial contracts: raw mentions for GIS, plus a slot GIS writes back into."""
 
 from __future__ import annotations
 
@@ -26,9 +20,7 @@ class LocationMention(StrictModel):
 
     mention_id: str
     text: str
-    #: Suffix-folded dictionary form, e.g. ``மதுரையில்`` -> ``மதுரை``.
     text_normalized: Optional[str] = None
-    #: Latin transliteration, so a Latin-script gazetteer can match it.
     transliterated_latin: Optional[str] = None
 
     script: ScriptType = ScriptType.UNKNOWN
@@ -38,8 +30,6 @@ class LocationMention(StrictModel):
     granularity: GranularityLevel = GranularityLevel.UNKNOWN
     role: MentionRole = MentionRole.UNRESOLVED
 
-    #: Words around the mention (typically +/- 25 chars). Carried because role
-    #: cannot be re-derived later without the original context.
     context_window: Optional[str] = None
 
     is_event_location_candidate: bool = False
@@ -66,12 +56,7 @@ class LocationMention(StrictModel):
 
 
 class GisResolution(StrictModel):
-    """Write-back target for the GIS module. Intelligence leaves this unset.
-
-    ``resolved_by`` is mandatory so a coordinate can always be attributed to
-    the layer that produced it, and a fabricated resolution cannot be passed
-    off as pipeline output.
-    """
+    """Write-back target for the GIS module. Intelligence leaves this unset."""
 
     canonical_place_id: Optional[str] = None
     canonical_name: Optional[str] = None
@@ -82,7 +67,6 @@ class GisResolution(StrictModel):
     geometry_source: Optional[str] = None
     geocoder_version: Optional[str] = None
 
-    #: Which mention this resolution answers.
     mention_id: Optional[str] = None
 
     resolved_by: str
@@ -104,9 +88,6 @@ class SpatialHint(StrictModel):
     mentions: list[LocationMention] = Field(default_factory=list)
     best_event_location_mention_id: Optional[str] = None
 
-    #: District taken from ``CommonRecord.location.district``. In the current
-    #: corpus that value is hardcoded per feed, so its authority is declared
-    #: rather than assumed.
     district_hint: Optional[str] = None
     district_hint_authority: DistrictHintAuthority = DistrictHintAuthority.NONE
     district_hint_confidence: OptionalConfidence = None

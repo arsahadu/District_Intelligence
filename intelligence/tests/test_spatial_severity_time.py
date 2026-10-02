@@ -41,11 +41,6 @@ def mention(**overrides) -> LocationMention:
     return LocationMention(**payload)
 
 
-# --------------------------------------------------------------------------- #
-# location
-# --------------------------------------------------------------------------- #
-
-
 def test_ambiguous_location_is_representable_without_choosing_one(ambiguous_incident):
     spatial = ambiguous_incident.spatial
 
@@ -143,11 +138,6 @@ def test_district_hint_must_declare_its_authority():
         SpatialHint(district_hint_authority=DistrictHintAuthority.TEXT_EVIDENCE)
 
 
-# --------------------------------------------------------------------------- #
-# severity
-# --------------------------------------------------------------------------- #
-
-
 def test_severity_can_stay_explicitly_unresolved():
     severity = Severity.unresolved("no casualty or damage cue in the source")
 
@@ -223,11 +213,6 @@ def test_severity_signal_must_be_grounded():
             confidence=0.7,
             evidence_ids=["ev-1"],
         )
-
-
-# --------------------------------------------------------------------------- #
-# time
-# --------------------------------------------------------------------------- #
 
 
 def test_time_may_be_entirely_unknown():
