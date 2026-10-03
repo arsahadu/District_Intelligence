@@ -1,5 +1,10 @@
 """Controlled vocabulary data for Intelligence."""
 
+from intelligence.config.event_type_cues import (
+    CUE_LEXICON_VERSION,
+    EVENT_TYPE_CUES,
+    cue_lexicon_integrity_errors,
+)
 from intelligence.config.mention_words import (
     LEXICON_VERSION,
     mention_lexicon_integrity_errors,
@@ -24,7 +29,9 @@ from intelligence.config.vocabularies import (
 )
 
 __all__ = [
+    "CUE_LEXICON_VERSION",
     "DEPARTMENT_LABELS",
+    "EVENT_TYPE_CUES",
     "EVENT_TYPE_DEPARTMENTS",
     "EVENT_TYPE_FAMILIES",
     "EVENT_TYPE_FAMILY",
@@ -34,6 +41,7 @@ __all__ = [
     "TAXONOMY_VERSION",
     "UNRESOLVED_EVENT_TYPES",
     "departments_for",
+    "cue_lexicon_integrity_errors",
     "family_of",
     "informational_event_types",
     "is_informational",

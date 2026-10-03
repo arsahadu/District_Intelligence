@@ -20,6 +20,20 @@ from intelligence.mapping.enrichment import (
     find_places,
     read_prose,
 )
+from intelligence.mapping.feed_policies import (
+    AGRICULTURE,
+    DEFAULT,
+    FEED_POLICIES,
+    NEWS,
+    WEATHER,
+    policy_for,
+)
+from intelligence.mapping.classifier import (
+    CLASSIFICATION_SECTION,
+    RELEVANCE_SECTION,
+    classify_incident,
+    read_cues,
+)
 from intelligence.mapping.record_input import (
     CONTENT_PATH,
     DISTRICT_PATH,
@@ -38,8 +52,12 @@ from intelligence.mapping.record_input import (
 )
 
 __all__ = [
+    "AGRICULTURE",
+    "CLASSIFICATION_SECTION",
     "CONTENT_PATH",
     "CommonRecordLike",
+    "DEFAULT",
+    "FEED_POLICIES",
     "DEFAULT_TIMEZONE",
     "DISTRICT_PATH",
     "EVENT_TIME_PATH",
@@ -47,20 +65,26 @@ __all__ = [
     "LANGUAGE_PATH",
     "MappingError",
     "MappingPolicy",
+    "NEWS",
     "PROVIDER",
     "RETRIEVED_AT_PATH",
     "RecordInput",
     "RecordShapeError",
+    "RELEVANCE_SECTION",
     "STAGE_VERSIONS",
     "TITLE_PATH",
+    "WEATHER",
     "IncidentDraft",
     "UnreadableRecord",
     "derive_incident_id",
+    "classify_incident",
     "enrich_incident",
     "find_actors",
     "find_places",
     "input_hash",
     "map_record",
+    "policy_for",
+    "read_cues",
     "read_prose",
     "read_record",
     "time_precision_of",
