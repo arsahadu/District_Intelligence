@@ -1,58 +1,42 @@
 """CommonRecord fixtures shaped like the real October 2026 Madurai capture."""
-
 # Copied field for field from the Dinamalar capture, stamps and commentbox twin included; nothing is read from disk.
-
 from __future__ import annotations
-
 from datetime import datetime
 from typing import Any, Optional
-
 from pydantic import BaseModel
-
 NEWS_SOURCE_ID = "dinamalar"
 NEWS_SOURCE_TYPE = "news"
 DISTRICT = "Madurai"
 STATE = "Tamil Nadu"
 RETRIEVED_AT = "2026-10-03T08:52:26.195856"
 CAPTURE_RETRIEVED_AT = "2026-10-03T08:52:26.196864"
-
 ARTICLE_URL = (
     "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/it-s-a-good-idea-to-run-northern-state-trains-via-madurai/4338218"
 )
-
 TWIN_URL = (
     "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/it-s-a-good-idea-to-run-northern-state-trains-via-madurai/4338218#commentbox"
 )
-
 CLOSURE_URL = (
     "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/pre-locking-at-madurai-meenakshi-temple-protesters-at-south-tower-gate-devotees/4338123"
 )
-
 OUTAGE_URL = (
     "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/power-outage-today-3/4338913"
 )
-
 LISTING_URL = (
     "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/todays-program--june-2nd/4338906"
 )
-
 ARTICLE_TITLE = (
     "இது நல்ல ஐடியா! வடமாநில ரயில்களை மதுரை வழியாக இயக்க"
 )
-
 CLOSURE_TITLE = (
     "மதுரை மீனாட்சி கோயிலில் முன்கூட்டியே கதவு அடைப்பு: தெற்கு கோபுரம் வாசலில் "
     "போராட்டத்தில் ஈடுபட்ட பக்தர்கள்"
 )
-
 OUTAGE_TITLE = "இன்று (அக்.3) மின்தடை"
-
 LISTING_TITLE = "மதுரை மாவட்டம் நிகழ்ச்சி"
-
 ENGLISH_TITLE = (
     "Madurai Corporation to widen East Madurai road after the July flooding"
 )
-
 ARTICLE_CONTENT = (
     "டைம்லைன் தற்போதைய செய்தி டிவி ப்ரீமியம் தமிழகம் இந்தியா உலகம் வர்த்தகம் விளையாட்டு "
     "கல்விமலர் டீ கடை பெஞ்ச் தினம் தினம் ஜோசியம் காலண்டர் ஆன்மிகம் வாராவாரம் இணைப்பு மலர் "
@@ -85,7 +69,6 @@ ARTICLE_CONTENT = (
     "அமையும். புதிதாக இயக்கப்படவுள்ள சென்னை – ராமேஸ்வரம் வந்தே பாரத் ரயிலையும் மதுரை "
     "வழியாக இயக்க வேண்டும்’’ என்றனர்."
 )
-
 CLOSURE_CONTENT = (
     "டைம்லைன் தற்போதைய செய்தி டிவி ப்ரீமியம் தமிழகம் இந்தியா உலகம் வர்த்தகம் விளையாட்டு "
     "கல்விமலர் டீ கடை பெஞ்ச் தினம் தினம் ஜோசியம் காலண்டர் ஆன்மிகம் வாராவாரம் இணைப்பு மலர் "
@@ -113,7 +96,6 @@ CLOSURE_CONTENT = (
     "இப்பிரச்னைக்கு முற்றுப்புள்ளி வைக்க போலீசாரும், கோயில் நிர்வாகமும் நடவடிக்கை எடுக்க "
     "வேண்டும்."
 )
-
 OUTAGE_CONTENT = (
     "டைம்லைன் தற்போதைய செய்தி டிவி ப்ரீமியம் தமிழகம் இந்தியா உலகம் வர்த்தகம் விளையாட்டு "
     "கல்விமலர் டீ கடை பெஞ்ச் தினம் தினம் ஜோசியம் காலண்டர் ஆன்மிகம் வாராவாரம் இணைப்பு மலர் "
@@ -123,7 +105,6 @@ OUTAGE_CONTENT = (
     "15 தெருக்கள் வரை, தேனி மெயின் ரோடு, ஜானகி நகர், புது வாழ்வு நகர், எம்.எம். நகர் "
     "முதல் 4 தெருக்கள், இருளாண்டி தேவர் காலனி, ஜெய் நகர் முதல் மூன்று தெருக்கள்."
 )
-
 LISTING_CONTENT = (
     "டைம்லைன் தற்போதைய செய்தி டிவி ப்ரீமியம் தமிழகம் இந்தியா உலகம் வர்த்தகம் விளையாட்டு "
     "கல்விமலர் டீ கடை பெஞ்ச் தினம் தினம் ஜோசியம் காலண்டர் ஆன்மிகம் வாராவாரம் இணைப்பு மலர் "
@@ -133,7 +114,6 @@ LISTING_CONTENT = (
     "சன்னதி தெரு, மதுரை, மதியம் 12:00 மணி * சிருங்கேரி 35வது பீடாதிபதி அபிநவ "
     "வித்யாகீர்த்த மஹா சுவாமிகள் ஆராதனை:"
 )
-
 ENGLISH_CONTENT = (
     "UPDATED : Oct 03, 2026 07:20 AM ADDED : Oct 02, 2026 06:10 PM Madurai: The Madurai "
     "Corporation has sanctioned widening of the East Madurai main road after the July "
@@ -141,21 +121,15 @@ ENGLISH_CONTENT = (
     "said the work will begin on Friday and the sewer line will be relaid before the "
     "monsoon review."
 )
-
 FORECAST_TEXT = (
     "Multi cloud with thunder lightning and light rain over Madurai district"
 )
-
-
 class Place(BaseModel):
     raw_text: Optional[str] = None
     district: Optional[str] = None
     state: Optional[str] = None
-
-
 class CommonRecordShape(BaseModel):
     """ingestion's CommonRecord field for field, so ingestion is never imported here."""
-
     record_id: str
     source_id: str
     source_type: str
@@ -169,12 +143,8 @@ class CommonRecordShape(BaseModel):
     source_url: Optional[str] = None
     retrieved_at: datetime
     raw_reference: Optional[str] = None
-
-
 def as_record_model(payload: dict[str, Any]) -> CommonRecordShape:
     return CommonRecordShape(**payload)
-
-
 def base_record(**fields: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "record_id": "NEWS-MDU-0001",
@@ -193,12 +163,8 @@ def base_record(**fields: Any) -> dict[str, Any]:
     }
     payload.update(fields)
     return payload
-
-
 def _location_for(district: Optional[str], location: dict[str, Any]) -> dict[str, Any]:
     return {**location, "district": district, "raw_text": location["raw_text"] if district else None}
-
-
 def tamil_article(
     *,
     district: Optional[str] = DISTRICT,
@@ -219,8 +185,6 @@ def tamil_article(
         payload["location"] = _location_for(district, payload["location"])
     payload.update(fields)
     return payload
-
-
 def twin_article(
     *,
     district: Optional[str] = DISTRICT,
@@ -241,8 +205,6 @@ def twin_article(
         payload["location"] = _location_for(district, payload["location"])
     payload.update(fields)
     return payload
-
-
 def temple_closure(
     *,
     district: Optional[str] = DISTRICT,
@@ -263,8 +225,6 @@ def temple_closure(
         payload["location"] = _location_for(district, payload["location"])
     payload.update(fields)
     return payload
-
-
 def power_outage(
     *,
     district: Optional[str] = DISTRICT,
@@ -285,8 +245,6 @@ def power_outage(
         payload["location"] = _location_for(district, payload["location"])
     payload.update(fields)
     return payload
-
-
 def events_listing(
     *,
     district: Optional[str] = DISTRICT,
@@ -307,8 +265,6 @@ def events_listing(
         payload["location"] = _location_for(district, payload["location"])
     payload.update(fields)
     return payload
-
-
 def english_article(**fields: Any) -> dict[str, Any]:
     payload = base_record(
         record_id="NEWS-MDU-EN-0001",
@@ -318,20 +274,14 @@ def english_article(**fields: Any) -> dict[str, Any]:
     )
     payload.update(fields)
     return payload
-
-
 def title_only(**fields: Any) -> dict[str, Any]:
     payload = base_record(data={"content": "", "language": "ta"})
     payload.update(fields)
     return payload
-
-
 def no_text(**fields: Any) -> dict[str, Any]:
     payload = base_record(title="", data={"language": "ta"})
     payload.update(fields)
     return payload
-
-
 def orange_alert(**fields: Any) -> dict[str, Any]:
     payload = base_record(
         record_id="NEWS-MDU-0006",
@@ -346,8 +296,6 @@ def orange_alert(**fields: Any) -> dict[str, Any]:
     )
     payload.update(fields)
     return payload
-
-
 def weather_forecast(*, district: Optional[str] = DISTRICT, **fields: Any) -> dict[str, Any]:
     payload = base_record(
         record_id="WEATHER-MDU-03-Oct",
@@ -373,8 +321,6 @@ def weather_forecast(*, district: Optional[str] = DISTRICT, **fields: Any) -> di
         payload["location"] = _location_for(district, payload["location"])
     payload.update(fields)
     return payload
-
-
 def capture() -> tuple[dict[str, Any], ...]:
     """The seven distinct records, one per incident id."""
     return (
@@ -386,4 +332,3 @@ def capture() -> tuple[dict[str, Any], ...]:
         english_article(),
         weather_forecast(),
     )
-
