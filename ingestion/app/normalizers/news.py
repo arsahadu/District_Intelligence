@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime
 
 from app.models.common_record import CommonRecord, Location
@@ -8,10 +9,11 @@ def article_to_common_record(
     article: SourceArticle,
     index: int
 ) -> CommonRecord:
+    digest = hashlib.sha1(article.url.encode("utf-8")).hexdigest()[:16]
 
     return CommonRecord(
 
-        record_id=f"NEWS-MDU-{index:04d}",
+        record_id=f"NEWS-MDU-{digest}",
 
         source_id="dinamalar",
 
