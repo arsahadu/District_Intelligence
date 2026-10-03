@@ -13,6 +13,8 @@ from intelligence.extraction.spans import (
     compute_field_hash,
     verify_evidence,
 )
+from intelligence.extraction.actors import ActorExtraction
+from intelligence.extraction.places import PlaceExtraction
 from intelligence.extraction.temporal import TemporalExtraction
 from intelligence.mapping.record_input import (
     CONTENT_PATH,
@@ -111,6 +113,8 @@ class IncidentDraft:
     fields: Mapping[str, SourceField]
     split: Optional[boilerplate.BodySplit] = None
     temporal: Optional[TemporalExtraction] = None
+    places: Optional[PlaceExtraction] = None
+    actors: Optional[ActorExtraction] = None
     checks: tuple[SpanCheck, ...] = ()
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -173,6 +177,8 @@ class IncidentDraft:
                 "from_text": incident.spatial.district_hint_from_text,
                 "state": incident.spatial.resolution_state.value,
             },
+            "places": self.places.as_dict() if self.places else None,
+            "actors": self.actors.as_dict() if self.actors else None,
             "stamps": self.split.stamps_as_dicts() if self.split else [],
             "confidence": {
                 "overall": incident.confidence.overall,
@@ -556,7 +562,7 @@ def _preserved(record: RecordInput, ledger: _Ledger, warnings: list[str]) -> Non
 def _confidence(
     info, event_time: TimeValue, severity: Severity, spatial: SpatialHint
 ) -> ConfidenceSummary:
-    count = _unresolved_field_count(severity, spatial)
+    count = unresolved_field_count(severity, spatial)
     components: dict[str, float] = {}
     if info.detection is not None and info.detection.confidence is not None:
         components["language"] = info.detection.confidence
@@ -572,8 +578,10 @@ def _confidence(
     )
 
 
-def _unresolved_field_count(severity: Severity, spatial: SpatialHint) -> int:
-    gaps = list(UNRESOLVED_SECTIONS)
+def unresolved_field_count(
+    severity: Severity, spatial: SpatialHint, *, settled: frozenset[str] = frozenset()
+) -> int:
+    gaps = [gap for gap in UNRESOLVED_SECTIONS if gap not in settled]
     if severity.level is SeverityLevel.UNRESOLVED:
         gaps.append("severity")
     if not spatial.mentions:

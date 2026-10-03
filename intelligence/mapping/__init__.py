@@ -11,7 +11,14 @@ from intelligence.mapping.assembly import (
     derive_incident_id,
     map_record,
     time_precision_of,
+    unresolved_field_count,
     verify_draft,
+)
+from intelligence.mapping.enrichment import (
+    enrich_incident,
+    find_actors,
+    find_places,
+    read_prose,
 )
 from intelligence.mapping.record_input import (
     CONTENT_PATH,
@@ -49,9 +56,14 @@ __all__ = [
     "IncidentDraft",
     "UnreadableRecord",
     "derive_incident_id",
+    "enrich_incident",
+    "find_actors",
+    "find_places",
     "input_hash",
     "map_record",
+    "read_prose",
     "read_record",
     "time_precision_of",
+    "unresolved_field_count",
     "verify_draft",
 ]

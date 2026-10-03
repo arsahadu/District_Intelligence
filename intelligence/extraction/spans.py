@@ -30,8 +30,6 @@ class QuoteNotFoundError(SpanError):
 
 
 class AmbiguousQuoteError(SpanError):
-    """The quote occurs more than once and the caller did not choose one."""
-
     def __init__(self, quote: str, occurrences: list["Span"]) -> None:
         self.quote = quote
         self.occurrences = occurrences

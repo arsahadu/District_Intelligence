@@ -1,9 +1,6 @@
 """CommonRecord fixtures shaped like the real October 2026 Madurai capture."""
 
-# The Tamil text, the site navigation prefix, the duplicated ADDED/UPDATED stamps and the
-# commentbox twin are copied field for field out of the Dinamalar capture, so the tests read
-# what the feed actually delivers rather than an idealised article. Nothing here opens that
-# file at test time: this module is the fixture.
+# Copied field for field from the Dinamalar capture, stamps and commentbox twin included; nothing is read from disk.
 
 from __future__ import annotations
 

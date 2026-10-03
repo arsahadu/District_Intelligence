@@ -134,12 +134,7 @@ def read_record(
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
 ) -> RecordInput:
-    """Read a CommonRecord-shaped object without importing anything from ingestion.
-
-    Only the title and the declared text keys become body text, stored exactly as the
-    record holds them. Anything else is metadata: rendered once, here, so evidence can
-    cite it, and never a body a span may be cut from.
-    """
+    """Read a CommonRecord-shaped object; only the title and declared text keys become body text."""
     if isinstance(obj, RecordInput):
         return obj
 
