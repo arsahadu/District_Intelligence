@@ -1,10 +1,16 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
 
+# Environment
 .env
 
+# Generated ingestion data
 data/raw/*
 data/normalized/*
 
-!.gitkeep
+# Keep folder structure
+!data/raw/.gitkeep
+!data/normalized/.gitkeep
