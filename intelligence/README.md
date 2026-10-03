@@ -6,19 +6,23 @@ Owner: Member 1 (AI / Intelligence). This file is the durable technical record o
 the module. It documents only what is implemented **and tested** today, plus the
 contract guarantees later stages and other modules rely on.
 
-Current state: **Stages 1-4 complete — contracts, the evidence span primitive,
-the language / text representation layer, and the temporal extraction layer.**
-There is still no CommonRecord → Incident pipeline: nothing here reads a network,
-a database, or a file, and no text is classified as an event type, located or
-scored for severity yet. What Stage 4 adds is the answer to *when*, with the same
-evidence discipline as *where it is written*.
+Current state: **Stages 1-5 complete — contracts, the evidence span primitive,
+the language / text representation layer, the temporal extraction layer, and the
+`CommonRecord` → `Incident` record seam.** A real Madurai article now maps to a
+real `Incident` with not one hand-written byte of evidence. Nothing here reads a
+network, a database or a file, and no text is yet classified as an event type,
+located from its own sentences, or scored for severity: Stage 5 deliberately
+produces a *candidate* whose unresolved sections are the point of it.
 
 ```
-CommonRecord ──> [ Intelligence ] ──> Incident ──> Evidence / Provenance
-                     │                    │
-              stages 1-4               dedup ──> trends / priority / summaries
-        contracts, spans, text,                  │
-        time and roles                   Collector Copilot
+CommonRecord ──[ Stage 5 seam ]──> Incident (candidate) ──> Evidence / Provenance
+                                       │
+                     stages 1-4 did the reading underneath it:
+                     spans, language and text, temporal roles
+                                       │
+              Stage 6 places + actors ─┴─ Stage 7 relevance + classification
+                                       │
+                Stage 8 dedup and clustering ──> Stage 9 persistence ──> GIS
 ```
 
 ---
@@ -52,18 +56,39 @@ which one is reporting time, which one is retrieval — and assembles Stage 1
 `evidence_ids`. Stage 4 answers *when the source says it happened*; it still
 does not say what happened.
 
+**Stage 5** — `intelligence/mapping/`: the record seam, in two layers that do not
+know about each other's business. `record_input.py` is the only file in the
+module that knows how a `CommonRecord` is spelled; it reads one structurally by
+dotted path, keeps text verbatim, renders non-text values once as metadata, and
+never imports ingestion. `assembly.py` knows nothing about `CommonRecord`
+spellings: it asks Stage 2, 3 and 4 for every fact and every citation, assembles
+the Stage 1 contract, and replays each span against the exact field text it
+claims to come from before returning. It names an incident and decides nothing
+about it — relevance, event type, severity level, place mentions and the dedup
+fingerprint stay unresolved, because Stage 5 holds no evidence for them.
+
 | Package | Purpose |
 | --- | --- |
 | `intelligence/models/` | Structure: field shapes, types, invariants. |
 | `intelligence/config/` | Taxonomy data: event families, department mapping, ordering. |
 | `intelligence/extraction/` | Evidence production, text representation and time: spans, hashes, verification, language, normalisation, morphology, stamps, transliteration, temporal surfaces, temporal roles. |
+| `intelligence/mapping/` | The record seam: a CommonRecord-shaped input, one cited candidate Incident out. |
 | `intelligence/tests/` | Executable specification of every rule below. |
 
 The split is deliberate. `models/` must not change when the district adds an
 event category; `config/` must not change when a field gains a validator;
 `extraction/` holds the only code allowed to turn "the source says X" into an
-`Evidence` object. `config.vocabularies.vocabulary_integrity_errors()` returns
-the drift list when models and taxonomy disagree, and a test asserts it is empty.
+`Evidence` object, and `mapping/` may only call it — never build an `Evidence`
+itself, which is how a hand-typed offset would get in.
+`config.vocabularies.vocabulary_integrity_errors()` returns the drift list when
+models and taxonomy disagree, and a test asserts it is empty.
+
+**Stage numbering.** The numbers in this file are this module's build order, not the
+hackathon plan's, and they are: 1 contracts, 2 evidence spans, 3 language and text
+representation, 4 temporal extraction, 5 the `CommonRecord` → `Incident` record seam,
+6 place and actor mentions, 7 relevance and event classification, 8 deduplication and
+clustering, 9 persistence and integration, 10 optional LLM intelligence. Stages 1-5
+exist; 6-10 are planned and nothing in this module pretends to have done them.
 
 ### Files
 
@@ -106,9 +131,16 @@ intelligence/
     temporal.py                temporal roles: TemporalMention,
                                TemporalExtraction, extract, TimeValue assembly
     __init__.py                re-exports
+  mapping/
+    record_input.py            the only CommonRecord-shaped reader: dotted paths,
+                               verbatim text, rendered metadata, input_hash
+    assembly.py                MappingPolicy, IncidentDraft, map_record,
+                               verify_draft, the evidence ledger
+    __init__.py                re-exports
   tests/
     conftest.py                fixtures
     builders.py                real-Tamil-content incident factories
+    record_fixtures.py         real-shaped CommonRecord factories (Stage 5)
     test_evidence.py                        12 tests
     test_language_and_text.py               16 tests
     test_spatial_severity_time.py           22 tests
@@ -123,6 +155,7 @@ intelligence/
     test_transliteration.py                 26 tests  (Stage 3)
     test_time_expressions.py                90 tests  (Stage 4)
     test_temporal_extraction.py             47 tests  (Stage 4)
+    test_record_mapping.py                  52 tests  (Stage 5)
 ```
 
 ---
@@ -178,8 +211,9 @@ placeholder a pipeline starts from — and it is what
 **Geography is not ours to invent.** No Intelligence-owned model can write
 coordinates: `latitude` / `longitude` / `canonical_place_id` exist only on
 `GisResolution`, which requires `resolved_by`, a full coordinate pair, and
-confidence with coordinates. `ResolutionState.pending_gis` is the expected
-output of the future location stage. `best_event_location_mention_id` must point
+confidence with coordinates. `ResolutionState.pending_gis` is what Stage 5 emits for
+every record that has a district hint and no place text read, and it stays the expected
+output until a location stage exists and GIS is wired. `best_event_location_mention_id` must point
 at a mention whose `role` is an event-location role, which is how
 "Madurai High Court bench" stays out of the event location.
 
@@ -269,6 +303,15 @@ unresolved with `NO_MONTH`. Every one of those reason strings is carried into th
 other, not to a UTC log. `TimeValue.timezone` records the name that was declared,
 and an undeclared naive value is exactly what `inconsistencies()` reports.
 
+**A record's own claim is data with a citation, never a fact with authority.**
+Stage 5 reads every scalar a producer asserts — `event_time`, `severity`, `status`,
+`location.district`, `data.language` — and each one lands in the incident either as a
+quoted span or as an enum member that says the module did not decide it. Nothing in
+that set can raise a confidence, promote a status, or fill a slot a stage has not
+earned. The corollary is the text rule: a value is body text only if the policy named
+its path, because a rendered `data.station_id` is not a sentence and must not join the
+vote over which language a record is written in.
+
 ---
 
 ## 3. Contracts
@@ -284,19 +327,40 @@ location{raw_text, district, state}, data{content, language}, severity,
 status, source_url, retrieved_at, raw_reference
 ```
 
-Stage 1 does not import it. The mapping is a Stage 8 concern, and the
-`Evidence` field names above mirror it one-to-one so the mapping stays mechanical.
-Two deliberate non-assumptions:
+Stage 1 defined the shape; Stage 5 reads it. `mapping/record_input.py::read_record()`
+takes any object that satisfies those dotted paths — a Pydantic instance, a plain
+dict, a fixture — and resolves `data.content` and `location.district` as paths, not
+as imports. Nothing under `intelligence/` names the `ingestion` package, so the
+module stays testable with ingestion absent, and a field rename in ingestion surfaces
+as a `RecordShapeError` at the seam rather than as a broken import at collection time.
+The `Evidence` field names mirror the record one-to-one, which is what keeps the
+mapping mechanical. Two deliberate non-assumptions, both now implemented behaviour
+rather than intentions:
 
 - `CommonRecord.data["language"]` is copied to
   `LanguageInfo.inherited_language_hint` for audit and *not* trusted as the
-  primary language — ingestion hardcodes it. `LanguageInfo.primary_language`
-  cannot be resolved without a `LanguageDetection` record that agrees with it,
-  so the inherited value has nowhere to leak into.
+  primary language — ingestion hardcodes it. `read_record()` refuses to treat
+  `data.language` as body text at all, so it cannot reach the detector that would
+  "confirm" the hint, and Stage 1's contract rejects a resolved `primary_language`
+  with no `LanguageDetection` behind it, so the inherited value has nowhere to leak
+  into.
 - `CommonRecord.location.district` maps to
   `SpatialHint.district_hint` with `district_hint_authority=source_configuration`,
   never to an event location. It is recorded as an article-independent hint and
   `inconsistencies()` says so in plain language.
+
+Everything else the record holds is preserved, not summarised: `source_id`,
+`source_type`, `record_id`, `source_url`, `raw_reference` and `retrieved_at` are copied
+onto every `Evidence` the seam produces, `record_id` also reaches
+`Incident.supporting_record_ids`, and text values are stored exactly
+as the record holds them — the site navigation prefix, the duplicated
+`UPDATED : … ADDED : …` stamps and the press-style ‘‘ … ’’ quotation marks are all
+still there for the extractors to contend with. Values outside the declared text keys are metadata
+even when they are strings: a `data.warning` or a `data.station_id` is rendered once so
+evidence can cite it, and it is never a body a span may be cut from. The record's own
+scalars — `severity`, `status`, `event_time` — are quoted as fields holding exactly
+what the producer asserted, which is how a claim can be preserved without being
+adopted.
 
 ### Output contract
 
@@ -316,8 +380,12 @@ Accessors available today: `evidence_by_id()`, `resolve_evidence()`,
 properties `event_type`, `severity_level`, `primary_language`.
 
 `fingerprint` lives on `Incident`, not on `DedupMetadata` — it identifies the
-incident, whereas the dedup decision is metadata *about* it. Both are optional
-until Stage 8 computes them.
+incident, whereas the dedup decision is metadata *about* it. Stage 5 leaves
+`fingerprint` as `None` and `dedup` as the contract's default abstention
+(`decision=unresolved`, `method=unresolved`, no `algorithm_version`, no `cluster_id`):
+computing a fingerprint is a deduplication decision, and a candidate that carries one
+has already claimed it might be a duplicate of something it has never been compared
+to.
 
 ### Vocabulary contract
 
@@ -330,7 +398,7 @@ until Stage 8 computes them.
   a Tamil and an English article about the same incident map to one code.
 - `INFORMATIONAL_EVENT_TYPES` isolates ceremony / announcement / transfer /
   sports coverage — newsworthy, not district incidents. This is the
-  Stage 6 relevance prior.
+  Stage 7 relevance prior.
 - `SEVERITY_LEVEL_ORDER` deliberately excludes `unresolved`, so
   `severity_rank()` cannot silently rank a non-answer; ordering is total over
   the five real levels.
@@ -455,8 +523,9 @@ stay anchored to the untouched original.
 - `modality` is declarable (`audio_transcript`, `image`, …) so an OCR or audio
   stage feeds the same span machinery without changing it.
 
-CommonRecord → Intelligence integration is still a later stage: this layer takes
-field text from its caller and does not read, resolve or import a `CommonRecord`.
+This layer still takes field text from its caller and does not read, resolve or
+import a `CommonRecord` — that is Stage 5's job (§7), and `mapping/` calls these
+builders instead of reaching around them to touch a record.
 
 ---
 
@@ -708,8 +777,9 @@ hole.
 char_start / char_end / precision / qualifier / value / resolved / reason /
 ambiguous / needs_reference / is_interval / notes / method / confidence /
 evidence_ids`, plus `interval()` (the two endpoint instants of a range) and
-`time_value()` — the Stage 1 `TimeValue`, which is what `Incident.event_time`
-will hold in Stage 8. `as_dict()` on the extraction serialises the roles and the
+`time_value()` — the Stage 1 `TimeValue`, which is what Stage 5 puts in
+`Incident.event_time` after checking it against the record's own `event_time` (§7).
+`as_dict()` on the extraction serialises the roles and the
 provenance as separate blocks, including `stamps` straight from
 `split.stamps_as_dicts()`, so a stamp can always be told apart from a mention.
 
@@ -766,19 +836,155 @@ points, arithmetic is `datetime`, and the only new standard-library import is
 
 ---
 
-## 7. Verification
+## 7. Stage 5 — the record seam
+
+`intelligence/mapping/` is where a `CommonRecord` becomes an `Incident`. Two files,
+and the split between them is the whole design:
+
+```
+record_input.py    knows how a CommonRecord is spelled. Nothing else in the module does.
+        │  RecordInput: provenance, body text untouched, non-text values rendered once
+        ▼
+assembly.py        knows what an Incident needs. Knows no field name of any record.
+        │  asks Stage 2 for every span, Stage 3 for language and stamps, Stage 4 for time
+        ▼
+IncidentDraft(incident, record, fields, split, temporal, checks, warnings)
+```
+
+`map_record()` accepts either a `RecordInput` or anything shaped like a record; given
+the latter it reads it with the policy's own `text_keys` / `extra_keys`. Everything a
+record states but an `Incident` has no slot for is still kept: cited into the evidence
+ledger and said out loud in `processing.warnings`, so nothing quietly disappears.
+
+**Only two things can become body text.** The title and a path listed in `text_keys`.
+`data.station_id` is `"MDU"`, a perfectly readable string, and a string reached
+through `extra_keys` is rendered and quoted as metadata — it never enters the text the
+language detector aggregates or the time rules scan. This was a real defect caught by
+the Stage 5 tests: the first version treated *any* string the policy named as a source
+of text, so a record's short metadata strings joined the letter-count vote over its
+Tamil body. "A rendered value is never a body a span may be cut from" is now a set
+membership test inside `read_record`, not a convention in a comment.
+
+**Time: the record's own answer is an input, not a fact.** `CommonRecord.event_time`
+is read, preserved and — for a news article — *not* used as event time, because for
+this feed it is the `ADDED : …` publish stamp captured from the page (§10). The order
+is stated once, in `_event_time()`: a `record_type` listed in
+`time_trusted_record_types` and holding a parseable datetime wins with
+`method=source_metadata`, `qualifier=exact` and its own ISO string cited as the span;
+otherwise a warning records the rejection and Stage 4's `event_time()` over the stamp-free
+body is consulted; if the text says nothing, `publication_time()` stands in with
+`semantics=publication_time` and a warning that says the article never said when; if
+even that is absent, the `TimeValue` comes back with `value=None`,
+`method=unresolved` and Stage 4's note for an absence — `inconsistencies()` then
+says "no time established at all", which is the honest answer rather than a padded
+one. `retrieved_at` is the reference clock (`policy.reference or record.retrieved_at`),
+so the temple-closure article's `நேற்று முன்தினம் இரவு 7:45 மணிக்கு` resolves to
+`2026-10-01T19:45` against the capture's own timestamp and shifts correctly when the
+capture date moves, while a bare `சனி` in the events listing still resolves to nothing.
+`Asia/Kolkata` is the *declared* zone in `MappingPolicy`, overridable per feed and
+hashed into `config_hash()`; a naive `retrieved_at` is reported, never converted.
+
+**Place, severity and status: preserved, never translated.** `location.district`
+becomes `SpatialHint.district_hint` with `district_hint_authority=source_configuration`
+and the raw string quoted from `location.district`; `resolution_state` is
+`PENDING_GIS`, `mentions` stay empty, and `best_event_location_mention_id` is unset
+because Stage 6 has not read a place phrase yet. A record asserting no district gets
+`NOT_ATTEMPTED` rather than a hint of `None`. A source severity of `"Orange Alert"`
+produces `Severity(level=UNRESOLVED, …)` whose `evidence_ids` cite the string: the
+level is not claimed, the words are not lost, and `severity_rank()` still refuses to
+rank it. `status="UPDATED"` is quoted and warned about; `Incident.status` is the
+Intelligence workflow state, and Stage 5 only ever sets `CANDIDATE`.
+
+**Evidence: nothing is quoted twice and nothing is typed.** A `_Ledger` holds one
+`SourceField` per dotted path and refuses a second `read_text` of the same path with
+different text — one record holds one version of a field. Each field gets one
+`source_metadata` evidence covering the whole value; every quote comes from
+`SourceField.evidence()` or Stage 4's `evidence_at()`, and no `Evidence(...)` is
+constructed anywhere in `mapping/` — that absence is the invariant, and it is what
+makes a hand-typed offset impossible rather than discouraged. A scalar quoted as
+metadata (`severity`, `status`, `data.language`, `event_time`) becomes a field whose
+text *is* that rendered value, so its span covers the whole field and
+`verify_evidence` still means something. `verify_draft()` then replays the *entire*
+ledger against the field text before the draft is returned, raising `MappingError` on
+anything but `validated` / `not_applicable` — not only the cited evidence, because an
+uncited span that has drifted is still a broken quote in a stored incident.
+`IncidentDraft.unreferenced_evidence_ids` exposes the ledger entries no field points
+at — which is deliberately not pruned, since `SpatialHint` and `LanguageInfo` have no
+`evidence_ids` slot for the district and language quotes they were built from. It is
+the cost of keeping provenance instead of dropping it, and it is measurable: the real
+capture's events listing (`NEWS-MDU-0007`, 31 time surfaces in 3519 characters) maps to
+37 evidences of which 34 are cited by nothing (§9).
+
+**Determinism.** No clock, no file, no network. `to_storage_document()` for one record
+is byte-identical across runs, because Stage 5 sets no `processed_at` — Stage 9 owns
+that. Two hashes make a re-run provable: `processing.input_record_hash` over the
+canonical `RecordInput` (everything the seam read, including which paths it chose to
+ignore) and `processing.config_hash` over the policy fields that change meaning, not
+just formatting. The incident id is `INC-<record_id>`: readable, stable for one record,
+and explicitly *not* a deduplication device — `positional_record_ids` exists so a feed
+whose ids come from scrape order says so in its own warnings.
+
+**What Stage 5 refuses to do.** No deduplication and no clustering: `fingerprint`
+stays `None`, `dedup` keeps the contract's `decision=unresolved` default with no
+`algorithm_version` and no `cluster_id`, and the `#commentbox` twin pair maps to two
+candidates over disjoint evidence ids. No event type, department or
+`category_scores`, no relevance, no
+summary, no actors, no observations, no location mentions, no coordinates, no gazetteer
+lookups, no GIS ids, no OCR, no LLM call, no database, no FastAPI. `inconsistencies()`
+on every one of those candidates says so in plain language, and
+`derive_review_reasons()` flags `AMBIGUOUS_LOCATION` and `PENDING_GIS_RESOLUTION` for
+every Madurai article — a candidate that needs a human is the expected output, not a
+failure. Confidence follows the same rule: `overall` is the `min()` of the components
+Stage 5 actually established (`language`, `event_time`), `rule` says which components
+were combined, and the open sections — the five it never attempts plus severity and
+the two spatial gaps — are *counted* in `unresolved_field_count` instead of scored:
+8 for every article in the capture. A low `overall` is never manufactured by
+averaging in an unasked question.
+
+### Stage 5 behaviours, and where each is pinned
+
+| Required behaviour | Test |
+| --- | --- |
+| Valid record maps to a candidate | `test_a_valid_record_maps_to_a_candidate_incident`, `test_the_pydantic_record_shape_reads_like_the_dict`, `test_a_record_can_be_read_once_and_mapped_twice` |
+| Missing / non-text identity fields rejected by name | `test_a_record_missing_an_identity_field_is_rejected`, `test_a_record_field_holding_a_structure_is_rejected_by_name` |
+| Title-only and textless records | `test_a_record_with_a_title_but_no_body_still_maps`, `test_a_record_with_no_readable_text_is_rejected` |
+| Dotted paths, unread keys surfaced | `test_dotted_paths_read_nested_values_and_leave_the_rest_as_a_warning`, `test_a_value_outside_the_text_keys_can_never_be_read_as_body_text`, `test_scalar_record_values_are_cited_rather_than_read_as_body_text` |
+| Provenance on every evidence item | `test_every_evidence_carries_the_record_it_came_from` |
+| Language detected from text, hint inert | `test_tamil_is_decided_from_the_text_not_the_feed_label`, `test_english_is_decided_from_the_text`, `test_the_inherited_language_hint_is_recorded_and_never_load_bearing`, `test_the_language_label_is_cited_as_a_hint_and_never_as_body_text`, `test_a_wrong_language_hint_does_not_override_the_detection`, `test_too_little_text_yields_an_unknown_language_rather_than_a_guess` |
+| News `event_time` not trusted | `test_an_articles_own_event_time_is_not_trusted_as_event_time`, `test_a_publish_stamp_stands_in_with_publication_semantics` |
+| Relative time via `retrieved_at`, weekday still unplaced | `test_a_relative_tamil_date_is_resolved_against_the_records_own_retrieval_time`, `test_a_bare_weekday_is_never_promoted_to_a_date` |
+| Trust only where the policy grants it | `test_a_forecast_valid_date_is_trusted_only_when_the_policy_says_so`, `test_the_same_forecast_is_honest_without_the_trust_policy` |
+| District stays a tagged hint | `test_the_feed_district_is_kept_as_an_authority_tagged_hint`, `test_a_record_that_asserts_no_district_asserts_nothing` |
+| No place reading, no GIS invented | `test_no_location_mention_is_read_before_stage_six`, `test_no_coordinates_or_gis_identity_are_invented` |
+| Severity, status, relevance, classification unresolved | `test_a_source_severity_string_is_cited_without_becoming_a_level`, `test_a_record_with_no_severity_says_so_without_a_citation`, `test_status_is_held_as_provenance_and_never_promoted`, `test_relevance_is_left_unresolved_and_asserts_nothing`, `test_classification_is_left_unresolved_with_no_department_invented` |
+| Every span verifies | `test_every_span_bearing_evidence_reproduces_the_field_it_was_cut_from`, `test_verification_replays_the_whole_ledger_not_only_the_cited_evidence` |
+| Deterministic mapping | `test_mapping_the_same_record_twice_gives_the_same_incident`, `test_the_input_hash_follows_the_record_and_the_config_hash_follows_the_policy` |
+| Real capture, duplicates, id instability | `test_the_capture_maps_to_an_honest_candidate`, `test_the_duplicate_article_pair_stays_two_candidate_records`, `test_the_scrape_position_instability_is_recorded_when_the_policy_declares_it` |
+| Time zone declared, ingestion unimported | `test_a_naive_retrieved_at_is_declared_never_assumed`, `test_a_policy_without_a_declared_timezone_says_so`, `test_mapping_never_imports_ingestion` |
+
+`tests/record_fixtures.py` is the other half of that honesty: the Tamil bodies, the
+site navigation prefix, the duplicated `UPDATED : … ADDED : …` pair, the `#commentbox`
+twin and the `retrieved_at` microseconds are copied out of the October 2026 Madurai
+capture, and the shapes that capture does not contain yet — an English article, a
+record with an `Orange Alert` severity string, an IMD forecast with a valid
+`event_time` — are built against the same field list. `capture()` maps seven of them.
+
+---
+
+## 8. Verification
 
 ```
 python -m pytest intelligence/tests -q
 python -m compileall intelligence
 ```
 
-Result at this commit: **406 passed** in ~0.7s, 0 failed (112 Stage 1 contracts,
+Result at this commit: **458 passed** in ~2.3s, 0 failed (112 Stage 1 contracts,
 55 Stage 2 spans, 102 Stage 3 language and text representation, 137 Stage 4
 temporal — 90 surfaces in `test_time_expressions.py`, 47 roles in
-`test_temporal_extraction.py`); `compileall` reports no errors. The Stage 1–3
-coverage tables below are unchanged; Stage 4's behaviour table is in §6 because
-its rules are the subject, not a side effect.
+`test_temporal_extraction.py`, 52 Stage 5 record mappings in
+`test_record_mapping.py`); `compileall` reports no errors. The Stage 1–3 coverage
+tables below are unchanged; Stage 4's behaviour table is in §6 and Stage 5's in §7
+because their rules are the subject, not a side effect.
 
 The suite is the specification, and it runs against real Dinamalar Madurai
 content rather than synthetic English prose. `tests/builders.py` stores
@@ -788,6 +994,18 @@ content rather than synthetic English prose. `tests/builders.py` stores
 incident whose text also mentions the Madurai High Court bench). Stage 1 derived
 those fixture offsets with `source_text.index(quote)`; Stage 2 reproduces them
 through the producer and asserts they are identical, offset for offset.
+
+Stage 5 adds `tests/record_fixtures.py`: the October 2026 Madurai capture held as
+Python — the Tamil bodies with their site navigation prefix and duplicated
+`UPDATED : … ADDED : …` stamps inside `data.content`, the `#commentbox` twin, the
+outage and events listings — plus the shapes the feed could deliver and does not yet
+(an English article, a record carrying an `Orange Alert` severity string, an IMD
+forecast with a valid `event_time`). Nothing in
+`intelligence/tests/` opens `ingestion/data/`, and
+`test_mapping_never_imports_ingestion` proves the package boundary twice: a subprocess
+imports `intelligence.mapping` and reports nothing ingestion-shaped in `sys.modules`,
+and a regex over every file under `intelligence/` fails on a top-level
+`import ingestion` / `import app`.
 
 Coverage of the twelve required Stage 1 validations:
 
@@ -869,26 +1087,40 @@ that timestamp is minute-precise it outranked the article's real event date in
 not recognise — so Stage 4 now owns the consequence with the stamp-line residue
 rule in §6, which holds for stamp shapes neither layer has seen.
 
+Stage 5 changed no earlier-stage code, and its own defect was found the same way: the
+first `read_record()` made a text field of *any* path the policy named, so
+`extra_keys=("data.station_id",)` put the string `"MDU"` into the record's body and let
+three characters join the letter-count vote over a 2377-character Tamil article. The
+gate is now `path in {title, *text_keys}`, and
+`test_a_value_outside_the_text_keys_can_never_be_read_as_body_text` fails without it.
+The other Stage 5 findings are about the data rather than the code, and they are all in
+§10: six of the nine articles' own `event_time` disagrees with the stamp printed inside
+it, the events listing maps 31 time surfaces into 37 evidences that three fields cite,
+and `NEWS-MDU-0005` hands the event slot to a two-year duration.
+
 ---
 
-## 8. Known limitations
+## 9. Known limitations
 
-- **No pipeline.** Nothing converts a `CommonRecord` into an `Incident` yet.
-  Stages 3 and 4 read and re-represent text a caller hands them, but no stage
-  decides what an article is about, and `tests/builders.py` is still hand-written
-  evidence: a real stage picks the quotes. Resolving a dotted `field` path
-  against a record object is deliberately not implemented — that is the
-  CommonRecord → Intelligence seam, still a later stage.
+- **The seam maps one record at a time.** Stage 5 turns one `CommonRecord` into one
+  candidate `Incident`; nothing reads a feed, batches records, or decides that two
+  records describe one incident. A dotted path is resolved only inside
+  `record_input.py`, and only for the paths the seam knows: an unread key *under*
+  `data` is reported in `unused_data_keys`, but a top-level field the seam has no slot
+  for is dropped with no trace at all. `tests/builders.py` is still hand-written
+  evidence from Stages 1-2 — Stage 5's tests never use it, because a real stage picks
+  its own quotes.
 - **`spans.locate()` is exact-substring only.** Stage 4 is the first consumer of
   the other pattern — it matches over normalised text and cites the original — but
   `locate()` itself is still case- and diacritic-sensitive, and no fuzzy or
   approximate location exists anywhere in the module. A future entity or place
   stage has to decide whether it wants `locate()` or `MappedText.project()`.
-- **A span outlives its field silently.** `verify_evidence` detects drift, but
-  nothing calls it yet. Stage 9 persistence and Stage 8 re-clustering are where a
-  stored Incident gets re-verified against a re-fetched source, and an offline
-  re-verification needs the original field text, which is not stored inside
-  `Evidence` by design.
+- **Verification happens once, at mapping time.** `map_record()` replays every ledger
+  span against the field text it read, so no candidate is returned with a broken
+  quote. What is still missing is re-verification *after* storage: an `Evidence`
+  deliberately does not carry its field's full text, so Stage 9 persistence and
+  Stage 8 re-clustering have to re-fetch the source and rebuild the `SourceField`
+  before `verify_evidence` means anything about a stored incident.
 - **Byte-level source drift is all the hash can prove.** `field_text_hash`
   identifies the text, not the record: if a source edits a headline, every
   Evidence over that field reports `mismatch` together, with no per-quote
@@ -897,13 +1129,15 @@ rule in §6, which holds for stamp shapes neither layer has seen.
   unset where absence and `UNRESOLVED` mean the same thing. Consumers should
   read the enum members, not rely on `None`, for the four epistemic states.
 - **`category_scores` is unconstrained beyond key validity.** Keys must be
-  `EventType` values; score ranges and normalisation are a Stage 6 concern.
-- **No time-zone policy enforcement.** `TimeValue` requires a *declared*
-  timezone or an explicit naive-timestamp inconsistency note; it does not decide
-  that India is `Asia/Kolkata`. Stage 4 carries a declaration through — the
-  caller's `timezone`, or a zone the text names — and will not invent one, so the
-  policy is still the pipeline's: every record from an Indian feed has to be
-  extracted with the same argument or the stored times stop being comparable.
+  `EventType` values; score ranges and normalisation are a Stage 7 concern.
+- **The time-zone policy is a default, not a guarantee.** `TimeValue` requires a
+  *declared* timezone or an explicit naive-timestamp inconsistency note; it does not
+  decide that India is `Asia/Kolkata`. Stage 5 does declare it —
+  `MappingPolicy.timezone` defaults to `Asia/Kolkata`, is hashed into `config_hash()`,
+  and a naive `retrieved_at` is warned about instead of converted — but it cannot
+  enforce that two records were mapped with the same policy. A caller that passes
+  `MappingPolicy(timezone=None)` for one feed produces times that are no longer
+  comparable to another feed's, and the only trace of which policy ran is the hash.
 - **Gazetteer fields are placeholders.** `LocationMention.gazetteer_matched` /
   `gazetteer_source` record a match the module does not perform.
 - **Vocabulary is a first draft.** The 70 event types and 33 departments cover
@@ -948,11 +1182,22 @@ rule in §6, which holds for stamp shapes neither layer has seen.
   first, not because the writer meant it. Nothing binds a date to the clause it
   is about; that needs subject/verb attachment, which is a later stage's problem,
   and the runner-up mentions stay visible in `TemporalExtraction.mentions`.
+  Stage 5 inherits the worst case, and it is not a ranking one: in the real capture,
+  `NEWS-MDU-0005`'s only time surface is `இரண்டு ஆண்டுகளாக` ("for two years"),
+  which Stage 4 resolves to `2024-01-01T00:00` at **year** precision with
+  `semantics=event_time`, `method=rule`, `confidence=0.8`. The mention honestly records
+  `is_interval=True`, but `event_time()` still hands the start instant to the slot, so
+  the incident reads as if something happened at a moment when the source described a
+  two-year state. `_event_time()` trusts Stage 4's answer, which is the right division
+  of labour — the fix belongs to `event_time()`, not to the seam.
 - **`reference` is taken on trust.** Every relative surface is arithmetic against
   the datetime the caller passes, and the module never checks that the reference
   agrees with the absolute dates printed in the same field. A wrong reference
-  silently shifts `நேற்று`; the natural guard is a Stage 8 sanity check that
-  `reference` is not in the future relative to the article's own stamps.
+  silently shifts `நேற்று`. Stage 5 removes one guesser and adds another: the
+  reference is now `record.retrieved_at`, which is this module's own clock at
+  scrape time, so a mis-set scraper date shifts every relative expression in a
+  feed at once. The guard is still unwritten — a check that the reference is not
+  before, or absurdly after, the stamps printed in the article.
 - **A reporting cue is 17 phrases inside a 90-character sentence.** No verb
   morphology, no dependency parse, no hearsay grading. An unlisted paraphrase
   leaves the mention `event_time`: `தெரிவித்தனர்` (they informed) is a cue,
@@ -975,9 +1220,11 @@ rule in §6, which holds for stamp shapes neither layer has seen.
   suffix and `WEEKDAYS` stores the pulli spelling — the same elision Stage 3
   morphology lists as unmodelled.
 - **No time arithmetic across fields.** Stage 4 reads one field at a time, so a
-  title's date cannot corroborate or contradict the body's, and
-  `Incident.reported_at` cannot be assembled from a record until the mapping
-  stage decides which field wins.
+  title's date cannot corroborate or contradict the body's. Stage 5 could now run both
+  — it holds both `SourceField`s — and deliberately does not: `Incident.reported_at`
+  stays unset and the body's answer wins `event_time` outright. Comparing two fields
+  needs a rule for what a disagreement *means*, which is a review signal no
+  `ReviewReason` expresses yet.
 - **The transliteration table is a press convention, not a standard.** `த`→`th`
   and `ட`→`t` distinguish the two series, `ண`/`ன`/`ந` all collapse toward `n`,
   and inherent vowels appear unless a pulli kills them - so `kamishannar` is a
@@ -993,27 +1240,75 @@ rule in §6, which holds for stamp shapes neither layer has seen.
 - **Ten vocabulary entries and no word-frequency evidence.** The transliteration
   vocabulary is the loanwords and place names visible in the current fixtures; a
   new district term is a code change, not a learning step.
+- **A candidate carries its whole ledger, cited or not.** `Incident.evidence` holds
+  every span Stage 5 produced, and most of it is cited by nothing: the real capture's
+  events listing maps to 37 evidences with 34 unreferenced. The contract has no
+  `evidence_ids` slot on `SpatialHint.district_hint` or
+  `LanguageInfo.inherited_language_hint`, so their quotes have nowhere to be *pointed
+  at* from — dropping them would lose provenance, keeping them makes the ledger the
+  size of the extraction. `unreferenced_evidence_ids` exists so Stage 9 can decide
+  which of the two it wants to pay for.
+- **`record_type` is trusted, not checked.** `time_trusted_record_types` is matched
+  against whatever string the producer wrote in `record_type`, so a news article
+  mislabelled `"forecast"` gets its page stamp promoted to event time with
+  `confidence=1.0`. This is the only place in the seam where a source can talk itself
+  into authority, and the mitigation is policy discipline: the set is per-feed, it is
+  hashed into `config_hash()`, and the record's own claim is cited as a span, so a bad
+  trust decision is at least reconstructible.
+- **The policy is the mapping's blind spot.** `text_keys` and `extra_keys` must be
+  declared for each feed shape; a `data` key nobody listed is reported in
+  `unused_data_keys` and otherwise invisible, and a *new top-level* field the seam has
+  no slot for is dropped with no trace (§9, first bullet). Nothing in `intelligence/`
+  can tell that a policy stopped matching a producer's output until someone reads the
+  warnings.
+- **`pipeline_version` is not this module's version.** `MappingPolicy` defaults to
+  `"0.1.0"`, which is `ProcessingMetadata`'s own contract default rather than
+  `intelligence.__version__`, because the deployment's release number is a fact the
+  seam cannot know. What a stored incident *does* record is `stage_versions`
+  (`schema 1.0, evidence 2, language 3, temporal 4, mapping 5`) and `config_hash`, so a
+  re-run under different rules is detectable even when nobody bumped a version string.
+- **Every real article is flagged for review.** With the default
+  `low_confidence_threshold=0.6`, each capture record collects six or seven reasons —
+  `unresolved_event_type`, `unresolved_relevance`, `unresolved_severity`,
+  `no_event_location_candidate`, `pending_gis_resolution`, `ambiguous_location`, and
+  usually `publication_time_only`. That is accurate, not broken: a review queue fed by
+  Stage 5 alone contains every article. Stage 7's relevance decision is what makes the
+  queue mean anything.
+- **A title-only record cannot name its language.** When a policy reads no body field,
+  `primary_language` stays `und` and detection is a one-line script ratio over the
+  headline — the honest outcome, but it means `data.forecast` must be in `text_keys`
+  for a weather record to be identified as the language it is written in.
 
-## 9. External integration dependencies
+## 10. External integration dependencies
 
 Reported, not fixed. The repository outside `intelligence/` was not modified.
 
-1. `ingestion/app/normalizers/news.py` raises on real Madurai data:
-   `article_to_common_record()` assigns `SourceArticle.published_at` (an
-   `Optional[str]` holding the raw `UPDATED : … ADDED : …` page capture) to
-   `CommonRecord.event_time`, which is typed `Optional[datetime]`. Pydantic
-   rejects the value, so the connector fails before normalised records are
-   written and only raw JSON reaches disk. Reproduced with a two-line article
-   fixture; `event_time` is what Intelligence is supposed to *derive*, not
-   receive. Until ingestion passes `None` or a parsed value there is no
-   `CommonRecord` stream to consume (owner: ingestion).
-2. `record_id` is `f"NEWS-MDU-{index:04d}"`, derived from the scrape's
+1. `CommonRecord.event_time` carries the wrong kind of time for a news article.
+   `ingestion/app/connectors/news/dinamalar.py:196-206` finds the page's `ADDED : …`
+   line, `parse_dinamalar_date()` (`:72-95`) turns it into a real `datetime`, and
+   `ingestion/app/normalizers/news.py:24` assigns it to `event_time`. That is the
+   *first* stamp, while the page prints `UPDATED : …` above it and the two differ: six
+   of the nine records on the October capture disagree with themselves, e.g.
+   `NEWS-MDU-0001` has `event_time=2026-10-02T17:45` but an in-content
+   `UPDATED : அக் 03, 2026 12:00 AM`. The three that agree print only an `ADDED`
+   line.
+   `event_time` is what Intelligence is supposed to *derive*, not receive, and Stage 5
+   now treats it accordingly — the value is preserved and warned about, never used as
+   event time for `record_type="article"` (§7). Ingestion either passing `None` or
+   renaming the field to `published_at` would let the seam stop explaining itself
+   (owner: ingestion).
+2. `record_id` is `f"NEWS-MDU-{index:04d}"` (`news.py:14`), derived from the scrape's
    enumeration index, so it changes whenever feed order or page size changes.
-   `Evidence.record_id` and `Incident.supporting_record_ids` assume stable ids,
-   so dedup and cross-source linking are not trustworthy until the id is
-   content-derived (owner: ingestion).
+   `Evidence.record_id` and `Incident.supporting_record_ids` assume stable ids, so dedup
+   and cross-source linking are not trustworthy until the id is content-derived
+   (owner: ingestion). Stage 5 makes the consequence visible rather than theoretical:
+   `incident_id` is `INC-<record_id>`, so re-scraping the same article in a different
+   position yields a *new incident id for the same article*, and
+   `MappingPolicy(positional_record_ids=True)` records that in the incident's own
+   warnings. The policy flag only declares the instability; only ingestion can fix it.
 3. `Location(raw_text="Madurai", district="Madurai", state="Tamil Nadu")` is
-   hardcoded for every article. Contract-wise this is handled
+   hardcoded for every article (`news.py:26-29`, and again in
+   `normalizers/weather.py:31-34`). Contract-wise this is handled
    (`district_hint_authority=source_configuration`), but district-level analytics
    will be wrong until ingestion stops asserting it (owner: ingestion).
 4. `CommonRecord.raw_reference` has two meanings in the repo: `news.py` sets it
@@ -1035,24 +1330,50 @@ Reported, not fixed. The repository outside `intelligence/` was not modified.
    through. Stage 3 records it as `inherited_language_hint` only
    (`hint_conflict()` reports a disagreement), and any accuracy claim for
    language detection needs a labelled corpus the ingestion layer does not
-   produce (owner: ingestion).
-8. The publish stamp is inside `data["content"]` (`news.py:33` passes
-   `article.content` verbatim) *and* is what `published_at` was built from, so the
-   same timestamp reaches Intelligence twice with different shapes. Stage 3 keeps
-   both visible: `boilerplate.split()` isolates the stamp from the body and
-   `timestamp_evidence()` cites it as printed. Stage 4 now reads the in-content
-   one and files it as `publication_time`, so the two only meet at the mapping
-   stage — which needs ingestion to stop dropping the raw string in order to
-   compare them and report a disagreement (owner: ingestion).
+   produce. Stage 5 added the other half of the protection: the value can no longer
+   even be read as body text, and a hint that contradicts the script evidence becomes
+   a warning on the incident instead of a silent override (§7).
+8. The publish stamp reaches Intelligence three times, not twice: inside
+   `data["content"]` (`news.py:33` passes `article.content` verbatim, including the
+   *duplicated* `UPDATED : … ADDED : …` pair), as the parsed `event_time`
+   (`news.py:24`), and as nothing else. Stage 3 isolates it, Stage 4 files the
+   in-content one as `publication_time`, and Stage 5 compares the two and warns; on the
+   real capture they disagree on six of nine records because of item 1, and the
+   duplicated pair means `publication_time()` picks the *later* `UPDATED` stamp. If
+   ingestion ever deduplicates the stamps or drops the raw string, that agreement stops
+   being checkable (owner: ingestion).
+9. `retrieved_at` has two different shapes in one pipeline: `news.py:39` writes
+   `datetime.now().isoformat()` (naive, host-local) and `weather.py:53-55` writes
+   `datetime.now(timezone.utc).isoformat()` (offset-aware). Stage 5 uses `retrieved_at`
+   as the reference clock for relative expressions, so news times are pinned to an
+   undeclared local zone while weather times are not, and the two are not comparable
+   until someone declares which one is authoritative. `MappingPolicy` cannot fix it:
+   the seam reports the naive value and refuses to convert it, which is the only
+   defensible behaviour when the offset is genuinely unknown (owner: ingestion).
+10. `weather.py:13-14` builds the forecast date as
+    `f"{weather.forecast_date}-{datetime.now().year}"` from IMD's `"02-Oct"`, so a
+    forecast captured in December is silently dated the *following* year, and
+    `record_id=f"WEATHER-MDU-{weather.forecast_date}"` (`:19`) keys identity on that raw
+    string, so next year's 2 October collides with this year's. This is the one record
+    type whose time Stage 5 *is* allowed to trust (`time_trusted_record_types`), because
+    a forecast states its own valid date rather than copying a page stamp — which makes
+    the year inference the most expensive place for it to be wrong. No weather record is
+    on disk in this workspace to check it against, so this is read from the code and the
+    Stage 5 forecast fixture, not observed (owner: ingestion).
+11. `severity` and `status` are never set by `news.py`, and all nine records in
+    `ingestion/data/normalized/dinamalar/20261003_085226.json` have both `null`.
+    `weather.py:41` passes IMD's `warning` string through inside `data`, which is not a
+    `CommonRecord.severity` at all. So the cited-severity path Stage 5 built
+    (`_severity()`, §7) is exercised only against a synthetic orange-alert fixture and no
+    real record yet tests it. Ingestion needs a severity vocabulary before
+    `SeverityLevel` mapping is anything but a guess (owner: ingestion).
 
-## 10. Next: Stage 5 — place and actor mentions
+## 11. Next: Stage 6 — place and actor mentions
 
-Stage 4 hands the pipeline one honest answer per field: `event_time`,
-`reported_time`, `publication_time` and `retrieval_time`, each either a cited
-`TimeValue` or an explicit absence, plus the mentions it could not resolve and the
-reason for each. Stage 5 does for *where* and *who* what Stage 4 did for *when*:
-deterministic surfaces in one module, decisions in another, and no coordinate,
-department or name that the text did not print.
+Stage 5 hands the pipeline a real `Incident` per record, with two holes shaped
+exactly like the contract: `spatial.mentions` is empty and `actors` is empty. Stage 6
+fills them the way Stage 4 filled time — deterministic surfaces in one module, roles
+in another, and no coordinate, department or name that the text did not print.
 
 1. `intelligence/extraction/place_expressions.py` — location surfaces over the
    same stamp-free body: Tamil place words carrying a case suffix (`மதுரையில்`,
@@ -1062,41 +1383,57 @@ department or name that the text did not print.
    phrase is matched through derived text and cited with `MappedText.project()` +
    `evidence_at()`, never by re-typing an offset.
 2. `intelligence/extraction/places.py` — the role layer, mirroring `temporal.py`:
-   `LocationMention`s with `role` set by a stated rule, `SpatialHint.district_hint`
-   filled only from a phrase that says *district*, and `GisResolution` left
-   `pending_gis` because geocoding is not this module's to invent.
-   `best_event_location_mention_id` is set only when one mention is unambiguously
-   the event place; "Madurai High Court bench" stays a mention, not a location.
+   `LocationMention`s with `role` set by a stated rule, `district_hint_from_text`
+   filled only from a phrase that says *district* — which is what lets
+   `derive_review_reasons()` stop reporting `AMBIGUOUS_LOCATION` for an article that
+   names its own district — and `GisResolution` left `pending_gis` because geocoding
+   is not this module's to invent. `best_event_location_mention_id` is set only when
+   one mention is unambiguously the event place; "Madurai High Court bench" stays a
+   mention, not a location.
 3. `intelligence/extraction/actors.py` — `Actor` surfaces: official titles in both
    scripts (`கமிஷனர்`, `Collector`, `மேயர்`), department names reachable through
    `config.vocabularies`, and the Tamil postpositions morphology already models
    (`-இடம்`, `-சார்`, `-விடம்`). An actor with no cited span is not an actor.
-4. The reference clock finally gets an owner. `திங்கட்கிழமை` and a bare
-   `காலை 10:30 மணிக்கு` stay unresolved until something supplies `reference`, and
-   the only defensible pair is `retrieved_at` plus `publication_time()` — that is a
-   Stage 8 mapping decision, and Stage 5 should leave the same `None` behaviour
-   intact rather than paper over it.
-5. Still no event type, severity, dedup or incident assembly. Relevance and
-   classification stay Stage 6, `CommonRecord` → `Incident` stays Stage 8, and
-   `category_scores` stays empty until the taxonomy is reviewed with the
-   collector's office.
+4. `mapping/assembly.py` then has something to put the mentions *into*: `_spatial()`
+   stops being a hint-only function, `report()` gains a place and actor block, and the
+   `unresolved_field_count` drops by whatever Stage 6 genuinely established — never by
+   more. The evidence ledger absorbs the new spans, so §7's whole-ledger verification
+   is the safety net rather than new machinery.
+
+Already decided, so Stage 6 does not have to decide again: the record seam exists
+(§7), `retrieved_at` is the reference clock and `Asia/Kolkata` the declared zone, both
+on `MappingPolicy` — the item this plan used to carry forward as "the reference clock
+finally gets an owner". `திங்கட்கிழமை` and a bare `காலை 10:30 மணிக்கு` stay
+unresolved anyway, because a weekday and an hour with no date are not facts this
+module can invent; now they at least have a stated clock to be unresolved against.
 
 Carried forward, because each one is a decision and not a pattern:
 
-- **Reference policy** (item 4) and the time-zone declaration — both belong to the
-  mapping stage, and both need to be constant across a feed for stored times to be
-  comparable.
+- **Relevance and classification stay Stage 7.** `event_type`, `departments`,
+  `category_scores` and `relevance` are unresolved in every Stage 5 candidate, and
+  `INFORMATIONAL_EVENT_TYPES` is the prior they will be decided against.
+- **Deduplication stays Stage 8.** The `#commentbox` twin pair maps to two candidates
+  today; the fingerprint that joins them is a decision with a threshold and a
+  reviewer, not a hash Stage 5 may quietly take.
 - **Stamp label vocabulary.** `PUBLISHED ON` and a Tamil `வெளியானது` are not
   labels, so their timestamps are read as body text; the residue rule catches the
   line-local case, not the unlabelled one.
 - **Traditional Tamil month names** (`ஆவணி`, `புரட்டாசி`, `மார்கழி`) produce no
   surface at all — a vocabulary addition, but only worth doing if the collector's
   office actually receives such reports.
-- **Cross-field time reconciliation.** A title date and a body date that disagree
-  is a review signal, and `derive_review_reasons()` has no reason for it yet.
-- **A place-name gazetteer** is the first thing Stage 5 will be tempted to add.
-  It is a dependency decision for the team, not a file to drop into `config/`.
+- **Cross-field time reconciliation.** A title date and a body date that disagree is a
+  review signal, and `derive_review_reasons()` has no reason for it yet. Stage 5 makes
+  this reachable rather than hypothetical: it is the first stage that holds both
+  fields' extractions at once.
+- **An interval can win the event slot.** `event_time()` hands `இரண்டு ஆண்டுகளாக`
+  to `Incident.event_time` as a start instant (§9), which reports a two-year state as a
+  moment. The fix is in the accessor — exclude `is_interval` surfaces or carry their
+  endpoints — not in Stage 6's patterns, and Stage 5 leaves the seam's trust rule alone
+  so there is exactly one place where the decision gets made.
+- **A place-name gazetteer** is the first thing Stage 6 will be tempted to add. It is a
+  dependency decision for the team, not a file to drop into `config/`.
 
-Stage 5 adds no dependency: place and actor surfaces are `re`, the dictionaries
-already in `config/` and `extraction/morphology.py`, and the same `MappedText`
-projection Stage 3 built.
+Stage 6 adds no dependency: place and actor surfaces are `re`, the dictionaries already
+in `config/` and `extraction/morphology.py`, and the same `MappedText` projection
+Stage 3 built — plus the ledger Stage 5 already verifies, which is where a hand-typed
+offset would have to go to be a problem.
