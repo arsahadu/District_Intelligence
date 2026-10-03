@@ -1,0 +1,14 @@
+# Intelligence module dependencies.
+# Stages 1-2 are contracts plus span arithmetic, so the runtime surface is
+# deliberately tiny: pydantic for the models, and Python's own hashlib /
+# unicodedata / dataclasses for extraction/extraction/spans.py.
+
+# Model definition and validation (models/, config/, extraction/).
+pydantic>=2.7,<3
+
+# Test only.
+pytest>=8.0
+
+# Declared here so later stages add to this file rather than assuming packages
+# exist in the developer environment. Nothing network-, database-, ML- or
+# OCR-related is required to build, validate or span-anchor an Incident.
