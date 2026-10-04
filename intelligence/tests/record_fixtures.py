@@ -517,3 +517,24 @@ def keyword_bait_article(**fields: Any) -> dict[str, Any]:
     )
     payload.update(fields)
     return payload
+
+
+
+WATERLOGGING_TITLE = "Heavy rain causes waterlogging in Madurai"
+WATERLOGGING_CONTENT = (
+    "மதுரை மாவட்டத்தில் நேற்று மாலை பெய்த கனமழையால் சில பகுதிகளில் சாலைகளில் தண்ணீர் தேங்கியது. பொதுமக்கள் சிரமத்திற்கு உள்ளாகினர். அதிகாரிகள் நிலைமையை கண்காணித்து வருகின்றனர்."
+)
+
+
+def waterlogging(**fields: Any) -> dict[str, Any]:
+    """The brief's own example: rain-driven waterlogging, officials still monitoring."""
+    payload = base_record(
+        record_id="NEWS-MDU-WLR-0001",
+        title=WATERLOGGING_TITLE,
+        event_time="2026-10-03T08:30:00",
+        data={"content": WATERLOGGING_CONTENT, "language": "ta"},
+        source_url="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/rain-waterlogging/4338980",
+        raw_reference="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/rain-waterlogging/4338980",
+    )
+    payload.update(fields)
+    return payload

@@ -29,6 +29,7 @@ from intelligence.models.metadata import (
 from intelligence.models.quantities import Observation
 from intelligence.models.severity import Severity, SeveritySignal
 from intelligence.models.spatial import GisResolution, LocationMention, SpatialHint
+from intelligence.models.status import OperationalStatusInfo, StatusSignal
 from intelligence.models.temporal import TimeValue
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "LocalizedText",
     "MULTILINGUAL",
     "Observation",
+    "OperationalStatusInfo",
     "OptionalConfidence",
     "PairRelationship",
     "ProcessingMetadata",
@@ -59,6 +61,7 @@ __all__ = [
     "Severity",
     "SeveritySignal",
     "SpatialHint",
+    "StatusSignal",
     "StrictModel",
     "SummaryInfo",
     "TextRepresentation",

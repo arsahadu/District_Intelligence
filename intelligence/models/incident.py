@@ -13,7 +13,7 @@ from intelligence.models.actors import Actor
 from intelligence.models.classification import ClassificationInfo, RelevanceInfo
 from intelligence.models.enums import DataOrigin, DistrictHintAuthority, EventType
 from intelligence.models.enums import IncidentStatus, MentionRole, Modality, ResolutionState
-from intelligence.models.enums import ReviewReason, SeverityLevel, TimeSemantics
+from intelligence.models.enums import OperationalState, ReviewReason, SeverityLevel, TimeSemantics
 from intelligence.models.evidence import Evidence
 from intelligence.models.language import LanguageInfo, SummaryInfo, TitleInfo
 from intelligence.models.metadata import ConfidenceSummary, DedupMetadata
@@ -21,6 +21,7 @@ from intelligence.models.metadata import ProcessingMetadata, ReviewInfo
 from intelligence.models.quantities import Observation
 from intelligence.models.severity import Severity
 from intelligence.models.spatial import SpatialHint
+from intelligence.models.status import OperationalStatusInfo
 from intelligence.models.temporal import TimeValue
 
 SCHEMA_VERSION = "1.0"
@@ -51,6 +52,9 @@ class Incident(StrictModel):
     spatial: SpatialHint = Field(default_factory=SpatialHint)
 
     severity: Severity = Field(default_factory=Severity)
+    operational_status: OperationalStatusInfo = Field(
+        default_factory=OperationalStatusInfo
+    )
 
     evidence: list[Evidence] = Field(default_factory=list)
     supporting_record_ids: list[str] = Field(default_factory=list)
@@ -84,6 +88,7 @@ class Incident(StrictModel):
                 "event_time": self.event_time,
                 "spatial": self.spatial,
                 "severity": self.severity,
+                "operational_status": self.operational_status,
                 "confidence": self.confidence,
             }
         )
@@ -170,6 +175,10 @@ class Incident(StrictModel):
         return self.severity.level
 
     @property
+    def operational_state(self) -> OperationalState:
+        return self.operational_status.state
+
+    @property
     def primary_language(self) -> str:
         return self.language.primary_language
 
@@ -190,6 +199,8 @@ class Incident(StrictModel):
             add(ReviewReason.UNRESOLVED_SEVERITY)
         elif not self.severity.signals:
             add(ReviewReason.SEVERITY_WITHOUT_EVIDENCE)
+        if self.operational_status.conflicting_states:
+            add(ReviewReason.STATUS_CONFLICT)
 
         candidates = [m for m in self.spatial.mentions if m.role in (MentionRole.EVENT_LOCATION, MentionRole.EVENT_CONTAINER)]
         if not candidates:
@@ -250,6 +261,13 @@ class Incident(StrictModel):
             notes.append("event_type is unresolved")
         if self.severity.level is SeverityLevel.UNRESOLVED:
             notes.append("severity is unresolved")
+        if self.operational_status.conflicting_states:
+            contested = ", ".join(
+                state.value for state in self.operational_status.conflicting_states
+            )
+            notes.append(
+                f"operational status is contested between {contested} by the source's own wording"
+            )
         if self.event_time.value is None:
             notes.append("no time established at all")
         elif self.event_time.semantics is TimeSemantics.PUBLICATION_TIME:

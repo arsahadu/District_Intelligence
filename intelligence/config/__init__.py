@@ -9,6 +9,10 @@ from intelligence.config.mention_words import (
     LEXICON_VERSION,
     mention_lexicon_integrity_errors,
 )
+from intelligence.config.operations_cues import (
+    OPERATIONS_LEXICON_VERSION,
+    operations_integrity_errors,
+)
 from intelligence.config.vocabularies import (
     DEPARTMENT_LABELS,
     EVENT_TYPE_DEPARTMENTS,
@@ -37,6 +41,7 @@ __all__ = [
     "EVENT_TYPE_FAMILY",
     "INFORMATIONAL_EVENT_TYPES",
     "LEXICON_VERSION",
+    "OPERATIONS_LEXICON_VERSION",
     "SEVERITY_LEVEL_ORDER",
     "TAXONOMY_VERSION",
     "UNRESOLVED_EVENT_TYPES",
@@ -46,6 +51,7 @@ __all__ = [
     "informational_event_types",
     "is_informational",
     "mention_lexicon_integrity_errors",
+    "operations_integrity_errors",
     "primary_department_for",
     "severity_rank",
     "unresolved_event_types",
