@@ -25,6 +25,9 @@ OUTAGE_URL = (
 LISTING_URL = (
     "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/todays-program--june-2nd/4338906"
 )
+ENGLISH_URL = (
+    "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/east-madurai-road-widening/4338231"
+)
 ARTICLE_TITLE = (
     "இது நல்ல ஐடியா! வடமாநில ரயில்களை மதுரை வழியாக இயக்க"
 )
@@ -304,6 +307,8 @@ def english_article(**fields: Any) -> dict[str, Any]:
         record_id="NEWS-MDU-EN-0001",
         title=ENGLISH_TITLE,
         event_time="2026-10-02T18:10:00",
+        source_url=ENGLISH_URL,
+        raw_reference=ENGLISH_URL,
         data={"content": ENGLISH_CONTENT, "language": "en"},
     )
     payload.update(fields)

@@ -3,6 +3,11 @@
 from intelligence.models.actors import Actor
 from intelligence.models.base import Confidence, OptionalConfidence, Ratio, StrictModel
 from intelligence.models.classification import ClassificationInfo, DepartmentHint, RelevanceInfo
+from intelligence.models.correlation import (
+    CorrelationReport,
+    IncidentCluster,
+    PairRelationship,
+)
 from intelligence.models.evidence import Evidence
 from intelligence.models.incident import SCHEMA_VERSION, Incident
 from intelligence.models.language import (
@@ -32,11 +37,13 @@ __all__ = [
     "ClassificationInfo",
     "Confidence",
     "ConfidenceSummary",
+    "CorrelationReport",
     "DedupMetadata",
     "DepartmentHint",
     "Evidence",
     "GisResolution",
     "Incident",
+    "IncidentCluster",
     "LanguageDetection",
     "LanguageInfo",
     "LocationMention",
@@ -44,6 +51,7 @@ __all__ = [
     "MULTILINGUAL",
     "Observation",
     "OptionalConfidence",
+    "PairRelationship",
     "ProcessingMetadata",
     "Ratio",
     "RelevanceInfo",

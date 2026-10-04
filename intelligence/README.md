@@ -8,9 +8,9 @@ evidence-grounded `Incident`s: whether the text reports an event at all, what ha
 did, who the text names, and the exact source span behind each claim.
 
 `Incident` is the primary output: what the platform persists, what GIS writes coordinates into, what later stages reason
-over. Severity, dedup and clustering, trends, LLM reasoning and the chatbot build on that contract and are still
-planned. Extraction is deterministic — rules and controlled vocabularies, every important result citing a range in the
-untouched source text, nothing unsupported invented.
+over. Severity, trends, LLM reasoning and the chatbot build on that contract and are still planned. Extraction is
+deterministic — rules and controlled vocabularies, every important result citing a range in the untouched source text,
+nothing unsupported invented.
 
 ## 2. Architecture
 
@@ -27,8 +27,8 @@ Intelligence                          — this module
   ├── Incident Assembly               — one record in, one candidate incident out
   ├── Place / Actor Mentions          — raw places and named parties, with roles
   ├── Relevance / Classification      — is this an incident, and which event type
+  ├── Deduplication / Correlation     — which records account for one event (Stage 8)
   ├── Severity                        — planned
-  ├── Deduplication / Clustering      — planned (Stage 8)
   ├── Trends / Briefing               — planned (Stage 11)
   └── LLM / Chatbot                   — planned (Stages 10, 12)
   ↓
@@ -37,9 +37,10 @@ Incident Intelligence                 — incident + evidence ledger + confidenc
 Platform / GIS / Collector Workspace
 ```
 
-Three seams are implemented: `mapping.map_record(record)` builds a candidate incident from a record,
+Three per-record seams are implemented: `mapping.map_record(record)` builds a candidate incident from a record,
 `mapping.enrich_incident(draft)` adds its places and parties, and `mapping.classify_incident(draft)` decides whether it
-is an incident and which event type the text supports — each returning an `IncidentDraft`.
+is an incident and which event type the text supports — each returning an `IncidentDraft`. Stage 8 is collection-level:
+`mapping.correlate_incidents(drafts)` reads a batch of those drafts and returns them annotated, plus a report.
 
 ## 3. Source Contract
 
@@ -89,7 +90,7 @@ never papered over.
 | 5 | `CommonRecord` → candidate `Incident` mapping | Complete |
 | 6 | Place and actor mentions from the record's own text | Complete |
 | 7 | Relevance and event classification | Complete |
-| 8 | Deduplication and incident clustering | Planned |
+| 8 | Deduplication and incident clustering | Complete |
 | 9 | Persistence and platform integration | Planned |
 | 10 | Optional LLM intelligence | Planned |
 | 11 | Trends, alerts and briefing | Planned |
@@ -129,7 +130,7 @@ The draft's whole ledger is re-verified before it returns, then the unresolved c
   `actor_affiliation`, `mentioned_only`, `unresolved`) and the granularity it claims, keeping `unknown` when the text
   does not say what kind of place it is and the surface exactly as printed beside any display form.
 - Refuses a bare generic type word with its reason kept (`generic_unlocated`, `plural_generic`, `blocked_oblique`), and
-  **performs no GIS resolution** — no coordinates, canonical ids, boundaries or administrative parents (§10).
+  **performs no GIS resolution** — no coordinates, canonical ids, boundaries or administrative parents (§11).
 
 ### Actor extraction
 
@@ -180,7 +181,34 @@ unresolved on purpose: 349 market and weather observations whose ranked candidat
 asserted type, and 5 news records that named no event type or only a weak candidate. Severity, GIS and dedup stay
 unresolved.
 
-## 9. Language and Tamil NLP
+## 9. Stage 8 — Deduplication and Cross-Source Correlation
+
+`correlate_incidents(drafts)` is collection-level: it reads a batch of classified drafts and returns the same drafts
+annotated, plus a `CorrelationReport`. Nothing is overwritten — each incident keeps its own id, evidence ledger and
+`source_url`, and a cluster lists every member record, source and url so "View Source" survives the merge.
+
+- **Blocking** — a pair is only read when it shares something concrete: record id, whole-record digest, url page
+  (fragment and query stripped), printed fingerprint, word signature, headline signature, or district + calendar day.
+  District and day shortlist a pair; they never settle it.
+- **Signals** — content 0.50, headline 0.20, event time 0.10, place 0.10, parties 0.10. Content is Jaccard plus a
+  size-guarded containment, so boilerplate repeated by a short note cannot inflate a pair. Same district, same type,
+  same day and the same named place and party, with no shared wording, score 0.29 — under every floor.
+- **Decisions** — `duplicate` (identical record/page/text), `merge_candidate` (shared story, different feed),
+  `linked` (related, distinct), `unresolved` (above the link floor, below the merge floor — no confidence recorded),
+  `contradicts` (one story, incompatible types over shared text), `unique`. Conflicting event types, a stated district
+  change or a stated event time days apart block a merge; so does each side stating its own event day, which is what
+  keeps a daily forecast page that reprints the same words one incident per day instead of one incident; and an
+  observation feed never links outward.
+- **Clustering** — union-find over duplicates and merge candidates only; the canonical member is the one with a clean
+  page url, the richest evidence and the oldest stamp. Every incident gets `fingerprint` and `dedup` with the reasons
+  and the features behind its verdict.
+
+Over the 359 distinct records of the October 2026 capture Stage 8 shortlists 9,259 of 64,261 possible pairs and finds
+exactly one cluster: the lead article, held three times (the 08:52 fetch, the same page through its `#commentbox`
+anchor, and the 19:33 re-fetch). The seven IMD forecast rows that share one page and near-identical wording stay seven
+incidents, each stating its own day; 356 come back `unique`.
+
+## 10. Language and Tamil NLP
 
 The foundation these readers sit on is deterministic Tamil NLP, not a model: **script and language detection** from
 letter shapes (`und` undetermined, `mul` genuinely multilingual); **normalisation that preserves source positions**, so
@@ -190,7 +218,7 @@ surfaces** — Tamil month and day-part names, numerals, elapsed and counted for
 entity surfaces** — locative marks, postpositions, qualifiers, noun and verb blocklists. Original Tamil text is always
 kept: normalisation and transliteration only widen what extraction can reach, never replacing the source in output.
 
-## 10. GIS Boundary
+## 11. GIS Boundary
 
 Stage 6 identifies **`திருமங்கலம்`** as a raw place mention — the printed surface, its span, the role and granularity the
 text claims — and Stage 7 only ever asks whether the record states one district without contradiction. Canonical
@@ -200,7 +228,7 @@ Intelligence writes `resolution_state = "pending_gis"` and leaves the `gis` writ
 GIS. It invents no coordinates, GIS ids, administrative parents or geometry, and never calls a name a town when the
 text does not say.
 
-## 11. Evidence and Traceability
+## 12. Evidence and Traceability
 
 Evidence is why the output can be acted on: a Collector's dashboard drives administrative action, so an incident that
 cannot be traced to its source is worse than no incident. Every extracted fact that matters carries the source record
@@ -211,46 +239,54 @@ spans replay against the field's current text, so a source edit surfaces as a fa
 
 `extraction/spans.py` is the only sanctioned producer of `Evidence`; hand-typed offsets fail the same check.
 
-## 12. AI / NLP / LLM Roadmap
+## 13. AI / NLP / LLM Roadmap
 
 The implemented stages are rule-based NLP over controlled vocabularies — predictable, verifiable, debuggable, with no
 model in the loop. Stage 7 leaves a conflict unresolved rather than guessing at it, and later stages may introduce a
-model for exactly those cases: cues that tie or an unseen phrasing (Stage 10), several records describing one event
-(Stage 8), briefings worth summarising (Stages 10-11), the Collector chatbot (Stage 12). LLM output would be validated
+model for exactly those cases: cues that tie or an unseen phrasing (Stage 10), the pairs Stage 8 leaves `unresolved`,
+briefings worth summarising (Stages 10-11), the Collector chatbot (Stage 12). LLM output would be validated
 the same way: it must reproduce a source span or be rejected, and is marked probabilistic in provenance.
 
-## 13. Testing
+## 14. Testing
 
 ```bash
 python -m pytest intelligence/tests -q
 python -m compileall intelligence
 ```
 
-736 tests pass (verified 2026-10-03) and `compileall` is clean. They cover the Stage 1 contracts, span arithmetic and
+756 tests pass (verified 2026-10-04) and `compileall` is clean. They cover the Stage 1 contracts, span arithmetic and
 verification, the language / normalisation / morphology / transliteration layer, temporal reading, record mapping, place
 and actor reading, and an end-to-end replay of the real October 2026 Madurai capture. Stage 6 is 184 tests; Stage 7 is
 94 — vocabulary integrity, span-anchored matching and refusals, scoring floors and tie margins, the relevance ladder
 over news, weather and market records in three scripts, and the chain replayed on the real fixtures with Stage 5 and 6
-output unchanged field for field. Run against every normalised record on disk (359 distinct October 2026 rows: 342
-market, 10 news, 7 weather) the chain classifies all of them with no failure, no span that will not replay and no drift
-on a second pass, in about 3 s.
+output unchanged field for field. Stage 8 is 21 — each relationship outcome, the prohibitions (two commodities at one
+market, an observation feed, a daily feed page reprinting itself one day at a time, district plus date plus type plus
+place plus parties alone), the blocked and unblocked time signals, immutability and source-url survival, and
+determinism over the whole capture. Run against every normalised record on disk (359 distinct October 2026 rows: 342
+market, 10 news, 7 weather) the chain classifies and correlates all of them with no failure, no span that will not
+replay and no drift on a second pass, in about 3.5 s.
 
-## 14. Current Limitations
+## 15. Current Limitations
 
 - Lexical extraction bounds recall: an unseen place, entity or event form never becomes a candidate at all.
 - Negation and context understanding are limited — "denied the permission" still reads as an official response.
 - No coreference: a pronoun or a bare re-mentioned name adds nothing to a party that already has a span.
-- No canonical GIS resolution — raw mentions and `pending_gis` only (§10).
+- No canonical GIS resolution — raw mentions and `pending_gis` only (§11).
 - The taxonomy has no type for "rainfall warning" or "today's price", so those records stay relevant but unresolved,
   their candidate recorded in `category_scores`.
 - Relevance trusts the district the feed claims, so a mislabelled feed looks relevant.
 - A habitual statement can score as an event: a report on the accidents a junction *causes* reads as `vehicle_accident`
   with a real span behind it — vocabulary calibration, not a phantom quote.
 - Generic-word refusals are surface-exact, so a sandhi form (`இச்சம்பவம்`) escapes them; an audit line, not a decision.
-- No severity derivation, no deduplication or clustering, no LLM reasoning, summaries or chatbot — Stages 8 onward.
+- No severity derivation, no LLM reasoning, summaries or chatbot — Stages 9 onward.
+- Stage 8 similarity is raw token overlap: no IDF, so a common phrasing counts as much as a rare one, and two accounts
+  of one event in different scripts or heavily reworded share no content signal and can fall to `unique` rather than
+  `linked`. Recall is traded for never merging on district, date and type alone. A stated event day outranks identical
+  wording, so two copies of one page whose resolved days disagree are also separated.
+- Stage 8 blocks inside a district + calendar day, so one busy day in one district is quadratic; fine at capture size.
 - The prose gate keeps only text after the last dropped stamp run, so a pre-stamp lede is lost.
 
-## 15. Integration Boundaries
+## 16. Integration Boundaries
 
 | Owner | Responsibility |
 | --- | --- |
@@ -262,8 +298,8 @@ on a second pass, in about 3 s.
 Intelligence owns no connector, table, map layer or screen; teammate-module defects are reported here with file:line
 evidence rather than fixed here.
 
-## 16. Next Stage
+## 17. Next Stage
 
-Next: **Stage 8 — Deduplication and Incident Clustering.** The capture already carries the same story twice, once per
-comment anchor: decide, from fingerprints, spans and the relevance and type Stage 7 settled, when records describe one
-event, and carry `supporting_record_ids` and `status` forward without losing which source said what.
+Next: **Stage 9 — Persistence and Platform Integration.** The incidents and the `CorrelationReport` Stage 8 produces
+are the payload: hand them to the platform's store, keep `source_url` and the evidence ledger intact so the Collector
+workspace can open the source behind any claim, and let GIS write coordinates into the slot Stage 6 left pending.
