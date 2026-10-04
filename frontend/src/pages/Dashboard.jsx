@@ -4,6 +4,31 @@ import StatusCard from '../components/StatusCard.jsx'
 import { API_BASE_URL, getHealth, getRecords } from '../services/api.js'
 import '../App.css'
 
+function formatDateTime(value) {
+  if (!value) return '—'
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
+}
+
+function getRecordPreview(record) {
+  const payload = record.data ?? {}
+  const content = payload.content ?? payload.forecast ?? payload.commodity ?? ''
+
+  if (typeof content !== 'string') {
+    return 'No preview available.'
+  }
+
+  return content.length > 160 ? `${content.slice(0, 157)}...` : content
+}
+
 function Dashboard() {
   const [connection, setConnection] = useState({
     status: 'checking',
@@ -11,6 +36,7 @@ function Dashboard() {
     lastChecked: null,
   })
   const [records, setRecords] = useState([])
+  const [recordsStatus, setRecordsStatus] = useState('loading')
   const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
@@ -39,14 +65,17 @@ function Dashboard() {
 
     async function fetchRecords() {
       try {
+        setRecordsStatus('loading')
         const items = await getRecords()
-        if (isActive) {
-          setRecords(Array.isArray(items) ? items : [])
-        }
+        if (!isActive) return
+
+        const nextRecords = Array.isArray(items) ? items : []
+        setRecords(nextRecords)
+        setRecordsStatus(nextRecords.length === 0 ? 'empty' : 'ready')
       } catch {
-        if (isActive) {
-          setRecords([])
-        }
+        if (!isActive) return
+        setRecords([])
+        setRecordsStatus('error')
       }
     }
 
@@ -92,32 +121,55 @@ function Dashboard() {
             <span>{records.length} total</span>
           </div>
 
-          {records.length === 0 ? (
-            <p className="records-empty">No CommonRecords have been stored yet.</p>
+          {recordsStatus === 'loading' ? (
+            <p className="records-empty">Loading records...</p>
+          ) : recordsStatus === 'error' ? (
+            <p className="records-empty">Unable to load records. Please check the backend connection.</p>
+          ) : recordsStatus === 'empty' ? (
+            <p className="records-empty">No records available yet.</p>
           ) : (
-            <div className="records-table-wrap">
-              <table className="records-table">
-                <thead>
-                  <tr>
-                    <th>Record ID</th>
-                    <th>Source</th>
-                    <th>Type</th>
-                    <th>District</th>
-                    <th>Title</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.map((record) => (
-                    <tr key={record.record_id}>
-                      <td>{record.record_id}</td>
-                      <td>{record.source_id}</td>
-                      <td>{record.record_type}</td>
-                      <td>{record.location?.district || '—'}</td>
-                      <td>{record.title}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="record-list">
+              {records.map((record) => (
+                <article key={record.record_id} className="record-card">
+                  <div className="record-card-top">
+                    <div>
+                      <p className="record-type">{record.source_id} · {record.record_type}</p>
+                      <h4>{record.title}</h4>
+                    </div>
+                    {record.source_url ? (
+                      <a
+                        className="source-link"
+                        href={record.source_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View Source ↗
+                      </a>
+                    ) : null}
+                  </div>
+
+                  <div className="record-meta-grid">
+                    <div>
+                      <span className="meta-label">District</span>
+                      <strong>{record.location?.district || '—'}</strong>
+                    </div>
+                    <div>
+                      <span className="meta-label">Event time</span>
+                      <strong>{formatDateTime(record.event_time)}</strong>
+                    </div>
+                    <div>
+                      <span className="meta-label">Status</span>
+                      <strong>{record.status || '—'}</strong>
+                    </div>
+                    <div>
+                      <span className="meta-label">Severity</span>
+                      <strong>{record.severity || '—'}</strong>
+                    </div>
+                  </div>
+
+                  <p className="record-preview">{getRecordPreview(record)}</p>
+                </article>
+              ))}
             </div>
           )}
         </section>
