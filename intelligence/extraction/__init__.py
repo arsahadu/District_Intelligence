@@ -1,4 +1,9 @@
-"""Deterministic extraction primitives. Later stages build pipeline steps from these."""
+"""Deterministic extraction primitives for the legacy chain.
+
+The span arithmetic in ``spans`` and the text readers are shared foundations: the LLM path cuts
+its evidence with them too. The cue-driven readers (event types, severity, status, places,
+actors) are frozen semantic rules, to be replaced by LLM stages rather than extended.
+"""
 
 from __future__ import annotations
 

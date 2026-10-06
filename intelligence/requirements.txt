@@ -1,14 +1,22 @@
 # Intelligence module dependencies.
-# Stages 1-2 are contracts plus span arithmetic, so the runtime surface is
-# deliberately tiny: pydantic for the models, and Python's own hashlib /
-# unicodedata / dataclasses for extraction/extraction/spans.py.
+# Stage 1 is contracts, span arithmetic and one provider call, so the runtime
+# surface is deliberately small: pydantic for the models, Python's own hashlib /
+# unicodedata / dataclasses for extraction/extraction/spans.py, urllib for the
+# OpenAI-compatible wire, the official groq SDK for Groq, and python-dotenv only
+# to read local settings.
 
 # Model definition and validation (models/, config/, extraction/).
 pydantic>=2.7,<3
+
+# Reading INTELLIGENCE_LLM_* from the repository .env (llm.py).
+python-dotenv>=1.0
+
+# Official Groq client (llm.py:GroqProvider).
+groq>=1.0,<2
 
 # Test only.
 pytest>=8.0
 
 # Declared here so later stages add to this file rather than assuming packages
-# exist in the developer environment. Nothing network-, database-, ML- or
-# OCR-related is required to build, validate or span-anchor an Incident.
+# exist in the developer environment. Nothing database-, ML- or OCR-related is
+# required to build, validate or span-anchor an Incident.

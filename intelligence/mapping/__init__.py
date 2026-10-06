@@ -1,4 +1,9 @@
-"""The record seam: CommonRecord-shaped input to Stage 1 Incident output."""
+"""The deterministic chain's seams: a CommonRecord-shaped input to a legacy Incident.
+
+``record_input.read_record`` is shared with the LLM path, which reads records through it. The
+other seams assemble, enrich, classify, assess and correlate with cue-driven rules; they are
+frozen and are replaced stage by stage, not extended.
+"""
 
 from __future__ import annotations
 

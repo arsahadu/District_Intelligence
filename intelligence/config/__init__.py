@@ -1,4 +1,9 @@
-"""Controlled vocabulary data for Intelligence."""
+"""Controlled vocabulary data for the deterministic chain.
+
+Cue lists here assign event types, severities and statuses by wording. That semantic work moves
+to the LLM (see intelligence/README.md), so these tables are frozen: fix a defect, do not extend
+a list. The enumerations the output contract shares live in intelligence.models.
+"""
 
 from intelligence.config.event_type_cues import (
     CUE_LEXICON_VERSION,
