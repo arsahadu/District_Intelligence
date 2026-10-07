@@ -22,11 +22,10 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
-from intelligence.contract import Incident
+from intelligence.contract import Incident, RecordKind
 from intelligence.intelligence import InvalidExtraction, extract_incident
 from intelligence.llm import LLMConfig, LLMError, LLMProvider, build_provider, load_dotenv_file
 from intelligence.mapping.record_input import CONTENT_PATH, MappingError
-from intelligence.models.enums import EventType
 
 #: Where the platform API lives. Intelligence reads it and never writes it.
 ENV_API_BASE_URL = "INTELLIGENCE_API_BASE_URL"
@@ -40,6 +39,7 @@ RECORDS_PATH = "/records"
 
 #: The incident fields one console line carries, in the order the dashboard reads them.
 LINE_FIELDS = (
+    ("kind", "record_kind"),
     ("type", "incident_type"),
     ("category", "category"),
     ("department", "department"),
@@ -214,7 +214,10 @@ class Outcome:
     @property
     def contextual(self) -> bool:
         """The record carries context, not an incident: nothing said what happened."""
-        return self.incident is not None and self.incident.incident_type is EventType.UNRESOLVED
+        return (
+            self.incident is not None
+            and self.incident.record_kind is not RecordKind.INCIDENT
+        )
 
     @property
     def review_required(self) -> bool:
@@ -287,6 +290,8 @@ def describe_incident(incident: Incident) -> str:
         else:
             rendered = str(value)
         parts.append(f"{label}={rendered}")
+    if incident.context_facts:
+        parts.append(f"facts={len(incident.context_facts)}")
     state = incident.validation.state.value
     findings = len(incident.validation.issues)
     parts.append(f"review={state}({findings})")
@@ -380,7 +385,8 @@ def print_report(summary: RunSummary, *, detailed: bool = False, stream: Any = N
     block(
         "Non-incident/contextual records",
         summary.contextual,
-        "no incident type was supported by a quote, so these carry context only",
+        "nothing in these evidenced an event, so they are filed as forecast or context and keep "
+        "the values their own fields hold",
     )
     block("Failures", summary.failures)
 

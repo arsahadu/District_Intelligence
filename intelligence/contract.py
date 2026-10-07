@@ -72,6 +72,26 @@ class PriorityLevel(str, Enum):
     LOW = "low"
 
 
+class RecordKind(str, Enum):
+    """What kind of statement the record makes. Read from the source's meaning, never from the feed."""
+
+    INCIDENT = "incident"
+    FORECAST = "forecast"
+    CONTEXT = "context"
+    UNRESOLVED = "unresolved"
+
+
+class ContextType(str, Enum):
+    """The shape of a record that states no event, so context is filed as itself instead of as a
+    hollow case with every incident field empty."""
+
+    MARKET_PRICE = "market_price"
+    WEATHER_FORECAST = "weather_forecast"
+    ADMINISTRATIVE_NOTICE = "administrative_notice"
+    GENERAL_INFORMATION = "general_information"
+    OTHER = "other"
+
+
 class EntityType(str, Enum):
     """Who or what a source names. Places that act as parties live here; sites go to locations."""
 
@@ -277,6 +297,31 @@ class Relationship(StrictModel):
         return self
 
 
+class ContextFact(StrictModel):
+    """One value the record carries that states no event: a price, a temperature, a warning level.
+
+    A fact copies rather than interprets, so its value is the words the field it names really holds
+    and its evidence is the span those words occupy. Nothing source-shaped is declared here: the
+    field path is the record's own, whatever a future feed puts in it.
+    """
+
+    fact_id: str
+    field: str
+    value: str
+
+    method: ExtractionMethod = ExtractionMethod.UNRESOLVED
+    confidence: OptionalConfidence = None
+    review: ReviewState = ReviewState.UNRESOLVED
+    evidence_ids: list[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _accepted_needs_evidence(self) -> "ContextFact":
+        if self.review is ReviewState.ACCEPTED and not self.evidence_ids:
+            raise ValueError(f"accepted context fact {self.fact_id!r} cites no evidence")
+        return self
+
+
 class Issue(StrictModel):
     """One deterministic finding about the model's answer."""
 
@@ -347,6 +392,10 @@ class Incident(StrictModel):
     incident_id: str
     provenance: Provenance
 
+    #: What the record turned out to be: an event, a forecast, or information about a state.
+    record_kind: RecordKind = RecordKind.UNRESOLVED
+    context_type: Optional[ContextType] = None
+
     title: Optional[str] = None
     description: Optional[str] = None
 
@@ -364,6 +413,11 @@ class Incident(StrictModel):
     locations: list[Location] = Field(default_factory=list)
     entities: list[Entity] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
+
+    #: The values a record that states no event still carries, kept because they are the record's
+    #: use rather than a rejected case.
+    context_facts: list[ContextFact] = Field(default_factory=list)
+
     evidence: list[Evidence] = Field(default_factory=list)
 
     claims: list[Claim] = Field(default_factory=list)
@@ -381,6 +435,7 @@ class Incident(StrictModel):
             ("location", self.locations, "location_id"),
             ("entity", self.entities, "entity_id"),
             ("relationship", self.relationships, "relationship_id"),
+            ("context fact", self.context_facts, "fact_id"),
         ):
             repeated = unique_ids(items, id_field)
             if repeated:
@@ -395,6 +450,7 @@ class Incident(StrictModel):
                 "locations": self.locations,
                 "entities": self.entities,
                 "relationships": self.relationships,
+                "context_facts": self.context_facts,
             }
         )
         dangling = sorted(referenced - known)
@@ -406,6 +462,44 @@ class Incident(StrictModel):
         self._check_values_are_claimed()
         self._check_validation_state()
         return self
+
+    @model_validator(mode="after")
+    def _kind_is_what_the_evidence_said(self) -> "Incident":
+        """One truth about what a record is: an evidenced event makes an incident, nothing else does."""
+        typed = not self._value_is_open("incident_type")
+        if self.record_kind is RecordKind.INCIDENT and not (typed or self._account_is_an_event()):
+            raise ValueError(
+                "record_kind=incident with nothing evidencing an event: neither incident_type nor "
+                "a grounded account of what happened is quoted, so call it context or leave it "
+                "unresolved, never an incident without the event"
+            )
+        if self.record_kind in (RecordKind.FORECAST, RecordKind.CONTEXT) and typed:
+            raise ValueError(
+                f"record_kind={self.record_kind.value} while incident_type carries "
+                f"{self.incident_type.value}: an evidenced event is not context"
+            )
+        if self.context_type is not None and self.record_kind not in (
+            RecordKind.FORECAST,
+            RecordKind.CONTEXT,
+        ):
+            raise ValueError(
+                "context_type is only carried by a record this pipeline read as a forecast or as "
+                "context, never by an incident"
+            )
+        return self
+
+    def _account_is_an_event(self) -> bool:
+        """A quoted account of what happened establishes the event even where the type token did not.
+
+        This is what keeps one unreadable classification field from demoting a real incident: the
+        kind rests on the event, and the event rests on any quote that established it.
+        """
+        claim = self._claims_by_field().get("description")
+        return (
+            self.description is not None
+            and claim is not None
+            and claim.review is ReviewState.ACCEPTED
+        )
 
     def _claims_by_field(self) -> dict[str, Claim]:
         return {claim.field: claim for claim in self.claims}
@@ -445,6 +539,7 @@ class Incident(StrictModel):
                 ("locations", self.locations, "location_id"),
                 ("entities", self.entities, "entity_id"),
                 ("relationships", self.relationships, "relationship_id"),
+                ("context_facts", self.context_facts, "fact_id"),
             )
             for item in items
             if item.review is not ReviewState.ACCEPTED
@@ -507,6 +602,10 @@ class Incident(StrictModel):
         ] + [
             f"relationships[{item.relationship_id}]"
             for item in self.relationships
+            if item.review is not ReviewState.ACCEPTED
+        ] + [
+            f"context_facts[{item.fact_id}]"
+            for item in self.context_facts
             if item.review is not ReviewState.ACCEPTED
         ]
         return open_claims + open_items

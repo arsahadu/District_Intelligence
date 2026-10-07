@@ -8,7 +8,14 @@ from typing import Any, Optional
 
 import pytest
 
-from intelligence.contract import Claim, Incident, Provenance, ReviewState
+from intelligence.contract import (
+    Claim,
+    ContextFact,
+    Incident,
+    Provenance,
+    RecordKind,
+    ReviewState,
+)
 from intelligence.llm import LLMProvider, LLMRequest, LLMResponse, TransportError
 from intelligence.models.enums import EventType, ExtractionMethod
 from intelligence import pipeline
@@ -30,6 +37,8 @@ from intelligence.tests.record_fixtures import market_price, waterlogging, weath
 BASE = "http://backend.test"
 
 PRICE_PAYLOAD = {
+    "record_kind": "context",
+    "context_type": "market_price",
     "title": {"value": market_price()["title"], "field": "title"},
     "description": {"value": "46.0", "field": "data.min_price", "quote": "46.0", "char_start": 0},
     "category": {"value": "agriculture", "field": "data.commodity", "quote": "Tomato",
@@ -84,6 +93,7 @@ def stub(record: dict, *, incident_type: Optional[EventType] = None) -> Incident
     fields: dict[str, Any] = {"title": record["title"]}
     if incident_type is not None:
         fields["incident_type"] = incident_type
+        fields["record_kind"] = RecordKind.INCIDENT
         claims.append(
             Claim(
                 field="incident_type",
@@ -182,7 +192,9 @@ def test_the_run_classifies_incidents_context_and_failures():
     assert summary.failures == [] and summary.review_required == []
     assert summary.counts()["Incidents produced"] == 1
     assert summary.counts()["Non-incident/contextual"] == 1
+    assert summary.incidents[0].incident.record_kind is RecordKind.INCIDENT
     assert summary.incidents[0].incident.incident_type is EventType.URBAN_WATERLOGGING
+    assert summary.contextual[0].incident.record_kind is RecordKind.CONTEXT
     assert summary.contextual[0].incident.incident_type is EventType.UNRESOLVED
 
 
@@ -243,11 +255,20 @@ def test_the_console_line_names_every_field_a_run_is_read_by():
     line = describe_incident(incident)
 
     assert line.startswith(incident.incident_id)
-    for label in ("type=", "category=", "department=", "severity=", "priority=", "status=",
-                  "event_time=", "review="):
+    for label in ("kind=", "type=", "category=", "department=", "severity=", "priority=",
+                  "status=", "event_time=", "review="):
         assert label in line
+    assert "kind=incident" in line
     assert "type=urban_waterlogging" in line
     assert "priority=-" in line
+    assert "kind=unresolved" in describe_incident(stub(market_price()))
+
+    carrying = stub(market_price()).model_copy(update={"context_facts": [
+        ContextFact(fact_id="fact-1", field="data.min_price", value="46.0",
+                    review=ReviewState.REVIEW_REQUIRED)
+    ]})
+    assert "facts=1" in describe_incident(carrying)
+    assert "facts=" not in describe_incident(incident)
 
 
 def test_the_summary_prints_counts_and_groups_the_results(capsys):
@@ -272,7 +293,7 @@ def test_the_summary_prints_counts_and_groups_the_results(capsys):
     ):
         assert f"{label}: {value}" in out
     assert "Failures (1)" in out and "R-3 failed: extraction refused" in out
-    assert "no incident type was supported by a quote" in out
+    assert "nothing in these evidenced an event" in out
     assert "Needs a person: INC-NEWS-MDU-WLR-0001, INC-AGRI" in out
     assert out.count("INC-NEWS-MDU-WLR-0001 |") == 1
 

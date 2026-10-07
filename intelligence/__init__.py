@@ -17,6 +17,8 @@ from typing import Any
 
 from intelligence.contract import (
     Claim,
+    ContextFact,
+    ContextType,
     Entity,
     EntityType,
     EventStatus,
@@ -29,6 +31,7 @@ from intelligence.contract import (
     Location,
     PriorityLevel,
     Provenance,
+    RecordKind,
     Relationship,
     ReviewState,
     SCHEMA_VERSION,
@@ -70,6 +73,8 @@ __all__ = [
     "extraction",
     "mapping",
     "Claim",
+    "ContextFact",
+    "ContextType",
     "Entity",
     "EntityType",
     "EventStatus",
@@ -83,6 +88,7 @@ __all__ = [
     "PriorityLevel",
     "Provenance",
     "RecordContext",
+    "RecordKind",
     "Relationship",
     "ReviewState",
     "SCHEMA_VERSION",
