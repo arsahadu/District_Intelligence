@@ -1,0 +1,487 @@
+"""Stage 1 pipeline: a CommonRecord in, one LLM call, an Incident that only says what the record does."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Optional
+
+import pytest
+
+from intelligence.context import build_context
+from intelligence.contract import (
+    Department,
+    EventStatus,
+    IncidentCategory,
+    IssueCode,
+    ReviewState,
+)
+from intelligence.intelligence import (
+    MAX_ANSWER_ITEMS,
+    ExtractionDraft,
+    InvalidExtraction,
+    extraction_request,
+)
+from intelligence.llm import (
+    LLMProvider,
+    LLMRequest,
+    LLMResponse,
+    ProviderNotConfigured,
+    StructuredOutputError,
+)
+from intelligence.models.enums import EventType, ExtractionMethod, SeverityLevel, TimePrecision
+from intelligence.pipeline import process_record
+from intelligence.tests.record_fixtures import (
+    base_record,
+    market_price,
+    weather_forecast,
+    waterlogging,
+)
+
+CONTENT = "data.content"
+
+
+@dataclass
+class Scripted(LLMProvider):
+    """Answers with exactly what the test wrote. No determinism is hiding behind it."""
+
+    payload: Any
+    name: str = "scripted"
+    model_id: str = "gpt-oss-120b"
+
+    @property
+    def model(self) -> str:
+        return self.model_id
+
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        body = json.dumps(self.payload) if not isinstance(self.payload, str) else self.payload
+        return LLMResponse(
+            provider=self.name,
+            model=self.model_id,
+            text=body,
+            data=None if isinstance(self.payload, str) else self.payload,
+            latency_ms=12.5,
+        )
+
+
+def quote(content: str, text: str, occurrence: int = 0) -> dict[str, Any]:
+    """A real span: the offset of the nth copy of the text, taken from the field itself."""
+    position = -1
+    for _ in range(occurrence + 1):
+        position = content.index(text, position + 1)
+    return {
+        "value": text,
+        "field": CONTENT,
+        "quote": text,
+        "char_start": position,
+        "confidence": 0.85,
+    }
+
+
+def synth(content: str, *, title: str = "District report", language: str = "en", **fields) -> dict:
+    payload = base_record(
+        record_id="NEWS-MDU-SYNTH-0001",
+        title=title,
+        event_time=None,
+        data={"content": content, "language": language},
+        source_url="https://example.test/report",
+    )
+    payload.update(fields)
+    return payload
+
+
+RAIN = "நேற்று மாலை பெய்த கனமழையால் சில பகுதிகளில் சாலைகளில் தண்ணீர் தேங்கியது"
+STILL_WATCHING = "கண்காணித்து வருகின்றனர்"
+OFFICIALS = "அதிகாரிகள்"
+
+
+def water_answer() -> dict[str, Any]:
+    content = waterlogging()["data"]["content"]
+    title = waterlogging()["title"]
+    return {
+        "title": {"value": title, "field": "title", "quote": title, "char_start": 0,
+                  "confidence": 0.9},
+        "description": quote(content, RAIN),
+        "incident_type": {"value": "urban_waterlogging", "field": CONTENT,
+                          "quote": "தண்ணீர் தேங்கியது",
+                          "char_start": content.index("தண்ணீர் தேங்கியது"), "confidence": 0.8},
+        "severity": {"value": "moderate", "field": CONTENT, "quote": "கனமழையால்",
+                     "char_start": content.index("கனமழையால்"), "confidence": 0.7},
+        "event_status": {"value": "ongoing", "field": CONTENT, "quote": STILL_WATCHING,
+                         "char_start": content.index(STILL_WATCHING), "confidence": 0.9},
+        "event_time": {"value": "2026-10-03T08:30:00", "precision": "minute", "confidence": 0.8},
+        "locations": [{"text": "மதுரை", "normalized_name": "Madurai", "location_type": "district",
+                       "role": "event_container", "district": "Madurai",
+                       "field": CONTENT, "quote": "மதுரை மாவட்டத்தில்",
+                       "char_start": content.index("மதுரை மாவட்டத்தில்"), "confidence": 0.85}],
+        "entities": [{"text": OFFICIALS, "entity_type": "government_official",
+                      "role": "responding_authority", "field": CONTENT, "quote": OFFICIALS,
+                      "char_start": content.index(OFFICIALS), "confidence": 0.8}],
+        "relationships": [{"kind": "responds_to", "subject": OFFICIALS, "object": "Madurai",
+                           "field": CONTENT, "quote": STILL_WATCHING,
+                           "char_start": content.index(STILL_WATCHING), "confidence": 0.7}],
+    }
+
+
+def run(payload: Any, record: Optional[dict] = None):
+    subject = record if record is not None else waterlogging()
+    return process_record(subject, provider=Scripted(payload=payload))
+
+
+def test_a_grounded_answer_becomes_an_incident_that_keeps_its_source():
+    found = run(water_answer())
+    assert found.incident_id == "INC-NEWS-MDU-WLR-0001"
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.review_required is False
+    assert found.severity is SeverityLevel.MODERATE
+    assert found.event_status.value == "ongoing"
+    assert found.incident_type is EventType.URBAN_WATERLOGGING
+    assert found.description == RAIN
+    assert found.provenance.source_id == "dinamalar"
+    assert found.provenance.source_url == waterlogging()["source_url"]
+    assert found.provenance.retrieved_at is not None
+    assert found.provenance.has_view_source is True
+    assert found.generation.model == "gpt-oss-120b"
+    assert found.generation.input_hash is not None
+
+
+def test_every_accepted_claim_cites_a_span_that_replays_from_the_field():
+    found = run(water_answer())
+    sources = {item.field: item.text for item in build_context(waterlogging()).fields}
+    index = found.evidence_by_id()
+    for claim in found.claims:
+        if claim.review is not ReviewState.ACCEPTED:
+            continue
+        if claim.method is ExtractionMethod.SOURCE_METADATA:
+            continue
+        assert claim.evidence_ids, claim.field
+        for evidence_id in claim.evidence_ids:
+            cited = index[evidence_id]
+            assert cited.record_id == found.provenance.record_id
+            assert sources[cited.field][cited.char_start : cited.char_end] == cited.quote
+
+
+def test_a_quote_the_record_does_not_contain_is_dropped_not_repaired():
+    payload = water_answer()
+    payload["severity"] = {"value": "critical", "field": CONTENT,
+                           "quote": "எல்லோரும் இறந்தனர்", "char_start": 0}
+    found = run(payload)
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert any(issue.code is IssueCode.SPAN_MISMATCH for issue in found.validation.issues)
+    assert all(evidence.quote != "எல்லோரும் இறந்தனர்" for evidence in found.evidence)
+
+
+def test_a_value_outside_the_taxonomy_leaves_the_field_unresolved():
+    payload = water_answer()
+    payload["category"] = {"value": "very urgent indeed", "field": CONTENT,
+                           "quote": "கனமழையால்", "char_start": 40}
+    found = run(payload)
+    assert found.category.value == "unresolved"
+    finding = next(issue for issue in found.validation.issues
+                   if issue.code is IssueCode.INVALID_VALUE)
+    assert "category" in finding.describe()
+    assert found.claim("category").review is ReviewState.REVIEW_REQUIRED
+
+
+def test_the_model_cannot_hand_in_coordinates_canonical_ids_or_its_own_evidence():
+    payload = water_answer()
+    payload["locations"][0]["latitude"] = 9.92
+    payload["locations"][0]["longitude"] = 78.12
+    payload["locations"][0]["canonical_location_id"] = "GAZ-999"
+    payload["evidence"] = [{"evidence_id": "trust-me"}]
+    payload["incident_id"] = "INC-FROM-THE-MODEL"
+    found = run(payload)
+    location = found.locations[0]
+    assert (location.latitude, location.longitude, location.canonical_location_id) == (None, None, None)
+    assert location.resolution_state.value == "pending_gis"
+    assert found.incident_id == "INC-NEWS-MDU-WLR-0001"
+    codes = {issue.code for issue in found.validation.issues}
+    assert IssueCode.UNAUTHORISED_GIS_VALUE in codes
+    assert IssueCode.PROVIDER_WARNING in codes
+    assert all(evidence.method is not ExtractionMethod.UNRESOLVED for evidence in found.evidence)
+
+
+def test_a_quote_from_a_field_the_record_does_not_carry_is_a_finding():
+    payload = water_answer()
+    payload["description"] = {"value": "a summary", "field": "data.transcript", "quote": "a summary"}
+    found = run(payload)
+    assert any(issue.code is IssueCode.UNKNOWN_FIELD for issue in found.validation.issues)
+    assert found.claim("description").review is ReviewState.UNRESOLVED
+
+
+def test_a_repeated_quote_needs_an_offset_and_gets_one_honoured():
+    content = ("Waterlogging on the Main Road. Waterlogging cleared after one pump failed on "
+               "the Main Road.")
+    record = synth(content)
+    loose = {"title": {"value": "District report", "field": "title", "quote": "District report",
+                       "char_start": 0},
+             "description": {"value": "the Main Road", "field": CONTENT, "quote": "the Main Road"}}
+    found = run(loose, record)
+    assert any(issue.code is IssueCode.AMBIGUOUS_QUOTE for issue in found.validation.issues)
+    assert found.description is None
+
+    second = content.index("the Main Road", content.index("the Main Road") + 1)
+    loose["description"]["char_start"] = second
+    pinned = run(loose, record)
+    assert pinned.description == "the Main Road"
+    cited = pinned.evidence_by_id()[pinned.claim("description").evidence_ids[0]]
+    assert cited.char_start == second
+    assert content[cited.char_start : cited.char_end] == "the Main Road"
+
+
+def test_a_title_may_be_grounded_by_repeating_the_record_s_own():
+    payload = water_answer()
+    del payload["title"]["quote"]
+    payload["title"]["field"] = "title"
+    found = run(payload)
+    assert found.title == waterlogging()["title"]
+    assert found.claim("title").review is ReviewState.ACCEPTED
+
+
+def test_the_record_s_own_timestamp_is_accepted_without_a_span():
+    payload = {"event_time": {"value": "2026-10-03T08:30:00", "precision": "minute"}}
+    found = run(payload)
+    assert found.event_time is not None
+    assert found.event_time_precision is TimePrecision.MINUTE
+    claim = found.claim("event_time")
+    assert claim.method is ExtractionMethod.SOURCE_METADATA
+    assert claim.evidence_ids == []
+    assert claim.review is ReviewState.ACCEPTED
+
+
+def test_a_stamp_the_record_never_declared_still_needs_a_quote():
+    record = synth("Heat index crossed 44C at the university campus.", event_time=None)
+    found = run({"event_time": {"value": "2026-05-01T12:00:00", "precision": "hour"}}, record)
+    assert found.event_time is None
+    assert any(issue.code is IssueCode.UNSUPPORTED_CLAIM for issue in found.validation.issues)
+
+
+def test_relationship_sides_resolve_to_the_ids_the_pipeline_assigned():
+    found = run(water_answer())
+    relationship = found.relationships[0]
+    assert relationship.from_ref == found.entities[0].entity_id
+    assert relationship.to_ref == found.locations[0].location_id
+    assert relationship.review is ReviewState.ACCEPTED
+
+
+def test_a_link_to_something_the_answer_never_named_is_not_a_fact():
+    payload = water_answer()
+    payload["relationships"] = [{"kind": "involves", "subject": "WHO", "object": "Madurai"}]
+    found = run(payload)
+    assert found.relationships[0].review is ReviewState.UNRESOLVED
+    assert any(issue.code is IssueCode.UNRESOLVED_REFERENCE for issue in found.validation.issues)
+
+
+def test_an_ungrounded_location_stays_a_candidate_and_asks_for_review():
+    payload = water_answer()
+    payload["locations"].append({"text": "Tallam town", "location_type": "locality",
+                                 "field": CONTENT, "quote": "தேங்கிய பகுதிகள்"})
+    found = run(payload)
+    candidate = found.locations[-1]
+    assert (candidate.location_id, candidate.review) == ("loc-2", ReviewState.UNRESOLVED)
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert "locations[loc-2]" in found.unaccepted_fields()
+
+
+def test_an_empty_answer_is_an_unresolved_incident_not_a_fabricated_one():
+    found = run({})
+    assert found.is_empty is True
+    assert found.validation.state is ReviewState.UNRESOLVED
+    assert found.claims == [] and found.evidence == []
+    assert found.title is None and found.severity is SeverityLevel.UNRESOLVED
+    assert found.provenance.record_id == "NEWS-MDU-WLR-0001"
+
+
+def test_an_answer_that_is_not_shaped_right_fails_instead_of_becoming_an_incident():
+    with pytest.raises(InvalidExtraction):
+        run({"locations": "Madurai"})
+    with pytest.raises(StructuredOutputError):
+        run("this was never JSON at all")
+    with pytest.raises(InvalidExtraction):
+        run({"severity": {"value": ["high", "critical"]}})
+
+
+def test_no_provider_configured_is_a_failure_the_caller_sees():
+    with pytest.raises(ProviderNotConfigured, match="INTELLIGENCE_LLM_MODEL"):
+        process_record(waterlogging(), environ={})
+
+
+def test_the_same_answer_over_the_same_record_gives_the_same_incident():
+    first, second = run(water_answer()), run(water_answer())
+    stable = lambda incident: {**incident.to_storage_document(),
+                               "validation": {**incident.to_storage_document()["validation"],
+                                              "checked_at": None},
+                               "generation": {**incident.to_storage_document()["generation"],
+                                              "generated_at": None}}
+    assert stable(first) == stable(second)
+
+
+def test_an_english_record_goes_through_the_same_chain():
+    content = "Madurai Corporation will widen East Madurai road after the July flooding."
+    record = synth(content, title="East Madurai road widening", language="en")
+    found = run({
+        "title": {"value": "East Madurai road widening", "field": "title",
+                  "quote": "East Madurai road widening", "char_start": 0},
+        "description": quote(content, "will widen East Madurai road"),
+        "incident_type": quote(content, "widen East Madurai road") | {"value": "road_damage"},
+        "locations": [quote(content, "East Madurai road") | {"text": "East Madurai road",
+                                                             "location_type": "street",
+                                                             "role": "event_location"}],
+    }, record)
+    assert found.incident_type is EventType.ROAD_DAMAGE
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.locations[0].text == "East Madurai road"
+
+
+def test_the_prompt_asks_for_tokens_from_the_contract_and_nothing_else():
+    request = extraction_request(build_context(waterlogging()))
+    assert "data.content" in request.user
+    assert RAIN[:20] in request.user
+    assert ", ".join(member.value for member in SeverityLevel) in request.system
+    assert "urban_waterlogging" in request.system
+    assert "latitude" not in request.system.split("Tokens per enumerated field")[0]
+    assert set(ExtractionDraft.model_fields) >= {"locations", "entities", "relationships"}
+
+
+def test_every_source_offers_the_fields_it_actually_carries():
+    weather = build_context(weather_forecast())
+    assert "data.content" not in weather.paths
+    assert {"data.forecast", "data.max_temp_c", "data.min_temp_c", "data.station_id"} <= set(
+        weather.paths
+    )
+    assert weather.text_of("data.max_temp_c") == "33.1"
+    assert weather.text_of("data.warning") is None
+
+    market = build_context(market_price())
+    assert {"data.commodity", "data.market", "data.unit", "data.min_price"} <= set(market.paths)
+    assert market.text_of("data.unit") == "kg"
+    assert build_context(waterlogging()).text_of("data.language") is None
+
+
+def test_a_price_line_grounds_on_its_own_numbers_and_stays_a_contextual_record():
+    record = market_price(min_price=55.0, max_price=60.0)
+    payload = {
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "55.0", "field": "data.min_price", "quote": "55.0",
+                        "char_start": 0},
+        "category": {"value": "agriculture", "field": "data.commodity", "quote": "Tomato",
+                     "char_start": 0},
+    }
+    found = run(payload, record)
+    assert found.description == "55.0"
+    assert found.category is IncidentCategory.AGRICULTURE
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.priority is None
+    assert found.validation.state is ReviewState.ACCEPTED
+    cited = found.evidence_by_id()[found.claim("description").evidence_ids[0]]
+    assert (cited.field, cited.quote) == ("data.min_price", "55.0")
+
+
+def test_record_metadata_is_never_a_field_the_model_may_quote_from():
+    payload = water_answer() | {
+        "event_status": {"value": "reported", "field": "record metadata", "quote": "reported"}
+    }
+    found = run(payload)
+    assert found.claim("event_status").review is ReviewState.UNRESOLVED
+    issue = next(item for item in found.validation.issues if item.field == "event_status")
+    assert issue.code is IssueCode.UNKNOWN_FIELD
+
+
+def test_the_prompt_names_the_item_enums_and_says_a_record_need_not_be_an_incident():
+    request = extraction_request(build_context(market_price()))
+    assert "field data.commodity" in request.user
+    assert "does not exist here unless it is printed" in request.system
+    assert "Not every record is an incident" in request.system
+    assert "'record metadata'" in request.system
+    assert "- entities[].entity_type: person, government_official" in request.system
+    assert "- locations[].role: event_location, event_container" in request.system
+    assert "- relationships[].kind: located_at, involves" in request.system
+
+
+FRAUD = (
+    "The economic offences wing searched a rented office in Anna Nagar on Tuesday and took away "
+    "ledgers, three sim cards and two laptops after depositors said the scheme had stopped paying "
+    "the money it promised."
+)
+FRAUD_TITLE = "Investment fraud probe"
+
+
+def test_a_classification_is_accepted_from_the_event_it_describes_not_its_token():
+    """The Melur case: nothing in the text says fraud, police or investigation in English."""
+    record = synth(FRAUD, title=FRAUD_TITLE, language="en")
+    found = run({
+        "title": {"value": FRAUD_TITLE, "field": "title"},
+        "description": quote(FRAUD, "searched a rented office in Anna Nagar on Tuesday"),
+        "incident_type": quote(FRAUD, "had stopped paying") | {"value": "cyber_or_financial_fraud"},
+        "category": quote(FRAUD, "took away") | {"value": "law_and_order"},
+        "department": quote(FRAUD, "economic offences wing") | {"value": "police"},
+        "severity": quote(FRAUD, "ledgers, three sim cards and two laptops")
+                    | {"value": "moderate"},
+        "event_status": quote(FRAUD, "searched") | {"value": "under_investigation"},
+        "locations": [quote(FRAUD, "Anna Nagar") | {"text": "Anna Nagar",
+                                                   "location_type": "locality",
+                                                   "role": "event_location"}],
+        "entities": [
+            quote(FRAUD, "economic offences wing") | {"text": "economic offences wing",
+                                                      "entity_type": "government_body",
+                                                      "role": "responding_authority"},
+            quote(FRAUD, "depositors") | {"text": "depositors", "entity_type": "community_group",
+                                          "role": "affected_party"},
+        ],
+        "relationships": [quote(FRAUD, "after depositors said")
+                          | {"kind": "responds_to", "subject": "economic offences wing",
+                             "object": "depositors"}],
+    }, record)
+
+    assert found.incident_type is EventType.CYBER_OR_FINANCIAL_FRAUD
+    assert found.category is IncidentCategory.LAW_AND_ORDER
+    assert found.department is Department.POLICE
+    assert found.event_status is EventStatus.UNDER_INVESTIGATION
+    assert found.severity is SeverityLevel.MODERATE
+    assert found.priority is None
+    assert [item.text for item in found.locations] == ["Anna Nagar"]
+    assert [item.text for item in found.entities] == ["economic offences wing", "depositors"]
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+
+    cited = found.evidence_by_id()[found.claim("incident_type").evidence_ids[0]]
+    assert (cited.field, cited.quote) == (CONTENT, "had stopped paying")
+    assert "fraud" not in cited.quote.lower()
+    assert found.claim("description").evidence_ids != found.claim("event_status").evidence_ids
+
+
+def test_the_prompt_reads_an_event_from_the_body_instead_of_a_token_from_the_headline():
+    rules = extraction_request(build_context(waterlogging())).system.split("Rules:\n")[1]
+    assert "A quote proves what happened; it does not have to contain the word for it" in rules
+    assert "Read the event from the body, not from the headline" in rules
+    assert "never because its text is in another language" in rules
+    assert "Metadata never supports a classification" in rules
+    assert "Navigation links, related-story listings and date stamps describe no event" in rules
+    assert "stay null unless the record" not in rules
+    assert "do not read furniture as an event" in rules
+    assert "does not exist here unless it is printed" in rules
+
+
+def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised():
+    """One completion has a size. The overflow is dropped, and the drop is said out loud."""
+    record = synth(FRAUD, title=FRAUD_TITLE, language="en")
+    found = run({
+        "title": {"value": FRAUD_TITLE, "field": "title"},
+        "locations": [quote(FRAUD, "Anna Nagar") | {"text": f"place {index}",
+                                                    "location_type": "locality",
+                                                    "role": "event_location"}
+                      for index in range(MAX_ANSWER_ITEMS + 3)],
+    }, record)
+
+    assert len(found.locations) == MAX_ANSWER_ITEMS
+    assert [item.text for item in found.locations][:2] == ["place 0", "place 1"]
+    assert found.locations[0].review is ReviewState.ACCEPTED
+    issue = next(item for item in found.validation.issues
+                 if item.code is IssueCode.PROVIDER_WARNING and item.field == "locations")
+    assert f"the first {MAX_ANSWER_ITEMS} were kept" in issue.detail
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+    rules = extraction_request(build_context(record)).system.split("Rules:\n")[1]
+    assert f"never more than {MAX_ANSWER_ITEMS} in any list" in rules

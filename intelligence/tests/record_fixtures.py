@@ -25,6 +25,9 @@ OUTAGE_URL = (
 LISTING_URL = (
     "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/todays-program--june-2nd/4338906"
 )
+ENGLISH_URL = (
+    "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/east-madurai-road-widening/4338231"
+)
 ARTICLE_TITLE = (
     "இது நல்ல ஐடியா! வடமாநில ரயில்களை மதுரை வழியாக இயக்க"
 )
@@ -123,6 +126,40 @@ ENGLISH_CONTENT = (
 )
 FORECAST_TEXT = (
     "Multi cloud with thunder lightning and light rain over Madurai district"
+)
+ADVERTISEMENT_TITLE = "விளம்பரதாரர்கள் விவரங்கள்"
+ADVERTISEMENT_CONTENT = (
+    "விளம்பரம் கொடுக்க தொடர்பு கொள்ளவும். விளம்பரதாரர்கள் பட்டியல் இங்கு "
+    "வெளியிடப்பட்டுள்ளது. Advertisement charges apply for the classified column; "
+    "subscribe to the daily supplement."
+)
+MIXED_TITLE = "மதுரையில் மின்தடை: K.K. Nagar பகுதியில் power outage"
+MIXED_CONTENT = (
+    "மதுரை: K.K. Nagar மற்றும் அண்ணா நகர் பகுதிகளில் இன்று காலை 10 மணி முதல் "
+    "மாலை 4 மணி வரை power outage தொடர்ந்தது. மின்தடை காரணமாக தையல் கடைகள் "
+    "மூடப்பட்டன என்று வியாபாரிகள் தெரிவித்தனர்."
+)
+TIE_TITLE = "மதுரையில் வெள்ளம்: மின்தடை தொடர்கிறது"
+TIE_CONTENT = (
+    "மதுரை: தொடர் மழையால் கீழவாசல் தெருக்களில் வெள்ளம் தேங்கியது. அதே நேரத்தில் "
+    "நான்கு மணி நேர மின்தடை காரணமாக பம்ப் ஹவுஸ் இயங்கவில்லை. நகராட்சி "
+    "பணியாளர்கள் நீக்க முயன்றனர்."
+)
+KEYWORD_BAIT_TITLE = "மதுரை மருந்தகம் குறித்து குழு கூட்டம்"
+KEYWORD_BAIT_CONTENT = (
+    "மதுரை: நகர மருத்துவமனையில் டெங்கு சிகிச்சைக்காக தனி வார்டு ஏற்படுத்தப்பட்டுள்ளது. "
+    "இச்சம்பவம் குறித்து போலீஸ் நிலையத்தில் புகார் அளிக்கப்பட்டுள்ளது. The incident "
+    "was booked as a case, and the official said there is no problem in the matter."
+)
+CYCLONE_WARNING_TEXT = (
+    "Orange alert: cyclonic circulation over Madurai district. "
+    "Cyclone with gale winds and heavy rain likely to continue"
+)
+RAIN_WARNING_TEXT = "Generally cloudy sky with Light rain over Madurai district"
+CROP_DISTRESS_TITLE = "வெள்ளத்தில் பயிர் நஷ்டம்: விவசாயிகள் கண்ணீர்"
+CROP_DISTRESS_CONTENT = (
+    "மதுரை: அழகர் கூடும் விராங்கிப்பகுதியில் வெள்ளத்தில் பயிர் சேதமடைந்தது. "
+    "நட்ட ஈடு கேட்டு விவசாயிகள் மறியலில் ஈடுபட்டனர்."
 )
 class Place(BaseModel):
     raw_text: Optional[str] = None
@@ -270,6 +307,8 @@ def english_article(**fields: Any) -> dict[str, Any]:
         record_id="NEWS-MDU-EN-0001",
         title=ENGLISH_TITLE,
         event_time="2026-10-02T18:10:00",
+        source_url=ENGLISH_URL,
+        raw_reference=ENGLISH_URL,
         data={"content": ENGLISH_CONTENT, "language": "en"},
     )
     payload.update(fields)
@@ -332,3 +371,170 @@ def capture() -> tuple[dict[str, Any], ...]:
         english_article(),
         weather_forecast(),
     )
+AGRI_RETRIEVED_AT = "2026-10-03T14:03:29.086508+00:00"
+IMD_RETRIEVED_AT = "2026-10-03T14:03:22.923707+00:00"
+def market_price(
+    *,
+    market: str = "Anna nagar",
+    market_id: str = "125",
+    commodity: str = "Tomato",
+    min_price: float = 46.0,
+    max_price: float = 50.0,
+    district: Optional[str] = DISTRICT,
+    **fields: Any,
+) -> dict[str, Any]:
+    """One Uzhavar Santhai price line, field for field as the marketing feed states it."""
+    place = f"{market} Uzhavar Santhai"
+    url = f"https://agrimark.tn.gov.in/home/getPrice_dir/2026-10-03/21/{market_id}"
+    payload = base_record(
+        record_id=f"AGRI-MDU-{market.replace(' ', '_').upper()}-{commodity.upper()}-2026-10-03",
+        source_id="tn_agri_marketing",
+        source_type="agriculture",
+        record_type="market_price",
+        title=f"{commodity} price - {place}",
+        event_time="2026-10-03T00:00:00",
+        location={
+            "raw_text": f"{place}, {district}" if district else None,
+            "district": district,
+            "state": STATE,
+        },
+        data={
+            "market": market,
+            "market_id": market_id,
+            "commodity": commodity,
+            "quantity": 800.0,
+            "min_price": min_price,
+            "max_price": max_price,
+            "unit": "kg",
+            "district_id": "21",
+        },
+        source_url=url,
+        raw_reference=url,
+        retrieved_at=AGRI_RETRIEVED_AT,
+    )
+    payload.update(fields)
+    return payload
+def weather_warning(
+    *,
+    text: str = RAIN_WARNING_TEXT,
+    record_type: str = "warning",
+    station_id: str = "43360",
+    district: Optional[str] = DISTRICT,
+    **fields: Any,
+) -> dict[str, Any]:
+    """The city weather page's warning line, with the forecast field left as empty as the capture held it."""
+    url = f"https://city.imd.gov.in/citywx/city_weather_test_try_warnings.php?id={station_id}"
+    payload = base_record(
+        record_id=f"WEATHER-{station_id}-{record_type}",
+        source_id="imd_city_madurai",
+        source_type="weather",
+        record_type=record_type,
+        title="Madurai Weather Warning - 03-Oct",
+        event_time="2026-10-03T00:00:00",
+        location={
+            "raw_text": district or None,
+            "district": district,
+            "state": STATE,
+        },
+        data={
+            "min_temp_c": 26.0,
+            "max_temp_c": 36.0,
+            "forecast": "",
+            "warning": text,
+            "relative_humidity_0830": None,
+            "relative_humidity_1730": None,
+            "station_id": station_id,
+        },
+        source_url=url,
+        raw_reference=url,
+        retrieved_at=IMD_RETRIEVED_AT,
+    )
+    payload.update(fields)
+    return payload
+def crop_distress_report(
+    *,
+    district: Optional[str] = DISTRICT,
+    language_hint: Optional[str] = "ta",
+    **fields: Any,
+) -> dict[str, Any]:
+    """An agriculture record whose own prose states what happened."""
+    payload = base_record(
+        record_id="AGRI-MDU-DISTRESS-0001",
+        source_id="tn_agri_marketing",
+        source_type="agriculture",
+        record_type="distress_report",
+        title=CROP_DISTRESS_TITLE,
+        event_time="2026-10-03T06:30:00",
+        location={"raw_text": DISTRICT, "district": district, "state": STATE},
+        data={"content": CROP_DISTRESS_CONTENT, "language": language_hint},
+        source_url="https://agrimark.tn.gov.in/home/distress/2026-10-03/21",
+        raw_reference="https://agrimark.tn.gov.in/home/distress/2026-10-03/21",
+        retrieved_at=AGRI_RETRIEVED_AT,
+    )
+    payload.update(fields)
+    return payload
+def advertisement(**fields: Any) -> dict[str, Any]:
+    payload = base_record(
+        record_id="NEWS-MDU-AD-0001",
+        title=ADVERTISEMENT_TITLE,
+        event_time="2026-10-03T07:00:00",
+        data={"content": ADVERTISEMENT_CONTENT, "language": "ta"},
+        source_url="https://www.dinamalar.com/classified/advertisers/4338999",
+        raw_reference="https://www.dinamalar.com/classified/advertisers/4338999",
+    )
+    payload.update(fields)
+    return payload
+def mixed_language_article(**fields: Any) -> dict[str, Any]:
+    payload = base_record(
+        record_id="NEWS-MDU-MIXED-0001",
+        title=MIXED_TITLE,
+        event_time="2026-10-03T09:00:00",
+        data={"content": MIXED_CONTENT, "language": "ta"},
+        source_url="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/power-cut/4338950",
+        raw_reference="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/power-cut/4338950",
+    )
+    payload.update(fields)
+    return payload
+def two_hazard_article(**fields: Any) -> dict[str, Any]:
+    payload = base_record(
+        record_id="NEWS-MDU-TIE-0001",
+        title=TIE_TITLE,
+        event_time="2026-10-03T09:15:00",
+        data={"content": TIE_CONTENT, "language": "ta"},
+        source_url="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/flood-and-outage/4338960",
+        raw_reference="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/flood-and-outage/4338960",
+    )
+    payload.update(fields)
+    return payload
+def keyword_bait_article(**fields: Any) -> dict[str, Any]:
+    payload = base_record(
+        record_id="NEWS-MDU-BAIT-0001",
+        title=KEYWORD_BAIT_TITLE,
+        event_time="2026-10-03T09:30:00",
+        data={"content": KEYWORD_BAIT_CONTENT, "language": "ta"},
+        source_url="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/ward-meeting/4338970",
+        raw_reference="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/ward-meeting/4338970",
+    )
+    payload.update(fields)
+    return payload
+
+
+
+WATERLOGGING_TITLE = "Heavy rain causes waterlogging in Madurai"
+WATERLOGGING_CONTENT = (
+    "மதுரை மாவட்டத்தில் நேற்று மாலை பெய்த கனமழையால் சில பகுதிகளில் சாலைகளில் தண்ணீர் தேங்கியது. பொதுமக்கள் சிரமத்திற்கு உள்ளாகினர். அதிகாரிகள் நிலைமையை கண்காணித்து வருகின்றனர்."
+)
+
+
+def waterlogging(**fields: Any) -> dict[str, Any]:
+    """The brief's own example: rain-driven waterlogging, officials still monitoring."""
+    payload = base_record(
+        record_id="NEWS-MDU-WLR-0001",
+        title=WATERLOGGING_TITLE,
+        event_time="2026-10-03T08:30:00",
+        data={"content": WATERLOGGING_CONTENT, "language": "ta"},
+        source_url="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/rain-waterlogging/4338980",
+        raw_reference="https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/rain-waterlogging/4338980",
+    )
+    payload.update(fields)
+    return payload

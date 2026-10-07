@@ -1,250 +1,340 @@
 # District Intelligence — Intelligence Module
 
-## 1. Purpose
+## 1. Boundary
 
-This module is the AI/NLP intelligence layer of the Collector's District Intelligence Platform. It takes
-source-independent `CommonRecord` objects from the data integration layer and transforms them into structured,
-evidence-grounded `Incident`s: what happened, when, where the text says it happened, who the text names, and the exact
-source span behind each claim.
+This package is the AI/NLP intelligence layer of the Collector's District Intelligence Platform. It reads
+source-independent `CommonRecord` objects from Data Integration and returns structured, evidence-grounded `Incident`s.
 
-`Incident` is the primary intelligence output: the object the platform persists, GIS writes coordinates into, and
-later stages reason over. Classification and relevance, severity, dedup and clustering, trends, LLM reasoning and the
-chatbot build on that contract and are planned, not implemented. Extraction is deterministic — rules and controlled
-vocabularies, every important result citing a range in the untouched source text, nothing unsupported invented.
-
-## 2. Architecture
-
-```
-Source (Dinamalar, IMD weather, AgMarkNet markets, departmental feeds)
-  ↓
-Connector + normaliser                — Data Integration
-  ↓
-CommonRecord                          — external input contract
-  ↓
-Intelligence                          — this module
-  ├── Language / Text                 — script detection, normalisation, morphology, stamps
-  ├── Temporal Extraction             — surfaces, then event / publication / reporting roles
-  ├── Incident Assembly               — one record in, one candidate incident out
-  ├── Place Mentions                  — raw places the text names, with roles
-  ├── Actor Mentions                  — parties the text ties to the event
-  ├── Event Classification            — planned (Stage 7)
-  ├── Relevance / Severity            — planned (Stage 7)
-  ├── Deduplication / Clustering      — planned (Stage 8)
-  ├── Trends / Briefing               — planned (Stage 11)
-  └── LLM / Chatbot                   — planned (Stages 10, 12)
-  ↓
-Incident Intelligence                 — incident + evidence ledger + confidence + review flags
-  ↓
-Platform / GIS / Collector Workspace
-```
-
-Two seams are implemented: `mapping.map_record(record)` builds a candidate incident from a record, and
-`mapping.enrich_incident(draft)` adds its places and parties, each returning an `IncidentDraft`.
-
-## 3. Source Contract
-
-`CommonRecord` is an **external, source-independent input contract** owned by Data Integration; any feed that can be
-normalised into one enters the same intelligence pipeline.
-
-| Source | What it contributes |
-| --- | --- |
-| Dinamalar (Tamil news) | article text, headline, publish stamps |
-| IMD weather | warnings and measurements |
-| Tamil Nadu agriculture / market (AgMarkNet) | price and distress records |
-| Future departmental feeds (PWD, power, revenue, police) | complaints, tickets, notices |
-| Future disaster feeds (flood control, nowcasts) | event and warning records |
-
-Intelligence never imports ingestion code or depends on a connector's internals. `mapping/record_input.py` reads
-records by declared field path (`title`, `data.content`, `data.language`, `location.district`, `event_time`,
-`retrieved_at`, `source_url`, `record_id`) against a structural protocol, so a renamed or missing field fails loudly
-instead of surfacing as a silent `None`.
-
-## 4. Intelligence Output
-
-An `Incident` is one candidate account of one event, derived from one or more source records.
-
-| Section | Holds |
-| --- | --- |
-| `incident_id`, `fingerprint`, `status`, `origin` | stable readable identity, dedup fingerprint, lifecycle state, pipeline/manual/imported origin |
-| `title`, `language` | headline as published plus optional display translation; primary language, script, detection reasoning, text representations |
-| `event_time`, `reported_at` | partially-known instants with semantics, precision and their own evidence |
-| `spatial` | raw place mentions, district hint and its authority, the GIS write-back slot |
-| `actors` | named parties with the role the text gave them |
-| `relevance`, `classification` | whether this is an incident, event type, scores, department hints — contract only today |
-| `severity`, `observations` | evidence-weighted level or an explicit unknown; counts and amounts the source stated |
-| `evidence`, `supporting_record_ids` | every quote pinned to a source field with offsets and validation state; the records it came from |
-| `confidence`, `review`, `processing` | component scores and unresolved field count, whether a human should look, stage/config/input hashes |
-
-Unsupported information stays unresolved — `severity.level = "unresolved"`, empty `classification`, an `event_time`
-with an explicit absence reason, `resolution_state = "pending_gis"`. A gap is stated, never papered over.
-
-## 5. Stage Progress
-
-| Stage | Purpose | Status |
-| --- | --- | --- |
-| 1 | Intelligence contracts: `Incident`, `Evidence`, enums, event taxonomy | Complete |
-| 2 | Evidence and span extraction: derived offsets, verification, revalidation | Complete |
-| 3 | Language, normalisation and Tamil text handling | Complete |
-| 4 | Temporal expression extraction and time roles | Complete |
-| 5 | `CommonRecord` → candidate `Incident` mapping | Complete |
-| 6 | Place and actor mentions from the record's own text | Complete |
-| 7 | Relevance and event classification | Planned |
-| 8 | Deduplication and incident clustering | Planned |
-| 9 | Persistence and platform integration | Planned |
-| 10 | Optional LLM intelligence | Planned |
-| 11 | Trends, alerts and briefing | Planned |
-| 12 | Collector chatbot | Planned |
-
-## 6. Stage 5 — CommonRecord → Incident
-
-`map_record(record, policy)` assembles the candidate incident:
-
-- **Structural adapter** — reads the record by field path, keeps text verbatim, hashes what it read for re-runs.
-- **Language detection** — script evidence over code points; the feed's own label is kept, disagreement recorded.
-- **Text and boilerplate handling** — publish stamps (`ADDED :`, `UPDATED :`) split off the body as publication metadata.
-- **Temporal extraction** — event time from the body when the text supports it, else an explicit absence; retrieval
-  time is metadata, never event time.
-- **Evidence and metadata** — one ledger per record, offsets derived by quoting and never typed, every value citing it.
-- **Source provenance** — record id, source url and raw reference carried through to point back at the story.
-- **Candidate assembly** — title, language, spatial stub, severity, confidence, processing and review; `MappingPolicy`
-  supplies timezone, body-text fields and the incident id prefix.
-- **Validation and review** — failed checks, ambiguities and unresolved sections surface as `review.reasons` and warnings.
-
-**Source `event_time` is not trusted for news.** Current Tamil news ingestion puts an article's `ADDED` timestamp into
-`CommonRecord.event_time` — a publication moment, not an event one. Stage 5 preserves it, warns about it, and never
-lets it become an article's event time; that has to come from the body text.
-
-## 7. Stage 6 — Place and Actor Mentions
-
-`enrich_incident(draft, policy)` adds what the record's own text mentions to a Stage 5 draft, changing nothing Stage 5
-settled. Both readers work over one versioned place, entity and cue vocabulary (`config/mention_words.py`).
-
-### Place extraction
-
-- Extracts **raw place mentions** from title and body: the dateline, a case-marked type word (`மதுரை மாவட்டத்தில்`),
-  a known name, a name in front of a type word, and Latin spellings for English and Tanglish surfaces.
-- Identifies the roles the text supports: `reporting_origin`, `event_location`, `event_container`, `institution_name`,
-  `actor_affiliation`, `mentioned_only`, `unresolved`.
-- Records the granularity the text claims, keeps `unknown` when the text does not say what kind of place it is, and
-  preserves the surface exactly as printed beside any display form.
-- Attaches `Evidence` to every mention, and refuses a bare generic type word with its reason kept (`generic_unlocated`,
-  `plural_generic`, `blocked_oblique`).
-- **Does not perform GIS resolution** — no coordinates, canonical ids, boundaries or administrative parents (§9).
-
-### Actor extraction
-
-- Extracts people, officials, government bodies, courts, police stations, hospitals, local bodies, companies, NGOs,
-  community groups, parties and media outlets where the text supports them (`ActorType`), each with the role the text
-  gave it (`ActorRole`: `reported_by`, `decision_maker`, `responding_authority`, `affected_party`, `beneficiary`, …).
-- Uses entity heads plus context rules — a title licenses the bare name behind it, a collective head names a group, a
-  cue verb ties a party to the event, precedence decides whose word survives when one surface is cued twice.
-- Does not invent actors on thin evidence: an unattached party stays a visible refusal (`uncued`), an affiliation is
-  credited only when the modifier can mean exactly one place, a response cue only goes to a body that can respond.
-- Keeps the phrase span that produced the actor and the cue span that justified its role — two citations per actor.
-
-### Evidence
-
-```
-mention / actor  →  exact source span  →  Evidence  →  source record
-```
-
-`enrich_incident` merges new evidence into the incident's ledger and **re-verifies the whole ledger before returning**
-the enriched draft, then recomputes the unresolved field count and re-applies review flags. A mention whose span does
-not reproduce its quote is not an output.
-
-## 8. Language and Tamil NLP
-
-The foundation these readers sit on is deterministic Tamil NLP, not a model:
-
-- **Language and script detection** from letter shapes; `und` for undetermined, `mul` for genuinely multilingual text.
-- **Normalisation with source-position preservation** — derived text maps back to the original, so matches cite real offsets.
-- **Tamil morphology** — case and postposition suffix candidates, stem variants, clitic and plural tails.
-- **Transliteration** — script table plus curated vocabulary giving Latin candidates for a Tamil word.
-- **Tamil temporal expressions** — month and day-part names, Tamil numerals, elapsed and counted surfaces, day-first dates.
-- **Tamil place and entity surfaces** — locative marks, postpositions, qualifiers, noun and verb blocklists.
-
-Original Tamil text is always kept; normalisation and transliteration only widen what extraction can reach, never
-replacing the source in evidence or in output.
-
-## 9. GIS Boundary
-
-Stage 6 identifies **`திருமங்கலம்`** as a raw place mention: the printed surface, its span, the role the text gives it,
-the granularity the text claims. Canonical geography is the GIS module's job.
-
-```
-Intelligence                            GIS
-"திருமங்கலம்" (mention + span)  →  canonical geographic entity
-                                    → Taluk / Block / Village
-                                    → coordinates and boundaries
-```
-
-Intelligence writes `resolution_state = "pending_gis"` and leaves the `gis` write-back slot on `SpatialHint` unset for
-GIS. It invents no coordinates, GIS ids, administrative parents or geometry, and never calls a name a town when the
-text does not say.
-
-## 10. Evidence and Traceability
-
-Evidence is why the output can be acted on: a Collector's dashboard drives administrative action, so an incident that
-cannot be traced to its source is worse than no incident. Every extracted fact that matters carries:
-
-- **source record id** — which `CommonRecord` it came from (`Incident.supporting_record_ids`);
-- **source url / raw reference** — where that record was fetched from;
-- **source field** — the field path and a hash of the whole field text;
-- **exact text and span** — the verbatim quote, character offsets, validation state (`unvalidated`, `validated`, `mismatch`);
-- **provenance** — extraction method, modality, confidence, provider, stage versions;
-- **verification** — spans replayed against the field's current text, so a source edit surfaces as a failed check.
-
-`extraction/spans.py` is the only sanctioned producer of `Evidence`; hand-typed offsets fail the same check.
-
-## 11. AI / NLP / LLM Roadmap
-
-The implemented stages are rule-based NLP over controlled vocabularies — predictable, verifiable, debuggable. No LLM is
-in use today; later stages may introduce one where it earns its place:
-
-- ambiguous event classification and relevance when cues conflict (Stage 7);
-- cross-source reasoning when several records describe one event (Stage 8);
-- complex summaries and Collector briefings (Stages 10-11);
-- the Collector chatbot answering over stored incidents (Stage 12).
-
-LLM output is validated the same way: it must reproduce a source span or be rejected, and is marked probabilistic in provenance.
-
-## 12. Testing
-
-```bash
-python -m pytest intelligence/tests -q
-python -m compileall intelligence
-```
-
-642 tests pass (verified 2026-10-03) and `compileall` is clean. They cover the Stage 1 contracts, span arithmetic and
-verification, the language / normalisation / morphology / transliteration layer, temporal reading and record mapping,
-and an end-to-end replay of the real October 2026 Madurai news capture. Stage 6 alone is 184 tests: word reading,
-place mentions and refusals, actors and cues, and enrichment with re-verification and the GIS boundary.
-
-## 13. Current Limitations
-
-- Lexical extraction bounds recall: an unseen place or entity form never becomes a candidate at all.
-- Negation and context understanding are limited — "denied the permission" still reads as an official response.
-- No coreference: a pronoun or a bare re-mentioned name adds nothing to a party that already has a span.
-- No canonical GIS resolution — raw mentions and `pending_gis` only (§9).
-- No event classification, relevance or severity derivation; the Stage 1 taxonomy is a contract only.
-- No deduplication or clustering: one record yields one incident even when two describe the same event.
-- No LLM reasoning, summaries or chatbot.
-- The prose gate keeps only text after the last dropped stamp run, so a pre-stamp lede is lost.
-
-## 14. Integration Boundaries
+**Intelligence lives entirely inside `intelligence/`.** It imports nothing from `ingestion/`, `backend/`, `frontend/` or
+GIS — it reads records by declared field path against a structural protocol, so a renamed or missing field fails loudly
+instead of surfacing as a silent `None`. Where it does talk to the platform it talks HTTP: the orchestrator `GET`s
+CommonRecords from the API and posts nothing back, and it never opens a database connection. Nothing outside this
+directory is changed to make it work, and no other team is required to change its contract to consume it.
 
 | Owner | Responsibility |
 | --- | --- |
-| Ahad — Data Integration | Source → `CommonRecord` (connectors, normalisation, fetch scheduling) |
-| Prem — Intelligence | `CommonRecord` → Incident intelligence (this module) |
+| Ahad — Data Integration | Source → `CommonRecord` |
+| Prem — Intelligence | `CommonRecord` → validated `Incident` (this module) |
 | Alagan — GIS | Place mentions → canonical geography, coordinates, visualisation |
-| Alex — Platform | Incident intelligence → PostgreSQL, FastAPI, Collector workspace |
+| Alex — Platform | `Incident` → PostgreSQL, FastAPI, Collector workspace |
 
-Intelligence owns no connector, table, map layer or screen; teammate-module defects are reported here with file:line
-evidence rather than fixed here.
+## 2. The chain
 
-## 15. Next Stage
+```
+Source (Dinamalar news, IMD weather, AgMarkNet markets, departmental feeds)
+  ↓
+Connector + normaliser                          — Data Integration (not this module)
+  ↓
+Platform API: GET /records                      — Alex's FastAPI over http(s), one CommonRecord per object
+  ↓
+pipeline.run_pipeline                           — read the batch, one record at a time, collect and report
+  ↓
+pipeline.process_record (per record)            — config → provider → extraction → validated incident
+  ↓
+context.build_context                           — read fields verbatim, one SourceField per citable field
+  ↓
+intelligence.extraction_request                 — one prompt: the record's fields + the taxonomy tokens
+  ↓
+LLMProvider.generate_structured                 — llm.py: one model, via the groq SDK or any OpenAI-compatible endpoint
+  ↓
+ExtractionDraft                                 — wire model: all-optional, extra keys ignored
+  ↓
+intelligence.validate_extraction → _assemble    — span replay, enum coercion, id assignment
+  ↓
+contract.Incident (schema 2.0)                  — claims + evidence + validation + generation
+  ↓
+Platform / GIS / Collector workspace
+```
 
-Next: **Stage 7 — Relevance and Event Classification.** Use the evidence Stages 4-6 already collect to decide, with
-citations, whether a record is an incident, which event type it is, and which departments are plausible owners —
-severity following in the same stage.
+`python -m intelligence.pipeline` is the one runnable entry point; `pipeline.process_record(record)` is the one-record
+boundary it drives. `context.build_context`, `intelligence.extraction_request`, `intelligence.extract_incident` and
+`intelligence.validate_extraction` are callable directly for stage-by-stage testing.
+
+**One chain, three sources.** `data` is source-specific while the CommonRecord around it is not, so the context builder
+discovers the keys a record actually carries instead of assuming a news-shaped one: a Dinamalar article offers
+`data.content`, an IMD record `data.warning`/`data.forecast` and its temperatures, a market line `data.commodity`,
+`data.market` and its prices. Strings and rendered numbers both become citable fields, so a quote of `50.0` from
+`data.max_price` grounds exactly like a Tamil sentence. There is no `NewsPipeline`/`IMDPipeline`/`AgriPipeline` and no
+field list per `source_type` — `source_type` and `record_type` reach the model as context, and the prompt tells it that
+a field another source usually carries does not exist here unless it is printed.
+
+## 3. Modules
+
+| File | Responsibility |
+| --- | --- |
+| `contract.py` | The stable output contract: `Incident`, `Claim`, `Location`, `Entity`, `Relationship`, `Provenance`, `Validation`, `Generation`, `Issue` and the enums they use |
+| `context.py` | `RecordContext` — every field the record actually carries as a citable `SourceField`, plus their hash, prompt block and provenance |
+| `llm.py` | Provider abstraction: `LLMConfig`, `LLMRequest`, `LLMResponse`, `LLMProvider`, `GroqProvider`, `OpenAICompatibleProvider`, `build_provider` |
+| `intelligence.py` | Orchestration: request building, draft parsing, grounding, assembly into an `Incident` |
+| `pipeline.py` | The runnable orchestrator: `process_record` for one record, `fetch_records`/`fetch_record` over the API, `run_pipeline` for a batch, `print_report` and `main` for the console |
+| `models/`, `extraction/`, `mapping/`, `config/` | Deterministic foundations: five modules shared with the LLM path, the rest frozen (§9) |
+
+## 4. The Incident contract
+
+`contract.Incident` is what the platform persists. `schema_version = "2.0"`.
+
+| Section | Holds |
+| --- | --- |
+| `incident_id`, `provenance` | `INC-<record_id>` and the whole source trail: record id, source id/type, record type, `source_url`, `raw_reference`, `retrieved_at`, modality, language/district/state hints, declared severity and status, `input_hash` |
+| `title`, `description` | what the record printed, grounded by echoing it |
+| `incident_type`, `category`, `department`, `severity`, `priority`, `event_status` | controlled taxonomy tokens, or `unresolved` / `unknown` |
+| `event_time`, `event_time_precision` | the instant the source stated, with its precision |
+| `locations`, `entities`, `relationships` | quoted mentions with role and granularity; typed parties; links by assigned id |
+| `evidence`, `claims` | every span pinned to a field with offsets and a validation state; one claim per field with method, confidence and the evidence it cites |
+| `validation` | `accepted` / `review_required` / `unresolved`, plus every `Issue` found |
+| `generation` | provider, model, prompt version, input hash, latency, warnings |
+
+The taxonomy enums exist so results can be stored and filtered. They are the only controlled vocabulary in the new
+path — classification is the model's job, not a phrase list's.
+
+`unresolved` and `unknown` are legal values, not failures. A gap is stated, never papered over. `priority` is nullable,
+because a system that has not weighed the district yet should not pretend to have ranked it. The LLM does not get a
+canonical id or coordinate field to answer into at all, so inventing one is structurally impossible.
+
+## 5. Review states
+
+- **`accepted`** — the claim or item is grounded and no finding touched it.
+- **`review_required`** — something is grounded, but a value was refused, a quote was ambiguous, or an item could not be
+  supported. The incident is real; a person should look at the named fields.
+- **`unresolved`** — nothing was established. No assertion, no confidence.
+
+`Incident.validation.state` derives from these: accepted when something is grounded and nothing is open;
+review_required when something is grounded but findings or open items exist; unresolved when nothing is grounded.
+`unaccepted_fields()` lists the fields still carrying a non-accepted claim, `claim(field)` reads one field's provenance,
+and `is_empty()` says whether anything was learned at all.
+
+## 6. Evidence first
+
+The model never mints an evidence id. It answers with a **quote** and the field it quotes from; the pipeline finds that
+quote in the untouched field text, cuts the span, and derives the id. A claim whose quote is not in the source is
+refused, not repaired.
+
+- A quote that occurs more than once with no `char_start` to disambiguate is **not guessed** — it surfaces as
+  `ambiguous_quote` and the claim stays unresolved. The prompt therefore asks for `char_start` on every quote.
+- Record metadata is never textual evidence. The prompt forbids inventing a field named `metadata` or `record metadata`;
+  a timestamp equal to the record's own `event_time` is answered with no field and no quote and is accepted as
+  `SOURCE_METADATA` citing no span — the one exception to "accepted claims cite evidence", and an honest one: the record
+  did carry that stamp.
+- `title` and `description` may be grounded by repeating the record's own value; every enumerated field needs an
+  explicit quote.
+- A classification quote proves the event happened, it does not have to contain the token. `incident_type`,
+  `category`, `department`, `severity`, `priority` and `event_status` are named for an event the record describes, and the
+  record usually describes it in its own language, so `value` and `quote` almost never match literally. What stays refused
+  is a token with no event sentence behind it — a topic, a heading, or the model's own expectation of such records.
+- The event is read from the body, not the headline, and one span may support several fields.
+- Provenance is copied from the record, never from the answer.
+
+The contract then refuses what a model might have invented: `latitude`/`longitude` or `canonical_location_id` without
+`resolution_state = resolved`; accepted items citing nothing; a value carried with no claim behind it; dangling evidence
+references; duplicate ids; a relationship joining an item to itself; and `validation.state = accepted` while issues are
+present — silent acceptance is a validator error, not a warning.
+
+Findings carry one of `IssueCode`: `unsupported_claim`, `span_mismatch`, `invalid_value`, `unknown_field`,
+`unauthorised_gis_value`, `unresolved_reference`, `missing_provenance`, `ambiguous_quote`, `provider_warning`.
+
+`extraction/spans.py` stays the only sanctioned producer of `Evidence`, for the LLM path as it was for the deterministic
+one.
+
+## 7. Provider abstraction and configuration
+
+`LLMProvider` is one abstract method — `complete(request) -> LLMResponse` — plus concrete `generate_text` and
+`generate_structured`. Two implementations sit behind it and the pipeline knows neither: `GroqProvider` calls Groq
+through the official `groq` SDK (`client.chat.completions.create`), and `OpenAICompatibleProvider` speaks the
+chat-completions wire over stdlib `urllib` for OpenAI, vLLM, Ollama or any other compatible gateway. Which one runs is
+configuration, not code. Both take an injectable client or transport, which is how the whole suite runs offline.
+
+| Env var | Meaning |
+| --- | --- |
+| `INTELLIGENCE_LLM_PROVIDER` | `groq` for the official SDK; `openai_compatible` (aliases `openai`, `vllm`, `ollama`) for any other chat endpoint |
+| `INTELLIGENCE_LLM_MODEL` | required once a provider is chosen |
+| `INTELLIGENCE_LLM_BASE_URL` | endpoint override; each alias has its own default |
+| `INTELLIGENCE_LLM_API_KEY` | never logged — `repr=False`, and `summary()` reports only `api_key_present` |
+| `INTELLIGENCE_LLM_TIMEOUT_SECONDS` | per-request timeout |
+| `INTELLIGENCE_LLM_MAX_RETRIES` | retried on 429/500/502/503/504 with linear backoff |
+| `INTELLIGENCE_LLM_TEMPERATURE`, `INTELLIGENCE_LLM_MAX_TOKENS` | generation controls |
+| `INTELLIGENCE_LLM_REASONING_EFFORT` | `none`/`default`/`low`/`medium`/`high`, sent to the endpoint only when set. A reasoning model spends its completion budget on thinking first, so this is the knob that decides how much of `MAX_TOKENS` reaches the answer |
+
+An answer that the endpoint stopped early is never half-read: `complete()` raises `StructuredOutputError` naming
+`INTELLIGENCE_LLM_MAX_TOKENS` and `INTELLIGENCE_LLM_REASONING_EFFORT` as soon as the endpoint reports
+`finish_reason = "length"`, and a Groq 400 whose code is `json_validate_failed` — the schema-constrained answer never
+arrived complete — carries the same two names.
+
+No key is hardcoded anywhere, and none is ever rendered: `api_key` is excluded from `repr`, and `summary()` reports only
+`api_key_present`. A Groq failure is reported as `TransportError` carrying the SDK error type, the HTTP status and the
+message Groq sent — never the request, whose headers hold the credential — and authentication or permission failures say
+so and are not retried; only genuinely transient ones are, which the SDK handles under `max_retries`. Because the SDK
+adds `/openai/v1/chat/completions` itself, a base URL written in the OpenAI style (`…/openai/v1`) is reduced to its
+origin before it reaches `Groq`. `python-dotenv` reads the repository's local `.env` before `os.environ` is consulted,
+so the model endpoint can live in that file rather than in a shell; `load_dotenv(override=False)` means an exported
+`INTELLIGENCE_LLM_*` variable always wins, and `LLMConfig.from_env(environ=...)` uses the mapping it is given and opens
+no file at all — which is how the suite stays offline and leaves the process environment alone. A `.env` that does not
+exist is simply nothing to load.
+
+An incomplete environment raises `ProviderNotConfigured` naming the variable that is missing. There is no silent
+fallback and no deterministic path pretending to be a model: with no provider configured the pipeline does not produce
+an incident, and an empty answer produces an honest all-unresolved incident carrying only provenance.
+
+Structured answers go as JSON Schema **strict mode** requests when the provider supports it. `GroqProvider` sends
+`{"type": "json_schema", "json_schema": {"name": ..., "strict": true, "schema": ...}}` for any request that carries a
+schema; `OpenAICompatibleProvider` keeps the plain `{"type": "json_object"}` hint, because vLLM and Ollama are not
+uniformly strict-capable and a bare JSON object is still worth having there. Strict mode demands shapes Pydantic does
+not emit by default, so `strict_json_schema` reshapes the draft schema for the wire: `$ref`s inlined, every object
+`additionalProperties: false` with all its properties required, and optionality expressed as `null` unions instead of
+omission. `default`, `title`-as-keyword, bounds, `pattern` and `format` are dropped — a property whose *name* is
+`title` survives, since the field names are what is being described. Nothing here relaxes validation: a model that
+answers in the wrong shape is still refused, and grounding stays a separate pass over the untouched record text.
+
+## 8. Stage 1 deliberately does not
+
+- **No new keyword or cue dictionaries.** No flood, crime, agriculture, severity, status, department or classification
+  phrase lists; no hundreds of Tamil and English surfaces. Taxonomy values live only as enums in the output model, and
+  the prompt's token lists are generated from those enums rather than maintained beside them.
+- No FastAPI, no PostgreSQL, no GIS resolution. Coordinates and canonical places are GIS's to write; Intelligence leaves
+  the resolution state pending and the write-back unset.
+- No user-facing AI confidence score. Validation and review metadata is in the contract so a later stage can build on
+  it and so nothing unsupported reaches a Collector's dashboard.
+- No cross-record correlation, trends, briefing or chatbot.
+
+## 9. The deterministic chain
+
+Stages 1-8b of the previous design produced the same kind of result with rules and cue vocabularies. That work is **not
+deleted**; it is being retired seam by seam as the LLM path takes over, not in one sweep.
+
+| Kept and shared | Frozen — fix defects, do not extend |
+| --- | --- |
+| `models/base.py` — `StrictModel`, `Confidence`, evidence reference walking | `config/*.py` cue and surface tables |
+| `models/evidence.py`, `models/enums.py` | `mapping/assembly.py`, `enrichment.py`, `classifier.py`, `operations.py`, `deduplication.py` |
+| `extraction/spans.py` — span arithmetic and verification | `extraction/` language, normalisation, morphology and temporal readers |
+| `mapping/record_input.py` — structural record reading | `models/` legacy schemas and correlation |
+
+"Shared" is measurable, not remembered: an import audit of the five live-path modules reaches exactly these five legacy
+files. Every other module under `models/`, `config/`, `extraction/` and `mapping/` is imported only by its own tests or
+by another frozen module, so removing the deterministic chain later is a list of deletions rather than a search.
+`LEGACY_DETERMINISTIC_SEAMS` in `__init__.py` names the frozen ones so a reader can tell which code is being replaced.
+The legacy `Incident` stays under `intelligence.models` (schema 1.0) for the duration of the migration; the package root
+exports only the new contract. The full design record of the deterministic chain — stage by stage, with the cue
+statistics from the October 2026 capture — is in git history at commit `a6a5610`.
+
+Determinism is retained where it belongs: schema validation, span replay, enum coercion, id assignment, timestamp
+parsing, similarity calculations.
+
+## 10. Later stages
+
+| Stage | Work | Status |
+| --- | --- | --- |
+| 1 | LLM foundation, `Incident` contract, evidence-first validation, provider abstraction | **Complete** |
+| 2 | Real extraction — call a live model over the capture, measure prompt quality, JSON compliance and recall | **In progress — shape conforms, recall tuning remains** |
+| 2b | Runnable orchestration: `python -m intelligence.pipeline` reads the platform API and reports a batch | **Complete — read-only; posting results back is not built** |
+| 3 | Entity and location resolution hand-off (GIS) | Planned |
+| 4 | LLM classification and relevance | Planned |
+| 5 | Severity, priority, operational status, department routing | Planned |
+| 6 | Evidence hardening and revalidation when a source changes | Planned |
+| 7 | Embedding deduplication and clustering | Planned |
+| 8 | Recurring issues, trends, timelines | Planned |
+| 9 | Cross-source correlation | Planned |
+| 10 | "Why should the Collector care" and recommended actions | Planned |
+| 11 | Collector briefing | Planned |
+| 12 | OCR for image sources | Planned |
+| 13 | Chatbot over validated incidents | Planned |
+
+Deferred by decision: risk prediction, anomaly detection, sentiment, trend forecasting, a dedicated RAG stack, advanced
+AI confidence scoring.
+
+## 11. Hand-off to Alex
+
+Integration uses this contract, not the extraction internals:
+
+- Storable columns: `incident_id`, each scalar field, `event_time`, `provenance.*`, `validation.state`,
+  `generation.model` / `prompt_version` / `input_hash`.
+- `to_storage_document()` serialises the whole incident; `Incident.model_validate_json` reads it back with its
+  validators intact.
+- **View Source** survives extraction: `provenance.source_url` and `raw_reference` come through from the record, and
+  every accepted claim's `evidence_ids` resolve to spans that replay against the stored field text.
+- `review_required` is a human's to confirm. `unresolved` and `unknown` are non-authoritative — the absence of a
+  finding, not a finding of absence.
+- The API code here is a read-only client: `pipeline.py` `GET`s records and prints what the chain made of them. It never
+  posts an Incident, never writes to PostgreSQL and never connects to the database itself.
+
+## 12. Tests and verification
+
+```bash
+python -m pytest intelligence/tests -q      # 869 passed
+python -m compileall intelligence           # clean
+```
+
+Stage 1 adds 88 tests: `test_contract.py` (14) on the model rules — what a legal incident must carry and what it must
+refuse; `test_llm.py` (30) on configuration from the environment and from a local `.env`, precedence, secret
+non-exposure, retries, both provider clients and their error mapping, JSON parsing, the strict-mode schema a model
+is shown, the reasoning-budget setting and a completion that ran out of tokens; `test_pipeline.py` (26) on the record →
+incident path with a scripted provider, covering invented quotes,
+out-of-taxonomy tokens, handed-in coordinates, ambiguous spans, ungrounded locations, empty answers, the three source
+shapes, a price grounded on its own number, metadata that is not quotable text, a fraud raid classified from the event
+it describes rather than from an English token in the text, the ceiling an over-long item list is cut to, a second pass
+over the same record, and what the prompt is allowed to say;
+`test_orchestration.py` (18) on the runnable path — the backend URL from the environment, `GET /records` and
+`GET /records/{record_id}`, the safe default limit, malformed and erroring responses, unreachable backend, per-record
+failures that do not stop a run, the classification of a result as incident / context / review / failure, the console
+line and the CLI's refusals. The 781 pre-existing deterministic tests still pass unchanged.
+
+### Run it
+
+```bash
+python -m intelligence.pipeline                    # the safe default: five records
+python -m intelligence.pipeline --limit 20
+python -m intelligence.pipeline --record-id WEATHER-MDU-03-Oct
+python -m intelligence.pipeline --all --json       # every record, full Incident documents
+```
+
+The batch reads `INTELLIGENCE_API_BASE_URL` (default `http://127.0.0.1:8000`) and provider settings from
+`INTELLIGENCE_LLM_*`, in the environment or in the repository `.env`; nothing is hardcoded. It prints the backend URL,
+how many records were read and processed, then one line per result — id, title, incident type, category, department,
+severity, priority, event status, event time and the review state with its finding count — grouped into incidents,
+contextual records and failures, with a summary and a list of ids that need a person. Exit codes are 0 when every
+record produced an Incident, 1 when some failed, 2 for a backend failure and 3 when no provider could be built. A run
+with no argument never reads more than the default five records, nothing is posted back, no credential is ever printed,
+and a record whose model call fails is reported while the rest of the batch continues.
+
+All 1,059 records of the October 2026 Madurai capture (`ingestion/data/normalized`: 1,004 agriculture, 35 news, 20
+weather) were pushed through `build_context` and `extraction_request` without a model — no failures, 0.20 s total, and
+each source reached the prompt with its own fields: `data.warning`/`data.max_temp_c` for IMD,
+`data.commodity`/`data.min_price` for the markets, `data.content` for Dinamalar.
+
+Groq has been called for real through the full chain on all three shapes. The IMD warning line and a sapota price line
+came back schema-shaped, with `char_start` on every quote, and validated `accepted` with **zero issues** — and neither
+invented a severity, priority or incident type: the price record's incident fields all arrived `null`, and its
+`event_time` was answered with no field and no quote, taking the metadata path. A full Tamil article answers in shape
+too, but needs more completion room than this account's tier allows (§13).
+
+## 13. Current limitations
+
+- **A full Tamil article needs its completion budget managed.** Strict mode makes all 44 answer properties required and
+  `openai/gpt-oss-20b` spends part of the budget reasoning before it emits JSON, so a Dinamalar record — ≈4.3k prompt
+  tokens (7.4k chars of rules and taxonomy, 2.6k chars of Tamil text) against an 8,000-tokens-per-minute `on_demand`
+  limit — answers `json_validate_failed` with an empty `failed_generation` whenever reasoning plus answer exceed
+  `INTELLIGENCE_LLM_MAX_TOKENS`. Weather and market records — 0.5-1k prompt tokens — extract reliably. Three generic
+  levers hold this open, none of them a source special case: the prompt states and `validate_extraction` enforces a
+  ceiling of 8 items per list (`MAX_ANSWER_ITEMS`), because "name every place and person" is otherwise an unbounded
+  answer; `INTELLIGENCE_LLM_REASONING_EFFORT=low` moves budget from reasoning to the answer; and a truncation now names
+  both knobs instead of arriving as an opaque 400. Raising the tier or `INTELLIGENCE_LLM_MAX_TOKENS` remains the user's
+  call — `process_record` propagates the failure and invents nothing.
+- **Recall is now the open question, not the shape.** Under strict-mode structured outputs every scalar comes back as a
+  `GroundedValue` object and `validate_extraction` builds an incident instead of raising. What stage-2.3/2.4 of the
+  prompt changed is the model's licence to classify: a Tamil article previously yielded only `department`, because the
+  rules read as "the quote must contain the English token". The rules now require a classification to be read from the
+  event the body states and cap each item list at 8. Precision mechanisms are untouched, so a run that over-claims shows
+  up as `span_mismatch`/`invalid_value` findings, and one that abstains shows up as `unresolved` fields — both measurable
+  per record with `python -m intelligence.pipeline --record-id <id>`.
+- One record in, one incident out. No cross-record view yet (Stages 7, 9).
+- The batch path ends at the console. Nothing is posted back to the platform, so `python -m intelligence.pipeline` is a
+  development and verification tool until an endpoint or a job runner takes the Incidents it prints. `--limit` is applied
+  client-side because `GET /records` has no paging, records are processed one after another, and a rate-limited provider
+  makes the rest of a large `--all` run fail per record — reported, not retried.
+- Grounding is quote-only, so a correct claim the model cannot quote verbatim is refused. Recall will sit below the
+  deterministic path until the prompt is tuned; precision is the deliberate priority.
+- Language and normalisation handling is not wired into the LLM path yet — record text reaches the model untouched, so
+  Tanglish, heavily inflected Tamil surfaces and a news page's navigation furniture are the model's problem to solve.
+- Two `Incident` contracts coexist during the migration.
+- `relationships` bind by exact text match, so a paraphrased subject names nothing and is recorded unresolved.
+- A mis-grounded `event_time` that happens to equal the record's own stamp is accepted as metadata; the deterministic
+  design's rule that a news article's publication time is not its event time is not re-enforced here, and Stage 2 has
+  to watch for it.

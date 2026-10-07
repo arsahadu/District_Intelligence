@@ -3,6 +3,11 @@
 from intelligence.models.actors import Actor
 from intelligence.models.base import Confidence, OptionalConfidence, Ratio, StrictModel
 from intelligence.models.classification import ClassificationInfo, DepartmentHint, RelevanceInfo
+from intelligence.models.correlation import (
+    CorrelationReport,
+    IncidentCluster,
+    PairRelationship,
+)
 from intelligence.models.evidence import Evidence
 from intelligence.models.incident import SCHEMA_VERSION, Incident
 from intelligence.models.language import (
@@ -24,6 +29,7 @@ from intelligence.models.metadata import (
 from intelligence.models.quantities import Observation
 from intelligence.models.severity import Severity, SeveritySignal
 from intelligence.models.spatial import GisResolution, LocationMention, SpatialHint
+from intelligence.models.status import OperationalStatusInfo, StatusSignal
 from intelligence.models.temporal import TimeValue
 
 __all__ = [
@@ -32,18 +38,22 @@ __all__ = [
     "ClassificationInfo",
     "Confidence",
     "ConfidenceSummary",
+    "CorrelationReport",
     "DedupMetadata",
     "DepartmentHint",
     "Evidence",
     "GisResolution",
     "Incident",
+    "IncidentCluster",
     "LanguageDetection",
     "LanguageInfo",
     "LocationMention",
     "LocalizedText",
     "MULTILINGUAL",
     "Observation",
+    "OperationalStatusInfo",
     "OptionalConfidence",
+    "PairRelationship",
     "ProcessingMetadata",
     "Ratio",
     "RelevanceInfo",
@@ -51,6 +61,7 @@ __all__ = [
     "Severity",
     "SeveritySignal",
     "SpatialHint",
+    "StatusSignal",
     "StrictModel",
     "SummaryInfo",
     "TextRepresentation",

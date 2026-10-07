@@ -24,13 +24,13 @@ SPATIAL_SECTION = "spatial.mentions"
 ACTOR_SECTION = "actors"
 
 
-def read_prose(draft: IncidentDraft, path: str) -> Prose:
+def read_prose(draft: IncidentDraft, path: str, *, skip_numbers: bool = True) -> Prose:
     """One field as running text, in the coordinates of the untouched field."""
     source = draft.fields[path]
     if draft.split is not None and draft.split.source.field == path:
-        return build_prose(source, draft.split.body, split=draft.split)
+        return build_prose(source, draft.split.body, split=draft.split, skip_numbers=skip_numbers)
     fresh = boilerplate.split(source, lowercase=True)
-    return build_prose(source, fresh.body, split=fresh)
+    return build_prose(source, fresh.body, split=fresh, skip_numbers=skip_numbers)
 
 
 def find_places(draft: IncidentDraft, prose: Mapping[str, Prose]) -> places.PlaceExtraction:

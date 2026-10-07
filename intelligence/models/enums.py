@@ -171,12 +171,27 @@ class DistrictHintAuthority(str, Enum):
 
 
 class IncidentStatus(str, Enum):
+    """Workflow state of the Intelligence record. Says nothing about the event itself."""
+
     CANDIDATE = "candidate"
     OPEN = "open"
     NEEDS_REVIEW = "needs_review"
     DISMISSED = "dismissed"
     MERGED = "merged"
     ARCHIVED = "archived"
+
+
+class OperationalState(str, Enum):
+    """Whether the reported situation is still running, as the source stated it.
+
+    Distinct from IncidentStatus, which tracks this record through review, not the event
+    through time.
+    """
+
+    UNKNOWN = "unknown"
+    ONGOING = "ongoing"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
 
 
 class RelevanceState(str, Enum):
@@ -393,6 +408,14 @@ class ObservationQualifier(str, Enum):
     UNKNOWN = "unknown"
 
 
+class SignalTier(str, Enum):
+    """How directly the source said it: a stated condition, an aspect hint, or its own field."""
+
+    STATED = "stated"
+    IMPLIED = "implied"
+    DECLARED = "declared"
+
+
 class SeverityLevel(str, Enum):
     INFO = "info"
     LOW = "low"
@@ -435,6 +458,7 @@ class ReviewReason(str, Enum):
     UNRESOLVED_RELEVANCE = "unresolved_relevance"
     UNRESOLVED_SEVERITY = "unresolved_severity"
     SEVERITY_WITHOUT_EVIDENCE = "severity_without_evidence"
+    STATUS_CONFLICT = "status_conflict"
     AMBIGUOUS_LOCATION = "ambiguous_location"
     NO_EVENT_LOCATION_CANDIDATE = "no_event_location_candidate"
     DISTRICT_CONFLICT = "district_conflict"
