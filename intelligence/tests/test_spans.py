@@ -1,4 +1,4 @@
-"""Stage 2: evidence spans are derived from the source, verified against it, never typed."""
+"""Evidence spans are derived from the source, verified against it, never typed."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from intelligence.extraction.spans import (
+from intelligence.models.enums import ExtractionMethod, Modality, SpanValidation
+from intelligence.models.evidence import Evidence
+from intelligence.spans import (
     AmbiguousQuoteError,
     EmptyQuoteError,
     OccurrenceOutOfBoundsError,
@@ -25,10 +27,6 @@ from intelligence.extraction.spans import (
     revalidate,
     verify_evidence,
 )
-from intelligence.models.enums import ExtractionMethod, IncidentStatus, Modality, SpanValidation
-from intelligence.models.evidence import Evidence
-from intelligence.models.classification import RelevanceInfo
-from intelligence.models.incident import Incident
 from intelligence.tests.builders import (
     BENCH_CONTENT_TA,
     CONTENT_TA,
@@ -36,7 +34,6 @@ from intelligence.tests.builders import (
     SOURCE_ID,
     SOURCE_TYPE,
     SOURCE_URL,
-    field_hash,
     span_evidence,
 )
 
@@ -242,7 +239,6 @@ def test_field_hash_is_sha256_of_the_whole_original_field():
     evidence = build_evidence(field(), "மதுரையில்", method=RULE)
 
     assert evidence.field_text_hash == compute_field_hash(CONTENT_TA)
-    assert evidence.field_text_hash == field_hash(CONTENT_TA)
     assert len(evidence.field_text_hash) == 64
     assert evidence.field_text_hash == evidence.field_text_hash.lower()
 
@@ -494,25 +490,6 @@ def test_tamil_quote_survives_a_json_round_trip():
     assert restored == evidence
     assert restored.quote == quote
     assert CONTENT_TA[restored.char_start : restored.char_end] == quote
-
-
-def test_produced_evidence_plugs_into_an_incident_reference():
-    evidence = build_evidence(field(), "ஆர்ப்பாட்டத்தில்", method=RULE, confidence=0.9)
-    incident = Incident(
-        incident_id="INC-STAGE2-0001",
-        status=IncidentStatus.CANDIDATE,
-        evidence=[evidence],
-        relevance=RelevanceInfo(
-            state="incident",
-            is_incident=True,
-            method=RULE,
-            confidence=0.9,
-            evidence_ids=[evidence.evidence_id],
-        ),
-    )
-
-    assert incident.resolve_evidence(evidence.evidence_id) is not None
-    assert incident.contributing_record_ids() == [RECORD_ID]
 
 
 def test_provenance_of_the_title_field_is_addressable():

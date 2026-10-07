@@ -1,4 +1,4 @@
-"""Stage 1 orchestration: one record in, one call, one validated Incident out."""
+"""One record in, one provider call, one validated Incident out."""
 
 from __future__ import annotations
 
@@ -31,9 +31,7 @@ from intelligence.contract import (
     SCHEMA_VERSION,
     Validation,
 )
-from intelligence.extraction.spans import SpanError, find_spans
 from intelligence.llm import LLMProvider, LLMRequest, StructuredOutput, json_schema_for
-from intelligence.mapping.record_input import CONTENT_PATH
 from intelligence.models.base import OptionalConfidence
 from intelligence.models.enums import (
     ActorRole,
@@ -46,6 +44,8 @@ from intelligence.models.enums import (
     TimePrecision,
 )
 from intelligence.models.evidence import Evidence
+from intelligence.records import CONTENT_PATH
+from intelligence.spans import SpanError, find_spans
 
 PROVIDER = "intelligence.intelligence"
 PROMPT_VERSION = "stage-2.8"

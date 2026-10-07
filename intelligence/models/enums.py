@@ -39,34 +39,6 @@ class Modality(str, Enum):
     UNKNOWN = "unknown"
 
 
-class TextRole(str, Enum):
-    """Why a representation of the text exists."""
-
-    SOURCE = "source"
-    NORMALIZED = "normalized"
-    TRANSLITERATED = "transliterated"
-    TRANSLATION = "translation"
-    OCR_OUTPUT = "ocr_output"
-    UNRESOLVED = "unresolved"
-
-
-class ScriptType(str, Enum):
-    TAMIL = "tamil"
-    LATIN = "latin"
-    MIXED = "mixed"
-    OTHER = "other"
-    UNKNOWN = "unknown"
-
-
-class SummaryKind(str, Enum):
-    """A summary is inferred text, so its construction method is declared."""
-
-    EXTRACTIVE = "extractive"
-    ABSTRACTIVE = "abstractive"
-    STRUCTURED = "structured"
-    UNRESOLVED = "unresolved"
-
-
 class TimePrecision(str, Enum):
     SECOND = "second"
     MINUTE = "minute"
@@ -77,46 +49,6 @@ class TimePrecision(str, Enum):
     QUARTER = "quarter"
     YEAR = "year"
     DECADE = "decade"
-    UNKNOWN = "unknown"
-
-
-class TimeQualifier(str, Enum):
-    EXACT = "exact"
-    APPROXIMATE = "approximate"
-    BEFORE = "before"
-    AFTER = "after"
-    ONGOING = "ongoing"
-    RECURRING = "recurring"
-    UNKNOWN = "unknown"
-
-
-class TimeSemantics(str, Enum):
-    """Which moment a timestamp actually denotes."""
-
-    EVENT_TIME = "event_time"
-    PUBLICATION_TIME = "publication_time"
-    RETRIEVAL_TIME = "retrieval_time"
-    REPORTED_TIME = "reported_time"
-    UNKNOWN = "unknown"
-
-
-class GranularityLevel(str, Enum):
-    """Administrative/physical specificity a mention claims for itself."""
-
-    COUNTRY = "country"
-    STATE = "state"
-    DISTRICT = "district"
-    SUB_DIVISION = "sub_division"
-    TALUK = "taluk"
-    BLOCK = "block"
-    MUNICIPALITY = "municipality"
-    CORPORATION = "corporation"
-    TOWN = "town"
-    VILLAGE = "village"
-    WARD = "ward"
-    STREET = "street"
-    LANDMARK = "landmark"
-    ADDRESS = "address"
     UNKNOWN = "unknown"
 
 
@@ -158,47 +90,6 @@ class ResolutionState(str, Enum):
     AMBIGUOUS = "ambiguous"
     RESOLVED = "resolved"  # set by GIS, not by Intelligence
     REJECTED = "rejected"  # set by GIS, not by Intelligence
-
-
-class DistrictHintAuthority(str, Enum):
-    """Where a district guess came from, so its trust level is explicit."""
-
-    TEXT_EVIDENCE = "text_evidence"
-    SOURCE_CONFIGURATION = "source_configuration"
-    FEED_URL = "feed_url"
-    MANUAL = "manual"
-    NONE = "none"
-
-
-class IncidentStatus(str, Enum):
-    """Workflow state of the Intelligence record. Says nothing about the event itself."""
-
-    CANDIDATE = "candidate"
-    OPEN = "open"
-    NEEDS_REVIEW = "needs_review"
-    DISMISSED = "dismissed"
-    MERGED = "merged"
-    ARCHIVED = "archived"
-
-
-class OperationalState(str, Enum):
-    """Whether the reported situation is still running, as the source stated it.
-
-    Distinct from IncidentStatus, which tracks this record through review, not the event
-    through time.
-    """
-
-    UNKNOWN = "unknown"
-    ONGOING = "ongoing"
-    RESOLVED = "resolved"
-    CLOSED = "closed"
-
-
-class RelevanceState(str, Enum):
-    INCIDENT = "incident"
-    NOT_INCIDENT = "not_incident"
-    UNSURE = "unsure"
-    UNRESOLVED = "unresolved"
 
 
 class EventType(str, Enum):
@@ -324,31 +215,6 @@ class Department(str, Enum):
     UNRESOLVED = "unresolved"
 
 
-class DepartmentHintBasis(str, Enum):
-    TAXONOMY = "taxonomy"
-    TEXT_MENTION = "text_mention"
-    BOTH = "both"
-    UNRESOLVED = "unresolved"
-
-
-class ActorType(str, Enum):
-    PERSON = "person"
-    GOVERNMENT_OFFICIAL = "government_official"
-    GOVERNMENT_BODY = "government_body"
-    COURT = "court"
-    POLICE_STATION = "police_station"
-    HOSPITAL = "hospital"
-    EDUCATIONAL_INSTITUTION = "educational_institution"
-    LOCAL_BODY = "local_body"
-    COMPANY = "company"
-    NGO_OR_TRUST = "ngo_or_trust"
-    COMMUNITY_GROUP = "community_group"
-    POLITICIAN_OR_PARTY = "politician_or_party"
-    MEDIA_OUTLET = "media_outlet"
-    OTHER = "other"
-    UNKNOWN = "unknown"
-
-
 class ActorRole(str, Enum):
     """Semantic role an actor plays. Deliberately free of verdicts."""
 
@@ -365,57 +231,6 @@ class ActorRole(str, Enum):
     UNKNOWN = "unknown"
 
 
-class ObservationKind(str, Enum):
-    """Typed quantities. Absence is encoded by simply having no Observation."""
-
-    AFFECTED_PERSONS = "affected_persons"
-    AFFECTED_HOUSEHOLDS = "affected_households"
-    AFFECTED_AREA_AGRICULTURE = "affected_area_agriculture"
-    FATALITIES = "fatalities"
-    INJURIES = "injuries"
-    DISPLACED_PERSONS = "displaced_persons"
-    DETENTIONS = "detentions"
-    PETITION_COUNT = "petition_count"
-    PROTEST_PARTICIPANTS = "protest_participants"
-    SENTENCE_YEARS = "sentence_years"
-    FINE_AMOUNT = "fine_amount"
-    COMPENSATION_AMOUNT = "compensation_amount"
-    CLAIMED_AMOUNT = "claimed_amount"
-    FUNDS_ALLOCATED = "funds_allocated"
-    AREA_COVERED = "area_covered"
-    RAINFALL = "rainfall"
-    WATER_LEVEL = "water_level"
-    DISTANCE = "distance"
-    POWER_OUTAGE_DURATION = "power_outage_duration"
-    SERVICE_BACKLOG_COUNT = "service_backlog_count"
-    ROAD_LENGTH = "road_length"
-    BUILDING_COUNT = "building_count"
-    TREES_FALLED = "trees_felled"
-    VEHICLES_INVOLVED = "vehicles_involved"
-    AGE = "age"
-    DATE_REFERENCE = "date_reference"
-    COUNT_GENERIC = "count_generic"
-    OTHER = "other"
-    UNRESOLVED = "unresolved"
-
-
-class ObservationQualifier(str, Enum):
-    EXACT = "exact"
-    APPROXIMATE = "approximate"
-    AT_LEAST = "at_least"
-    AT_MOST = "at_most"
-    REPORTED_UNVERIFIED = "reported_unverified"
-    UNKNOWN = "unknown"
-
-
-class SignalTier(str, Enum):
-    """How directly the source said it: a stated condition, an aspect hint, or its own field."""
-
-    STATED = "stated"
-    IMPLIED = "implied"
-    DECLARED = "declared"
-
-
 class SeverityLevel(str, Enum):
     INFO = "info"
     LOW = "low"
@@ -423,58 +238,3 @@ class SeverityLevel(str, Enum):
     HIGH = "high"
     CRITICAL = "critical"
     UNRESOLVED = "unresolved"
-
-
-class SeverityCueCategory(str, Enum):
-    """Evidence categories that can justify a severity level."""
-
-    FATALITY = "fatality"
-    INJURY = "injury"
-    AFFECTED_POPULATION = "affected_population"
-    AFFECTED_AREA = "affected_area"
-    ECONOMIC_LOSS = "economic_loss"
-    SERVICE_DISRUPTION = "service_disruption"
-    ESCALATION_OR_SPREAD = "escalation_or_spread"
-    CONTINUING_HAZARD = "continuing_hazard"
-    LEGAL_OR_LIBERTY_RESTRICTION = "legal_or_liberty_restriction"
-    AUTHORITY_ORDER = "authority_order"
-    RESPONSE_MOBILISED = "response_mobilised"
-    OTHER = "other"
-    UNRESOLVED = "unresolved"
-
-
-class DedupDecision(str, Enum):
-    UNIQUE = "unique"
-    DUPLICATE = "duplicate"
-    MERGE_CANDIDATE = "merge_candidate"
-    LINKED = "linked"
-    CONTRADICTS = "contradicts"
-    UNRESOLVED = "unresolved"
-
-
-class ReviewReason(str, Enum):
-    LOW_CONFIDENCE = "low_confidence"
-    UNRESOLVED_EVENT_TYPE = "unresolved_event_type"
-    UNRESOLVED_RELEVANCE = "unresolved_relevance"
-    UNRESOLVED_SEVERITY = "unresolved_severity"
-    SEVERITY_WITHOUT_EVIDENCE = "severity_without_evidence"
-    STATUS_CONFLICT = "status_conflict"
-    AMBIGUOUS_LOCATION = "ambiguous_location"
-    NO_EVENT_LOCATION_CANDIDATE = "no_event_location_candidate"
-    DISTRICT_CONFLICT = "district_conflict"
-    PENDING_GIS_RESOLUTION = "pending_gis_resolution"
-    PUBLICATION_TIME_ONLY = "publication_time_only"
-    NO_SUPPORTING_EVIDENCE = "no_supporting_evidence"
-    CONFLICTING_SOURCES = "conflicting_sources"
-    LLM_ASSISTED = "llm_assisted"
-    NON_TAMIL_UNVERIFIED = "non_tamil_unverified"
-    OTHER = "other"
-
-
-class DataOrigin(str, Enum):
-    """How an Incident draft came to exist. Guards against fabricated inputs."""
-
-    PIPELINE = "pipeline"
-    MANUAL = "manual"
-    IMPORTED = "imported"
-    UNKNOWN = "unknown"

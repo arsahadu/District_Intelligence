@@ -1,4 +1,4 @@
-"""The Stage 1 seam: a CommonRecord-shaped input becomes an LLM-ready context."""
+"""A CommonRecord-shaped input becomes an LLM-ready context."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 from intelligence.contract import Provenance
-from intelligence.extraction.spans import SourceField, compute_field_hash
-from intelligence.mapping.record_input import CONTENT_PATH, RecordInput, input_hash, read_record
+from intelligence.records import CONTENT_PATH, RecordInput, input_hash, read_record
+from intelligence.spans import SourceField, compute_field_hash
 
 FIELD_HEADING = "field"
 DATA_PREFIX = "data."

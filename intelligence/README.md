@@ -67,7 +67,10 @@ a field another source usually carries does not exist here unless it is printed.
 | `llm.py` | Provider abstraction: `LLMConfig`, `LLMRequest`, `LLMResponse`, `LLMProvider`, `GroqProvider`, `OpenAICompatibleProvider`, `build_provider` |
 | `intelligence.py` | Orchestration: request building, draft parsing, grounding, assembly into an `Incident` |
 | `pipeline.py` | The runnable orchestrator: `process_record` for one record, `fetch_records`/`fetch_record` over the API, `run_pipeline` for a batch, `print_report` and `main` for the console |
-| `models/`, `extraction/`, `mapping/`, `config/` | Deterministic foundations: five modules shared with the LLM path, the rest frozen (§9) |
+| `records.py` | The record seam: the only place that knows how a CommonRecord is spelled — `read_record`, `RecordInput`, `input_hash`, the field paths, the read errors |
+| `spans.py` | Span arithmetic and verification: `SourceField`, `Span`, `find_spans`, `locate`, `build_evidence`, `verify_evidence`, `revalidate` |
+| `models/` | Shared pydantic vocabulary: `base.py` (`StrictModel`, `Confidence`), `enums.py` (the controlled taxonomies), `evidence.py` (`Evidence`) |
+| `tests/` | The suite: contract, provider, pipeline and orchestration tests over scripted providers and record fixtures, plus the span and evidence tests (§12) |
 
 ## 4. The Incident contract
 
@@ -178,8 +181,8 @@ present — silent acceptance is a validator error, not a warning.
 Findings carry one of `IssueCode`: `unsupported_claim`, `span_mismatch`, `invalid_value`, `unknown_field`,
 `unauthorised_gis_value`, `unresolved_reference`, `missing_provenance`, `ambiguous_quote`, `provider_warning`.
 
-`extraction/spans.py` stays the only sanctioned producer of `Evidence`, for the LLM path as it was for the deterministic
-one.
+`spans.py` is the only sanctioned producer of `Evidence`: every quote reaches the contract through its offset arithmetic
+and its replay against the field it was cut from.
 
 ## 7. Provider abstraction and configuration
 
@@ -230,7 +233,7 @@ omission. `default`, `title`-as-keyword, bounds, `pattern` and `format` are drop
 `title` survives, since the field names are what is being described. Nothing here relaxes validation: a model that
 answers in the wrong shape is still refused, and grounding stays a separate pass over the untouched record text.
 
-## 8. Stage 1 deliberately does not
+## 8. Deliberate non-goals
 
 - **No new keyword or cue dictionaries.** No flood, crime, agriculture, severity, status, department or classification
   phrase lists; no hundreds of Tamil and English surfaces. Taxonomy values live only as enums in the output model, and
@@ -245,28 +248,25 @@ answers in the wrong shape is still refused, and grounding stays a separate pass
   out loud, not a plausible value.
 - No cross-record correlation, trends, briefing or chatbot.
 
-## 9. The deterministic chain
+## 9. What is deterministic
 
-Stages 1-8b of the previous design produced the same kind of result with rules and cue vocabularies. That work is **not
-deleted**; it is being retired seam by seam as the LLM path takes over, not in one sweep.
+The rule-based chain the earlier stages built is **gone**: the cue and surface tables under `config/`, the language,
+normalisation, morphology, place, actor, severity, status and temporal readers under `extraction/`, the
+assembly/classification/enrichment/operations/dedup seams under `mapping/`, and the schema-1.0 models they produced. An
+import audit of the live path — `pipeline.py`, `intelligence.py`, `context.py`, `contract.py`, `llm.py` and everything
+they reach — found none of them reachable: each was imported only by its own tests or by another frozen module. The LLM
+path had already taken over every decision they made, so removing them took no capability with it, and their tests left
+with them.
 
-| Kept and shared | Frozen — fix defects, do not extend |
-| --- | --- |
-| `models/base.py` — `StrictModel`, `Confidence`, evidence reference walking | `config/*.py` cue and surface tables |
-| `models/evidence.py`, `models/enums.py` | `mapping/assembly.py`, `enrichment.py`, `classifier.py`, `operations.py`, `deduplication.py` |
-| `extraction/spans.py` — span arithmetic and verification | `extraction/` language, normalisation, morphology and temporal readers |
-| `mapping/record_input.py` — structural record reading | `models/` legacy schemas and correlation |
+Five modules the audit *did* reach stayed, because the LLM path runs on them: `models/base.py` (`StrictModel`,
+`Confidence`, evidence reference walking), `models/enums.py` (the controlled taxonomies), `models/evidence.py`
+(`Evidence`), and the two shared helpers it found at the bottom of the frozen tree — the span arithmetic, now
+`spans.py`, and the record reader, now `records.py`. The full design record of what was retired — stage by stage, with
+the cue statistics from the October 2026 capture — is in git history at commit `a6a5610`.
 
-"Shared" is measurable, not remembered: an import audit of the five live-path modules reaches exactly these five legacy
-files. Every other module under `models/`, `config/`, `extraction/` and `mapping/` is imported only by its own tests or
-by another frozen module, so removing the deterministic chain later is a list of deletions rather than a search.
-`LEGACY_DETERMINISTIC_SEAMS` in `__init__.py` names the frozen ones so a reader can tell which code is being replaced.
-The legacy `Incident` stays under `intelligence.models` (schema 1.0) for the duration of the migration; the package root
-exports only the new contract. The full design record of the deterministic chain — stage by stage, with the cue
-statistics from the October 2026 capture — is in git history at commit `a6a5610`.
-
-Determinism is retained where it belongs: schema validation, span replay, enum coercion, id assignment, timestamp
-parsing, similarity calculations.
+What is deterministic now, and should stay so: schema validation, span replay against the source text, enum coercion,
+id assignment, timestamp parsing, record reading and hashing. Semantics come from the model; no rule fills a field the
+model left empty.
 
 ## 10. Later stages
 
@@ -275,9 +275,9 @@ parsing, similarity calculations.
 | 1 | LLM foundation, `Incident` contract, evidence-first validation, provider abstraction | **Complete** |
 | 2 | Real extraction — call a live model over the capture, measure prompt quality, JSON compliance and recall | **In progress — shape conforms, recall tuning remains** |
 | 2b | Runnable orchestration: `python -m intelligence.pipeline` reads the platform API and reports a batch | **Complete — read-only; posting results back is not built** |
-| 2c | Extraction accuracy: `record_kind`/`context_type`, semantic enum reading from a Tamil span, status/account/severity discipline, honest confidence | **Complete in the deterministic chain — a live recall measurement over the capture remains** |
-| 2d | Semantic reasoning: kind independent of the fields after it, three-question classification, status/severity/priority discipline, generic `context_facts` | **Complete in the deterministic chain — the live measurement covers 2c and 2d together** |
-| 2e | Event-vs-context ordering: the occurrence question asked before any label, an evidenced happening outranking quoted values, facts kept to data points | **Complete in the deterministic chain — the live run of 2e is what decides it** |
+| 2c | Extraction accuracy: `record_kind`/`context_type`, semantic enum reading from a Tamil span, status/account/severity discipline, honest confidence | **Complete in the LLM path — a live recall measurement over the capture remains** |
+| 2d | Semantic reasoning: kind independent of the fields after it, three-question classification, status/severity/priority discipline, generic `context_facts` | **Complete in the LLM path — the live measurement covers 2c and 2d together** |
+| 2e | Event-vs-context ordering: the occurrence question asked before any label, an evidenced happening outranking quoted values, facts kept to data points | **Complete in the LLM path — the live run of 2e is what decides it** |
 | 3 | Entity and location resolution hand-off (GIS) | Planned |
 | 4 | LLM classification and relevance | Planned |
 | 5 | Severity, priority, operational status, department routing | Planned |
@@ -314,11 +314,11 @@ Integration uses this contract, not the extraction internals:
 ## 12. Tests and verification
 
 ```bash
-python -m pytest intelligence/tests -q      # 914 passed
+python -m pytest intelligence/tests -q      # 199 passed
 python -m compileall intelligence           # clean
 ```
 
-The LLM path adds 133 tests: `test_contract.py` (19) on the model rules — what a legal incident must carry and what it
+199 tests cover everything the package now runs. The 133 on the LLM chain are: `test_contract.py` (19) on the model rules — what a legal incident must carry and what it
 must refuse, including that `record_kind=incident` cannot survive an unestablished event, that one unreadable
 classification field does not demote an evidenced account of what happened, that context cannot be stated while a quote
 establishes one, that a `context_type` rides nothing but a forecast or a context record, and that a `ContextFact` is a
@@ -362,8 +362,10 @@ block asking whether something happened before it asks for a label;
 `test_orchestration.py` (18) on the runnable path — the backend URL from the environment, `GET /records` and
 `GET /records/{record_id}`, the safe default limit, malformed and erroring responses, unreachable backend, per-record
 failures that do not stop a run, the classification of a result as incident / context / review / failure, the console
-line including its `facts=` count and the contextual block's note, and the CLI's refusals. The 781 pre-existing
-deterministic tests still pass unchanged.
+line including its `facts=` count and the contextual block's note, and the CLI's refusals. The other 66 cover the two
+shared helpers underneath them: `test_spans.py` (54) on the offset arithmetic — quoting, locating, empty and ambiguous
+quotes, verification and revalidation — and `test_evidence.py` (12) on the `Evidence` model's own rules. The frozen
+chain's tests left with the chain (§9).
 
 ### Run it
 
@@ -489,20 +491,20 @@ of stage 2.8 is a `python -m intelligence.pipeline` run away.
   market line or a forecast is what its fields already say. Up to eight survive (`MAX_ANSWER_ITEMS`), the same ceiling
   every other list pays, so a wide table is truncated with a finding rather than answered past the completion budget.
 - **Statuses are read, not conjugated.** `under_investigation`, `action_taken` and `resolved` come from the model's
-  understanding of the source's own verb, so an article whose verb it misses lands as `unknown` with a warning. The
-  frozen morphology and temporal seams of §9 are deliberately not wired into the LLM path to help here; the live
-  measurement decides whether that is a real gap or a cheap one.
-- One record in, one incident out. No cross-record view yet (Stages 7, 9).
+  understanding of the source's own verb, so an article whose verb it misses lands as `unknown` with a warning. The rule
+  tables that used to read those verbs are gone (§9) and nothing is wired in to catch the miss; the live measurement
+  decides whether that is a real gap or a cheap one.
+- One record in, one incident out. No cross-record view yet (§10).
 - The batch path ends at the console. Nothing is posted back to the platform, so `python -m intelligence.pipeline` is a
   development and verification tool until an endpoint or a job runner takes the Incidents it prints. `--limit` is applied
   client-side because `GET /records` has no paging, records are processed one after another, and a rate-limited provider
   makes the rest of a large `--all` run fail per record — reported, not retried.
-- Grounding is quote-only, so a correct claim the model cannot quote verbatim is refused. Recall will sit below the
-  deterministic path until the prompt is tuned; precision is the deliberate priority.
-- Language and normalisation handling is not wired into the LLM path yet — record text reaches the model untouched, so
-  Tanglish, heavily inflected Tamil surfaces and a news page's navigation furniture are the model's problem to solve.
-- Two `Incident` contracts coexist during the migration.
+- Grounding is quote-only, so a correct claim the model cannot quote verbatim is refused. Recall depends on how the prompt
+  is worded; precision is the deliberate priority.
+- Nothing stands between the record and the model: no normalisation, boilerplate stripping or transliteration step runs
+  first, so Tanglish, heavily inflected Tamil surfaces and a news page's navigation furniture are the model's problem to
+  solve.
 - `relationships` bind by exact text match, so a paraphrased subject names nothing and is recorded unresolved.
-- A mis-grounded `event_time` that happens to equal the record's own stamp is accepted as metadata; the deterministic
-  design's rule that a news article's publication time is not its event time is not re-enforced here, and Stage 2 has
-  to watch for it.
+- A mis-grounded `event_time` that happens to equal the record's own stamp is accepted as metadata; nothing here
+  re-enforces the rule that a news article's publication time is not its event time, and the live run has to watch for
+  it.

@@ -1,4 +1,4 @@
-"""Evidence span arithmetic - the only sanctioned producer of Stage 1 Evidence."""
+"""Evidence span arithmetic - the only sanctioned producer of `Evidence`."""
 
 from __future__ import annotations
 

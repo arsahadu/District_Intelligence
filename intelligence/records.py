@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
-from intelligence.extraction.spans import compute_field_hash
+from intelligence.spans import compute_field_hash
 
 TITLE_PATH = "title"
 CONTENT_PATH = "data.content"

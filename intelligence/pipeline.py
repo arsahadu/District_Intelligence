@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from intelligence.contract import Incident, RecordKind
 from intelligence.intelligence import InvalidExtraction, extract_incident
 from intelligence.llm import LLMConfig, LLMError, LLMProvider, build_provider, load_dotenv_file
-from intelligence.mapping.record_input import CONTENT_PATH, MappingError
+from intelligence.records import CONTENT_PATH, MappingError
 
 #: Where the platform API lives. Intelligence reads it and never writes it.
 ENV_API_BASE_URL = "INTELLIGENCE_API_BASE_URL"

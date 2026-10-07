@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from intelligence.models.enums import ExtractionMethod, SpanValidation
 from intelligence.models.evidence import Evidence
-from intelligence.tests.builders import CONTENT_TA, RECORD_ID, field_hash, span_evidence
+from intelligence.tests.builders import CONTENT_TA, RECORD_ID, span_evidence
 
 
 def test_evidence_validates_against_real_tamil_text():
@@ -38,7 +38,7 @@ def test_field_text_hash_matches_sha256_of_original_field():
     evidence = span_evidence("ev-1", quote="மதுரையில்")
     expected = hashlib.sha256(CONTENT_TA.encode("utf-8")).hexdigest()
 
-    assert evidence.field_text_hash == expected == field_hash(CONTENT_TA)
+    assert evidence.field_text_hash == expected
 
 
 def test_quote_length_must_match_declared_offsets():
