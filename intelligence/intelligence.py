@@ -45,7 +45,12 @@ from intelligence.models.enums import (
 from intelligence.models.evidence import Evidence
 
 PROVIDER = "intelligence.intelligence"
-PROMPT_VERSION = "stage-2.2"
+PROMPT_VERSION = "stage-2.4"
+
+#: A long article names dozens of places and people, and strict mode makes each one a full object,
+#: so an unbounded list is what overruns one completion. The ceiling is told to the model and the
+#: items it offers first are the ones kept.
+MAX_ANSWER_ITEMS = 8
 
 #: A model that reports no confidence is answering anyway, so the number is attributed to us.
 DEFAULT_LLM_CONFIDENCE = 0.5
@@ -239,26 +244,41 @@ def extraction_request(context: RecordContext) -> LLMRequest:
         "never paraphrased, never translated, never reconstructed from memory of the meaning. Keep "
         "it short: the fewest characters that still support the value, not the sentence around it. "
         "A field another kind of source usually carries does not exist here unless it is printed.\n"
-        "3. Offsets count from the start of the named field. Always set `char_start`: this pipeline "
+        "3. A quote proves what happened; it does not have to contain the word for it. For "
+        "incident_type, category, department, severity, priority and event_status the `value` is "
+        "this taxonomy's name for an event and the `quote` is the record's own words for it, so "
+        "they rarely match literally - that is a good answer, not a reason to abstain. Choose the "
+        "token from what the record says happened, to whom, where and in what condition. What "
+        "stays null is a token with no event behind it: a topic, a section heading, an "
+        "institution's routine work or your own expectation of such records.\n"
+        "4. Read the event from the body, not from the headline: the sentence saying what happened "
+        "is in the body text, it is the evidence, and one span may support several fields. Name "
+        f"the places, people and bodies the event itself involves, the most important first, and "
+        f"never more than {MAX_ANSWER_ITEMS} in any list - a longer list cannot be answered inside "
+        f"one completion. `locations` and `entities` are empty only for a record that names "
+        "nothing, never because its text is in another language: a place's `text` keeps the "
+        "record's language while its token fields stay English.\n"
+        "5. Offsets count from the start of the named field. Always set `char_start`: this pipeline "
         "refuses a quote that occurs more than once and it will not choose an occurrence for you.\n"
-        "4. Record metadata is not text. Never name a field such as 'metadata', 'record metadata' "
-        "or 'source metadata'. When event_time is the record's own stamp, answer `value` with no "
-        "`field` and no `quote` - the pipeline reads it from the record.\n"
-        "5. When the record supports nothing for a field, answer null for that whole field. Null is "
+        "6. Record metadata is not text. Never name a field such as 'metadata', 'record metadata' "
+        "or 'source metadata'. Metadata never supports a classification, a location or an entity. "
+        "When event_time is the record's own stamp, answer `value` with no `field` and no `quote` - "
+        "the pipeline reads it from the record.\n"
+        "7. When the record supports nothing for a field, answer null for that whole field. Null is "
         "recorded as unresolved and is the right answer far more often than a guess. `locations`, "
         "`entities` and `relationships` are empty lists when the record names none.\n"
-        "6. Not every record is an incident. A forecast, a price line or an announcement is often a "
+        "8. Not every record is an incident. A forecast, a price line or an announcement is often a "
         "contextual observation, and a moderate rain or a routine price needs no response from "
-        "anyone. incident_type, severity, priority, event_status and department stay null unless the "
-        "record's own text supports them: source_type and record_type say what a record is, never "
-        "how serious it is.\n"
-        "7. Enumerated fields take one of the listed tokens, lower case, exactly as written. There "
-        "is no synonym: when none of the tokens fits, leave that value out.\n"
-        "8. Do not resolve anything. Coordinates, canonical place ids and evidence ids are not part "
-        "of this schema; a location stays pending GIS.\n"
-        "9. A field may open with page navigation or a timestamp before its real text. It is still "
-        "the record's own text - quote it exactly, in its own language, and do not read furniture "
-        "as an event.\n\n"
+        "anyone. source_type and record_type say what a record is, never how serious it is.\n"
+        "9. Enumerated fields take one of the listed tokens, lower case, exactly as written. There "
+        "is no synonym and nothing to add: when the event matches none of the tokens, leave that "
+        "value out.\n"
+        "10. Do not resolve anything. Coordinates, canonical place ids and evidence ids are not "
+        "part of this schema; a location stays pending GIS.\n"
+        "11. A field may open with page navigation or a timestamp before its real text. It is "
+        "still the record's own text - quote it exactly, in its own language, and do not read "
+        "furniture as an event. Navigation links, related-story listings and date stamps describe "
+        "no event and support no classification, entity or location.\n\n"
         "Tokens per enumerated field:\n"
         + "\n".join(f"- {name}: {', '.join(tokens)}" for name, tokens in vocabulary.items())
         + "\n\nThe record's own metadata, for context only, never quotable: "
@@ -290,6 +310,22 @@ def extract_incident(
     return validate_extraction(output, context)
 
 
+def _bound_lists(draft: ExtractionDraft, report: _Report) -> ExtractionDraft:
+    """Keep the items one completion can carry, and say plainly which were dropped."""
+    kept: dict[str, Any] = {}
+    for name in ("locations", "entities", "relationships"):
+        items = getattr(draft, name)
+        if len(items) > MAX_ANSWER_ITEMS:
+            kept[name] = items[:MAX_ANSWER_ITEMS]
+            report.issue(
+                IssueCode.PROVIDER_WARNING,
+                field=name,
+                detail=f"the answer named {len(items)}, which is more than one completion can "
+                f"carry, so the first {MAX_ANSWER_ITEMS} were kept and the rest were not read",
+            )
+    return draft.model_copy(update=kept) if kept else draft
+
+
 def validate_extraction(output: StructuredOutput, context: RecordContext) -> Incident:
     """Check the answer field by field. Nothing the record cannot repeat stays a fact."""
     try:
@@ -298,6 +334,7 @@ def validate_extraction(output: StructuredOutput, context: RecordContext) -> Inc
         raise InvalidExtraction(str(error)) from error
 
     report = _Report()
+    draft = _bound_lists(draft, report)
     payload = output.payload
     for key in sorted(set(payload) & FORBIDDEN_TOP_LEVEL):
         report.issue(

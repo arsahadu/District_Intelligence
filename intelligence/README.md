@@ -7,8 +7,9 @@ source-independent `CommonRecord` objects from Data Integration and returns stru
 
 **Intelligence lives entirely inside `intelligence/`.** It imports nothing from `ingestion/`, `backend/`, `frontend/` or
 GIS — it reads records by declared field path against a structural protocol, so a renamed or missing field fails loudly
-instead of surfacing as a silent `None`. Nothing outside this directory is changed to make it work, and no other team is
-required to change its contract to consume it.
+instead of surfacing as a silent `None`. Where it does talk to the platform it talks HTTP: the orchestrator `GET`s
+CommonRecords from the API and posts nothing back, and it never opens a database connection. Nothing outside this
+directory is changed to make it work, and no other team is required to change its contract to consume it.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -24,7 +25,11 @@ Source (Dinamalar news, IMD weather, AgMarkNet markets, departmental feeds)
   ↓
 Connector + normaliser                          — Data Integration (not this module)
   ↓
-CommonRecord                                    — external input contract
+Platform API: GET /records                      — Alex's FastAPI over http(s), one CommonRecord per object
+  ↓
+pipeline.run_pipeline                           — read the batch, one record at a time, collect and report
+  ↓
+pipeline.process_record (per record)            — config → provider → extraction → validated incident
   ↓
 context.build_context                           — read fields verbatim, one SourceField per citable field
   ↓
@@ -41,9 +46,9 @@ contract.Incident (schema 2.0)                  — claims + evidence + validati
 Platform / GIS / Collector workspace
 ```
 
-The public entry point is `pipeline.process_record(record)`. `context.build_context`,
-`intelligence.extraction_request`, `intelligence.extract_incident` and `intelligence.validate_extraction` are callable
-directly for stage-by-stage testing.
+`python -m intelligence.pipeline` is the one runnable entry point; `pipeline.process_record(record)` is the one-record
+boundary it drives. `context.build_context`, `intelligence.extraction_request`, `intelligence.extract_incident` and
+`intelligence.validate_extraction` are callable directly for stage-by-stage testing.
 
 **One chain, three sources.** `data` is source-specific while the CommonRecord around it is not, so the context builder
 discovers the keys a record actually carries instead of assuming a news-shaped one: a Dinamalar article offers
@@ -61,8 +66,8 @@ a field another source usually carries does not exist here unless it is printed.
 | `context.py` | `RecordContext` — every field the record actually carries as a citable `SourceField`, plus their hash, prompt block and provenance |
 | `llm.py` | Provider abstraction: `LLMConfig`, `LLMRequest`, `LLMResponse`, `LLMProvider`, `GroqProvider`, `OpenAICompatibleProvider`, `build_provider` |
 | `intelligence.py` | Orchestration: request building, draft parsing, grounding, assembly into an `Incident` |
-| `pipeline.py` | `process_record` — config → provider → extraction → validated incident |
-| `models/`, `extraction/`, `mapping/`, `config/` | Deterministic foundations, still in use and partly frozen (§9) |
+| `pipeline.py` | The runnable orchestrator: `process_record` for one record, `fetch_records`/`fetch_record` over the API, `run_pipeline` for a batch, `print_report` and `main` for the console |
+| `models/`, `extraction/`, `mapping/`, `config/` | Deterministic foundations: five modules shared with the LLM path, the rest frozen (§9) |
 
 ## 4. The Incident contract
 
@@ -112,6 +117,11 @@ refused, not repaired.
   did carry that stamp.
 - `title` and `description` may be grounded by repeating the record's own value; every enumerated field needs an
   explicit quote.
+- A classification quote proves the event happened, it does not have to contain the token. `incident_type`,
+  `category`, `department`, `severity`, `priority` and `event_status` are named for an event the record describes, and the
+  record usually describes it in its own language, so `value` and `quote` almost never match literally. What stays refused
+  is a token with no event sentence behind it — a topic, a heading, or the model's own expectation of such records.
+- The event is read from the body, not the headline, and one span may support several fields.
 - Provenance is copied from the record, never from the answer.
 
 The contract then refuses what a model might have invented: `latitude`/`longitude` or `canonical_location_id` without
@@ -142,6 +152,12 @@ configuration, not code. Both take an injectable client or transport, which is h
 | `INTELLIGENCE_LLM_TIMEOUT_SECONDS` | per-request timeout |
 | `INTELLIGENCE_LLM_MAX_RETRIES` | retried on 429/500/502/503/504 with linear backoff |
 | `INTELLIGENCE_LLM_TEMPERATURE`, `INTELLIGENCE_LLM_MAX_TOKENS` | generation controls |
+| `INTELLIGENCE_LLM_REASONING_EFFORT` | `none`/`default`/`low`/`medium`/`high`, sent to the endpoint only when set. A reasoning model spends its completion budget on thinking first, so this is the knob that decides how much of `MAX_TOKENS` reaches the answer |
+
+An answer that the endpoint stopped early is never half-read: `complete()` raises `StructuredOutputError` naming
+`INTELLIGENCE_LLM_MAX_TOKENS` and `INTELLIGENCE_LLM_REASONING_EFFORT` as soon as the endpoint reports
+`finish_reason = "length"`, and a Groq 400 whose code is `json_validate_failed` — the schema-constrained answer never
+arrived complete — carries the same two names.
 
 No key is hardcoded anywhere, and none is ever rendered: `api_key` is excluded from `repr`, and `summary()` reports only
 `api_key_present`. A Groq failure is reported as `TransportError` carrying the SDK error type, the HTTP status and the
@@ -188,10 +204,12 @@ deleted**; it is being retired seam by seam as the LLM path takes over, not in o
 | --- | --- |
 | `models/base.py` — `StrictModel`, `Confidence`, evidence reference walking | `config/*.py` cue and surface tables |
 | `models/evidence.py`, `models/enums.py` | `mapping/assembly.py`, `enrichment.py`, `classifier.py`, `operations.py`, `deduplication.py` |
-| `extraction/spans.py` — span arithmetic and verification | |
-| `mapping/record_input.py` — structural record reading | |
-| `extraction/` language, normalisation, morphology and temporal readers | |
+| `extraction/spans.py` — span arithmetic and verification | `extraction/` language, normalisation, morphology and temporal readers |
+| `mapping/record_input.py` — structural record reading | `models/` legacy schemas and correlation |
 
+"Shared" is measurable, not remembered: an import audit of the five live-path modules reaches exactly these five legacy
+files. Every other module under `models/`, `config/`, `extraction/` and `mapping/` is imported only by its own tests or
+by another frozen module, so removing the deterministic chain later is a list of deletions rather than a search.
 `LEGACY_DETERMINISTIC_SEAMS` in `__init__.py` names the frozen ones so a reader can tell which code is being replaced.
 The legacy `Incident` stays under `intelligence.models` (schema 1.0) for the duration of the migration; the package root
 exports only the new contract. The full design record of the deterministic chain — stage by stage, with the cue
@@ -206,6 +224,7 @@ parsing, similarity calculations.
 | --- | --- | --- |
 | 1 | LLM foundation, `Incident` contract, evidence-first validation, provider abstraction | **Complete** |
 | 2 | Real extraction — call a live model over the capture, measure prompt quality, JSON compliance and recall | **In progress — shape conforms, recall tuning remains** |
+| 2b | Runnable orchestration: `python -m intelligence.pipeline` reads the platform API and reports a batch | **Complete — read-only; posting results back is not built** |
 | 3 | Entity and location resolution hand-off (GIS) | Planned |
 | 4 | LLM classification and relevance | Planned |
 | 5 | Severity, priority, operational status, department routing | Planned |
@@ -233,22 +252,47 @@ Integration uses this contract, not the extraction internals:
   every accepted claim's `evidence_ids` resolve to spans that replay against the stored field text.
 - `review_required` is a human's to confirm. `unresolved` and `unknown` are non-authoritative — the absence of a
   finding, not a finding of absence.
-- No API or database code lives in this module.
+- The API code here is a read-only client: `pipeline.py` `GET`s records and prints what the chain made of them. It never
+  posts an Incident, never writes to PostgreSQL and never connects to the database itself.
 
 ## 12. Tests and verification
 
 ```bash
-python -m pytest intelligence/tests -q      # 845 passed
+python -m pytest intelligence/tests -q      # 869 passed
 python -m compileall intelligence           # clean
 ```
 
-Stage 1 adds 64 tests: `test_contract.py` (14) on the model rules — what a legal incident must carry and what it must
-refuse; `test_llm.py` (27) on configuration from the environment and from a local `.env`, precedence, secret
-non-exposure, retries, both provider clients and their error mapping, JSON parsing, and the strict-mode schema a model
-is shown; `test_pipeline.py` (23) on the record → incident path with a scripted provider, covering invented quotes,
+Stage 1 adds 88 tests: `test_contract.py` (14) on the model rules — what a legal incident must carry and what it must
+refuse; `test_llm.py` (30) on configuration from the environment and from a local `.env`, precedence, secret
+non-exposure, retries, both provider clients and their error mapping, JSON parsing, the strict-mode schema a model
+is shown, the reasoning-budget setting and a completion that ran out of tokens; `test_pipeline.py` (26) on the record →
+incident path with a scripted provider, covering invented quotes,
 out-of-taxonomy tokens, handed-in coordinates, ambiguous spans, ungrounded locations, empty answers, the three source
-shapes, a price grounded on its own number, metadata that is not quotable text, and a second pass over the same record.
-The 781 pre-existing deterministic tests still pass unchanged.
+shapes, a price grounded on its own number, metadata that is not quotable text, a fraud raid classified from the event
+it describes rather than from an English token in the text, the ceiling an over-long item list is cut to, a second pass
+over the same record, and what the prompt is allowed to say;
+`test_orchestration.py` (18) on the runnable path — the backend URL from the environment, `GET /records` and
+`GET /records/{record_id}`, the safe default limit, malformed and erroring responses, unreachable backend, per-record
+failures that do not stop a run, the classification of a result as incident / context / review / failure, the console
+line and the CLI's refusals. The 781 pre-existing deterministic tests still pass unchanged.
+
+### Run it
+
+```bash
+python -m intelligence.pipeline                    # the safe default: five records
+python -m intelligence.pipeline --limit 20
+python -m intelligence.pipeline --record-id WEATHER-MDU-03-Oct
+python -m intelligence.pipeline --all --json       # every record, full Incident documents
+```
+
+The batch reads `INTELLIGENCE_API_BASE_URL` (default `http://127.0.0.1:8000`) and provider settings from
+`INTELLIGENCE_LLM_*`, in the environment or in the repository `.env`; nothing is hardcoded. It prints the backend URL,
+how many records were read and processed, then one line per result — id, title, incident type, category, department,
+severity, priority, event status, event time and the review state with its finding count — grouped into incidents,
+contextual records and failures, with a summary and a list of ids that need a person. Exit codes are 0 when every
+record produced an Incident, 1 when some failed, 2 for a backend failure and 3 when no provider could be built. A run
+with no argument never reads more than the default five records, nothing is posted back, no credential is ever printed,
+and a record whose model call fails is reported while the rest of the batch continues.
 
 All 1,059 records of the October 2026 Madurai capture (`ingestion/data/normalized`: 1,004 agriculture, 35 news, 20
 weather) were pushed through `build_context` and `extraction_request` without a model — no failures, 0.20 s total, and
@@ -263,23 +307,28 @@ too, but needs more completion room than this account's tier allows (§13).
 
 ## 13. Current limitations
 
-- **A full Tamil article does not fit this account's Groq tier.** Strict mode makes every property required, so the
-  answer is long, and `openai/gpt-oss-20b` spends part of the completion budget on reasoning before it emits JSON. A
-  Dinamalar record costs ≈4.3k prompt tokens (6.1k chars of rules and taxonomy, 2.6k chars of Tamil text) against an
-  8,000-tokens-per-minute `on_demand` limit: `INTELLIGENCE_LLM_MAX_TOKENS=4096` leaves nothing for the answer and Groq
-  returns 400 `json_validate_failed` with an empty `failed_generation`; a 3,584 budget fits the window but truncates
-  mid-answer, which strict mode rejects as `missing properties: 'locations'…`; 8,192 produced one complete, schema-shaped
-  answer but the request then exceeded the per-minute window (413). Weather and market records — 0.5-1k prompt tokens —
-  extract reliably at the configured budget. Until the tier or the model changes, expect news extraction to need
-  retries and to fail loudly rather than half-fill an Incident: `process_record` propagates `TransportError` and
-  invents nothing.
-- **The live model conforms to the shape but not yet to the discipline.** Under strict-mode structured outputs every
-  scalar comes back as a `GroundedValue` object rather than headline Tamil in `incident_type`, and
-  `validate_extraction` builds an incident instead of raising. On the harder Tamil record what it still refuses is
-  grounding — quotes that paraphrase rather than copy (`span_mismatch`), a repeated string quoted with no `char_start`
-  (`ambiguous_quote`), item roles or entity types outside the enums (`invalid_value`). Precision holds, so the remaining
-  work is recall through prompt tuning, not contract work.
+- **A full Tamil article needs its completion budget managed.** Strict mode makes all 44 answer properties required and
+  `openai/gpt-oss-20b` spends part of the budget reasoning before it emits JSON, so a Dinamalar record — ≈4.3k prompt
+  tokens (7.4k chars of rules and taxonomy, 2.6k chars of Tamil text) against an 8,000-tokens-per-minute `on_demand`
+  limit — answers `json_validate_failed` with an empty `failed_generation` whenever reasoning plus answer exceed
+  `INTELLIGENCE_LLM_MAX_TOKENS`. Weather and market records — 0.5-1k prompt tokens — extract reliably. Three generic
+  levers hold this open, none of them a source special case: the prompt states and `validate_extraction` enforces a
+  ceiling of 8 items per list (`MAX_ANSWER_ITEMS`), because "name every place and person" is otherwise an unbounded
+  answer; `INTELLIGENCE_LLM_REASONING_EFFORT=low` moves budget from reasoning to the answer; and a truncation now names
+  both knobs instead of arriving as an opaque 400. Raising the tier or `INTELLIGENCE_LLM_MAX_TOKENS` remains the user's
+  call — `process_record` propagates the failure and invents nothing.
+- **Recall is now the open question, not the shape.** Under strict-mode structured outputs every scalar comes back as a
+  `GroundedValue` object and `validate_extraction` builds an incident instead of raising. What stage-2.3/2.4 of the
+  prompt changed is the model's licence to classify: a Tamil article previously yielded only `department`, because the
+  rules read as "the quote must contain the English token". The rules now require a classification to be read from the
+  event the body states and cap each item list at 8. Precision mechanisms are untouched, so a run that over-claims shows
+  up as `span_mismatch`/`invalid_value` findings, and one that abstains shows up as `unresolved` fields — both measurable
+  per record with `python -m intelligence.pipeline --record-id <id>`.
 - One record in, one incident out. No cross-record view yet (Stages 7, 9).
+- The batch path ends at the console. Nothing is posted back to the platform, so `python -m intelligence.pipeline` is a
+  development and verification tool until an endpoint or a job runner takes the Incidents it prints. `--limit` is applied
+  client-side because `GET /records` has no paging, records are processed one after another, and a rate-limited provider
+  makes the rest of a large `--all` run fail per record — reported, not retried.
 - Grounding is quote-only, so a correct claim the model cannot quote verbatim is refused. Recall will sit below the
   deterministic path until the prompt is tuned; precision is the deliberate priority.
 - Language and normalisation handling is not wired into the LLM path yet — record text reaches the model untouched, so

@@ -9,13 +9,14 @@ from typing import Any, Optional
 
 import httpx
 import pytest
-from groq import APIConnectionError, AuthenticationError
+from groq import APIConnectionError, AuthenticationError, BadRequestError
 
 from intelligence.llm import (
     ENV_API_KEY,
     ENV_BASE_URL,
     ENV_MODEL,
     ENV_PROVIDER,
+    ENV_REASONING_EFFORT,
     ENV_TIMEOUT,
     GroqProvider,
     LLMConfig,
@@ -374,3 +375,60 @@ def test_a_response_carries_what_the_endpoint_reported():
     assert response.finish_reason == "stop"
     assert response.latency_ms is not None
     assert json.loads(response.json()) == {"a": 1}
+
+
+def test_the_reasoning_budget_is_configuration_and_is_only_sent_when_chosen():
+    found = LLMConfig.from_env({ENV_MODEL: "openai/gpt-oss-20b", ENV_REASONING_EFFORT: "Low"})
+    assert found.reasoning_effort == "low"
+    assert found.summary()["reasoning_effort"] == "low"
+    assert LLMConfig.from_env({ENV_MODEL: "m"}).reasoning_effort is None
+    with pytest.raises(ProviderNotConfigured, match="REASONING_EFFORT"):
+        LLMConfig.from_env({ENV_MODEL: "m", ENV_REASONING_EFFORT: "sometimes"})
+
+    plain, calls = groq_provider(groq_reply("{}"))
+    plain.complete(request(payload_shape=False))
+    assert "reasoning_effort" not in calls.calls[0]
+
+    budgeted = GroqProvider(
+        LLMConfig(provider="groq", model="openai/gpt-oss-20b", api_key=KEY, reasoning_effort="low"),
+        client=SimpleNamespace(chat=SimpleNamespace(completions=(shown := GroqCompletions(groq_reply("{}"))))),
+    )
+    budgeted.complete(request(payload_shape=False))
+    assert shown.calls[0]["reasoning_effort"] == "low"
+
+    wire, recorder = provider(
+        [(200, chat_body({}))],
+        config=LLMConfig(model="gpt-oss-20b", api_key=KEY, reasoning_effort="low"),
+    )
+    wire.complete(request())
+    assert recorder.sent["reasoning_effort"] == "low"
+
+
+def test_an_answer_the_endpoint_cut_off_names_the_budget_that_ran_out():
+    built, _ = groq_provider(groq_reply('{"locations": [{"text"', finish="length"))
+    with pytest.raises(StructuredOutputError, match="INTELLIGENCE_LLM_MAX_TOKENS") as raised:
+        built.generate_structured(request())
+    assert "INTELLIGENCE_LLM_REASONING_EFFORT" in str(raised.value)
+
+    wire, _ = provider([(200, json.dumps({"choices": [
+        {"message": {"content": "{}"}, "finish_reason": "length"}]}))])
+    with pytest.raises(StructuredOutputError, match="completion budget"):
+        wire.complete(request())
+
+
+def test_a_strict_answer_the_endpoint_could_never_validate_points_at_the_budget():
+    rejected = BadRequestError(
+        "Error code: 400",
+        response=httpx.Response(
+            400, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        ),
+        body={"error": {"message": "Failed to parse response from model ''",
+                        "code": "json_validate_failed"}},
+    )
+    built, _ = groq_provider(groq_reply("{}"), error=rejected)
+    with pytest.raises(TransportError, match="json_validate_failed") as raised:
+        built.complete(request())
+    reported = str(raised.value)
+    assert "INTELLIGENCE_LLM_MAX_TOKENS" in reported
+    assert "INTELLIGENCE_LLM_REASONING_EFFORT" in reported
+    assert KEY not in reported

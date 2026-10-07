@@ -25,6 +25,16 @@ ENV_TIMEOUT = ENV_PREFIX + "TIMEOUT_SECONDS"
 ENV_MAX_RETRIES = ENV_PREFIX + "MAX_RETRIES"
 ENV_TEMPERATURE = ENV_PREFIX + "TEMPERATURE"
 ENV_MAX_TOKENS = ENV_PREFIX + "MAX_TOKENS"
+ENV_REASONING_EFFORT = ENV_PREFIX + "REASONING_EFFORT"
+
+#: What a reasoning endpoint will spend its completion budget on before the JSON starts.
+REASONING_EFFORTS = ("none", "default", "low", "medium", "high")
+
+#: A schema-constrained answer that ran out of budget is a sizing decision, not a model failure.
+TRUNCATION_HINT = (
+    "the answer ran out of completion budget before the JSON finished, so raise "
+    f"{ENV_MAX_TOKENS} or set {ENV_REASONING_EFFORT}=low to spend less of it on reasoning"
+)
 
 #: The repository's local settings file. Intelligence reads it and never writes it.
 DOTENV_PATH = os.path.join(
@@ -86,6 +96,7 @@ class LLMConfig:
     max_retries: int = 2
     temperature: float = 0.0
     max_tokens: int = 4096
+    reasoning_effort: Optional[str] = None
 
     @classmethod
     def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "LLMConfig":
@@ -109,6 +120,7 @@ class LLMConfig:
             max_retries=_int(value(ENV_MAX_RETRIES), 2, ENV_MAX_RETRIES),
             temperature=_float(value(ENV_TEMPERATURE), 0.0, ENV_TEMPERATURE),
             max_tokens=_int(value(ENV_MAX_TOKENS), 4096, ENV_MAX_TOKENS),
+            reasoning_effort=_effort(value(ENV_REASONING_EFFORT)),
         )
 
     def resolved_base_url(self) -> str:
@@ -126,6 +138,7 @@ class LLMConfig:
             "max_retries": self.max_retries,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "reasoning_effort": self.reasoning_effort,
             "api_key_present": bool(self.api_key),
         }
 
@@ -146,6 +159,18 @@ def _int(raw: Optional[str], default: int, name: str) -> int:
         return int(raw)
     except ValueError as error:
         raise ProviderNotConfigured(f"{name} must be an integer, got {raw!r}") from error
+
+
+def _effort(raw: Optional[str]) -> Optional[str]:
+    """Reasoning budget is a deployment choice, so an unusable name is refused at read time."""
+    if raw is None:
+        return None
+    effort = raw.strip().lower()
+    if effort not in REASONING_EFFORTS:
+        raise ProviderNotConfigured(
+            f"{ENV_REASONING_EFFORT} must be one of {', '.join(REASONING_EFFORTS)}, got {raw!r}"
+        )
+    return effort
 
 
 @dataclass(frozen=True)
@@ -412,6 +437,8 @@ class OpenAICompatibleProvider(LLMProvider):
             ),
             "max_tokens": request.max_tokens or self.config.max_tokens,
         }
+        if self.config.reasoning_effort:
+            payload["reasoning_effort"] = self.config.reasoning_effort
         if request.json_schema:
             payload["response_format"] = {"type": "json_object"}
 
@@ -427,6 +454,10 @@ class OpenAICompatibleProvider(LLMProvider):
         message = choices[0].get("message") or {}
         text = message.get("content")
         finish = choices[0].get("finish_reason")
+        if finish == "length":
+            raise StructuredOutputError(
+                f"{self.name} ran out of completion budget: {TRUNCATION_HINT}"
+            )
         data = None
         if request.json_schema and isinstance(text, str):
             data = parse_json_object(text, provider=self.name)
@@ -451,11 +482,16 @@ def _groq_failure(error: BaseException) -> str:
     status = getattr(error, "status_code", None)
     body = getattr(error, "body", None)
     detail = str(error)[:300]
+    code = None
     if isinstance(body, dict):
         inner = body.get("error")
+        if isinstance(inner, dict):
+            code = inner.get("code")
         detail = str(inner if isinstance(inner, dict) else body)[:300]
     prefix = type(error).__name__ + (f" (HTTP {status})" if status else "")
     reason = f"{prefix}: {detail}" if detail else prefix
+    if code == "json_validate_failed" or "json_validate_failed" in detail:
+        reason += f"; the schema-constrained answer never arrived complete - {TRUNCATION_HINT}"
     if status in (401, 403):
         reason += "; authentication and permission failures are never retried"
     return reason
@@ -498,6 +534,8 @@ class GroqProvider(LLMProvider):
             ),
             "max_tokens": request.max_tokens or self.config.max_tokens,
         }
+        if self.config.reasoning_effort:
+            kwargs["reasoning_effort"] = self.config.reasoning_effort
         if request.json_schema:
             kwargs["response_format"] = {
                 "type": "json_schema",
@@ -523,6 +561,10 @@ class GroqProvider(LLMProvider):
         message = getattr(choices[0], "message", None)
         text = getattr(message, "content", None)
         finish = getattr(choices[0], "finish_reason", None)
+        if finish == "length":
+            raise StructuredOutputError(
+                f"{self.name} ran out of completion budget: {TRUNCATION_HINT}"
+            )
         data = None
         if request.json_schema and isinstance(text, str):
             data = parse_json_object(text, provider=self.name)

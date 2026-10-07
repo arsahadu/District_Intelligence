@@ -9,8 +9,19 @@ from typing import Any, Optional
 import pytest
 
 from intelligence.context import build_context
-from intelligence.contract import IncidentCategory, IssueCode, ReviewState
-from intelligence.intelligence import ExtractionDraft, InvalidExtraction, extraction_request
+from intelligence.contract import (
+    Department,
+    EventStatus,
+    IncidentCategory,
+    IssueCode,
+    ReviewState,
+)
+from intelligence.intelligence import (
+    MAX_ANSWER_ITEMS,
+    ExtractionDraft,
+    InvalidExtraction,
+    extraction_request,
+)
 from intelligence.llm import (
     LLMProvider,
     LLMRequest,
@@ -387,3 +398,90 @@ def test_the_prompt_names_the_item_enums_and_says_a_record_need_not_be_an_incide
     assert "- entities[].entity_type: person, government_official" in request.system
     assert "- locations[].role: event_location, event_container" in request.system
     assert "- relationships[].kind: located_at, involves" in request.system
+
+
+FRAUD = (
+    "The economic offences wing searched a rented office in Anna Nagar on Tuesday and took away "
+    "ledgers, three sim cards and two laptops after depositors said the scheme had stopped paying "
+    "the money it promised."
+)
+FRAUD_TITLE = "Investment fraud probe"
+
+
+def test_a_classification_is_accepted_from_the_event_it_describes_not_its_token():
+    """The Melur case: nothing in the text says fraud, police or investigation in English."""
+    record = synth(FRAUD, title=FRAUD_TITLE, language="en")
+    found = run({
+        "title": {"value": FRAUD_TITLE, "field": "title"},
+        "description": quote(FRAUD, "searched a rented office in Anna Nagar on Tuesday"),
+        "incident_type": quote(FRAUD, "had stopped paying") | {"value": "cyber_or_financial_fraud"},
+        "category": quote(FRAUD, "took away") | {"value": "law_and_order"},
+        "department": quote(FRAUD, "economic offences wing") | {"value": "police"},
+        "severity": quote(FRAUD, "ledgers, three sim cards and two laptops")
+                    | {"value": "moderate"},
+        "event_status": quote(FRAUD, "searched") | {"value": "under_investigation"},
+        "locations": [quote(FRAUD, "Anna Nagar") | {"text": "Anna Nagar",
+                                                   "location_type": "locality",
+                                                   "role": "event_location"}],
+        "entities": [
+            quote(FRAUD, "economic offences wing") | {"text": "economic offences wing",
+                                                      "entity_type": "government_body",
+                                                      "role": "responding_authority"},
+            quote(FRAUD, "depositors") | {"text": "depositors", "entity_type": "community_group",
+                                          "role": "affected_party"},
+        ],
+        "relationships": [quote(FRAUD, "after depositors said")
+                          | {"kind": "responds_to", "subject": "economic offences wing",
+                             "object": "depositors"}],
+    }, record)
+
+    assert found.incident_type is EventType.CYBER_OR_FINANCIAL_FRAUD
+    assert found.category is IncidentCategory.LAW_AND_ORDER
+    assert found.department is Department.POLICE
+    assert found.event_status is EventStatus.UNDER_INVESTIGATION
+    assert found.severity is SeverityLevel.MODERATE
+    assert found.priority is None
+    assert [item.text for item in found.locations] == ["Anna Nagar"]
+    assert [item.text for item in found.entities] == ["economic offences wing", "depositors"]
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+
+    cited = found.evidence_by_id()[found.claim("incident_type").evidence_ids[0]]
+    assert (cited.field, cited.quote) == (CONTENT, "had stopped paying")
+    assert "fraud" not in cited.quote.lower()
+    assert found.claim("description").evidence_ids != found.claim("event_status").evidence_ids
+
+
+def test_the_prompt_reads_an_event_from_the_body_instead_of_a_token_from_the_headline():
+    rules = extraction_request(build_context(waterlogging())).system.split("Rules:\n")[1]
+    assert "A quote proves what happened; it does not have to contain the word for it" in rules
+    assert "Read the event from the body, not from the headline" in rules
+    assert "never because its text is in another language" in rules
+    assert "Metadata never supports a classification" in rules
+    assert "Navigation links, related-story listings and date stamps describe no event" in rules
+    assert "stay null unless the record" not in rules
+    assert "do not read furniture as an event" in rules
+    assert "does not exist here unless it is printed" in rules
+
+
+def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised():
+    """One completion has a size. The overflow is dropped, and the drop is said out loud."""
+    record = synth(FRAUD, title=FRAUD_TITLE, language="en")
+    found = run({
+        "title": {"value": FRAUD_TITLE, "field": "title"},
+        "locations": [quote(FRAUD, "Anna Nagar") | {"text": f"place {index}",
+                                                    "location_type": "locality",
+                                                    "role": "event_location"}
+                      for index in range(MAX_ANSWER_ITEMS + 3)],
+    }, record)
+
+    assert len(found.locations) == MAX_ANSWER_ITEMS
+    assert [item.text for item in found.locations][:2] == ["place 0", "place 1"]
+    assert found.locations[0].review is ReviewState.ACCEPTED
+    issue = next(item for item in found.validation.issues
+                 if item.code is IssueCode.PROVIDER_WARNING and item.field == "locations")
+    assert f"the first {MAX_ANSWER_ITEMS} were kept" in issue.detail
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+    rules = extraction_request(build_context(record)).system.split("Rules:\n")[1]
+    assert f"never more than {MAX_ANSWER_ITEMS} in any list" in rules
