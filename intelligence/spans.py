@@ -52,10 +52,6 @@ class Span:
     char_start: int
     char_end: int
 
-    @property
-    def length(self) -> int:
-        return self.char_end - self.char_start
-
     def slice_from(self, text: str) -> str:
         return text[self.char_start : self.char_end]
 

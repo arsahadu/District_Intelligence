@@ -31,6 +31,7 @@ from intelligence.contract import (
     SCHEMA_VERSION,
     Validation,
 )
+from intelligence.geography import source_geography
 from intelligence.llm import LLMProvider, LLMRequest, StructuredOutput, json_schema_for
 from intelligence.models.base import OptionalConfidence
 from intelligence.models.enums import (
@@ -50,9 +51,8 @@ from intelligence.spans import SpanError, find_spans
 PROVIDER = "intelligence.intelligence"
 PROMPT_VERSION = "stage-2.8"
 
-#: A long article names dozens of places and people, and strict mode makes each one a full object,
-#: so an unbounded list is what overruns one completion. The ceiling is told to the model and the
-#: items it offers first are the ones kept.
+#: Strict mode makes every list item a full object, so "name every place and person" is an unbounded
+#: answer that overruns one completion. The ceiling is stated in the prompt and the first items kept.
 MAX_ANSWER_ITEMS = 8
 
 #: A model that reports no confidence is answering anyway, so the number is attributed to us.
@@ -933,17 +933,13 @@ def _assemble(
         for item in locations + entities + relationships + facts
     )
 
-    # What a record is comes from what was evidenced, not from what the model asserted about itself:
-    # an evidenced event makes an incident — the token for it, or the account of it — and a bare
-    # declaration can never manufacture one. An evidenced occurrence outranks quoted field values:
-    # context facts describe states, so they never demote a happening and never promote one.
+    # Kind comes from evidence, never from the model's self-assertion: an evidenced event makes an
+    # incident, a bare declaration manufactures none, and quoted field values never demote a happening.
     declared_kind = _enum(RecordKind, draft.record_kind, subject="record_kind", report=report)
     declared_context = _enum(ContextType, draft.context_type, subject="context_type", report=report)
     typed = values.get("incident_type") not in (None, EventType.UNRESOLVED)
-    # An account carries an event when the answer read the record as a happening: its own `incident`
-    # label, or a status that only a happening can carry — ongoing, under investigation, action
-    # taken, resolved, reported say nothing about a price, a temperature or a schedule. Either way
-    # the quote had to replay, so a bare label manufactures nothing and quoted values decide nothing.
+    # A happening is read from the answer's own `incident` label or from a status only an event can
+    # carry. Either way the quote had to replay, so a label manufactures nothing and values decide none.
     account = values.get("description") not in (None, "")
     happened = values.get("event_status") not in (None, EventStatus.UNKNOWN)
     event_established = typed or (account and (
@@ -1062,6 +1058,12 @@ def _assemble(
     else:
         state = ReviewState.UNRESOLVED
 
+    # The record's own geography reaches the GIS boundary whatever the answer said: model mentions
+    # stay pending resolution, source values are kept beside them under the paths that carried them.
+    geography, geography_evidence = source_geography(context.geography)
+    known = {item.evidence_id for item in evidence}
+    evidence.extend(item for item in geography_evidence if item.evidence_id not in known)
+
     generation = Generation(
         provider=str(getattr(output.response, "provider", PROVIDER) or PROVIDER),
         model=str(output.response.model or "unknown"),
@@ -1092,6 +1094,7 @@ def _assemble(
         entities=entities,
         relationships=relationships,
         context_facts=facts,
+        source_geography=geography,
         evidence=evidence,
         claims=claims,
         validation=Validation(state=state, issues=list(report.issues), checked_at=datetime.now()),

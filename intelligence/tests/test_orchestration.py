@@ -31,7 +31,7 @@ from intelligence.pipeline import (
     main,
     run_pipeline,
 )
-from intelligence.tests.test_pipeline import Scripted, water_answer
+from intelligence.tests.builders import Scripted, water_answer
 from intelligence.tests.record_fixtures import market_price, waterlogging, weather_forecast
 
 BASE = "http://backend.test"
@@ -160,13 +160,74 @@ def test_record_id_mode_reads_one_record_and_quotes_the_path():
     assert summary.incidents == [] and len(summary.contextual) == 1
 
 
-def test_one_provider_is_built_for_the_run_and_a_missing_one_stops_it_before_any_read():
-    transport = responder(listing(waterlogging()))
+def test_a_narrative_run_stops_when_no_provider_can_be_built(capsys):
+    transport = responder(single(waterlogging()))
 
     code = main(["--record-id", "NEWS-MDU-WLR-0001"], environ={}, transport=transport)
 
     assert code == pipeline.EXIT_PROVIDER
-    assert transport.calls == []
+    assert "provider failed" in capsys.readouterr().err
+
+
+def test_a_run_of_only_structured_records_needs_no_provider_at_all(capsys, monkeypatch):
+    def none(*args, **kwargs):
+        raise AssertionError("a structured run must not configure a model")
+
+    monkeypatch.setattr(pipeline, "build_provider", none)
+    records = [
+        *[dict(market_price(), record_id=f"A-{index}") for index in range(3)],
+        *[dict(weather_forecast(), record_id=f"W-{index}") for index in range(2)],
+    ]
+
+    code = main(["--all"], environ={ENV_API_BASE_URL: BASE}, transport=responder(listing(*records)))
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert "Structured (no model): 5" in out
+    assert "Semantic (model read): 0" in out
+    assert "path=structured" in out
+
+
+def test_a_hundred_price_lines_and_twenty_forecasts_process_with_no_model_configured():
+    records = [
+        dict(market_price(), record_id=f"AGRI-{index}") for index in range(100)
+    ] + [dict(weather_forecast(), record_id=f"WX-{index}") for index in range(20)]
+
+    # Nothing but the backend URL is configured: a record routed to the model would fail the run.
+    summary = run_pipeline(
+        all_records=True,
+        base_url=BASE,
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(*records)),
+    )
+
+    assert summary.failures == []
+    assert (summary.processed, len(summary.structured), len(summary.semantic)) == (120, 120, 0)
+    assert all(item.incident.validation.state is ReviewState.ACCEPTED for item in summary.outcomes)
+    assert all(item.incident.generation.model == "none" for item in summary.outcomes)
+
+
+def test_the_provider_is_built_once_for_a_run_that_mixes_the_paths(monkeypatch):
+    built: list[int] = []
+
+    def count(*args, **kwargs):
+        built.append(1)
+        return Scripted(payload={})
+
+    monkeypatch.setattr(pipeline, "build_provider", count)
+    records = [
+        *[dict(waterlogging(), record_id=f"N-{index}") for index in range(3)],
+        market_price(),
+        weather_forecast(),
+    ]
+
+    summary = run_pipeline(
+        limit=None, all_records=True, base_url=BASE, transport=responder(listing(*records))
+    )
+
+    assert built == [1]
+    assert (len(summary.structured), len(summary.semantic)) == (2, 3)
+    assert summary.failures == []
 
 
 def test_the_run_classifies_incidents_context_and_failures():

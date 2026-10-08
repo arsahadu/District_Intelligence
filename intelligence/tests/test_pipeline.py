@@ -1,9 +1,7 @@
-"""Stage 1 pipeline: a CommonRecord in, one LLM call, an Incident that only says what the record does."""
+"""The semantic chain: a CommonRecord in, one LLM call, an Incident that only says what the record does."""
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
 from typing import Any, Optional
 
 import pytest
@@ -24,17 +22,21 @@ from intelligence.intelligence import (
     MAX_ANSWER_ITEMS,
     ExtractionDraft,
     InvalidExtraction,
+    extract_incident,
     extraction_request,
 )
-from intelligence.llm import (
-    LLMProvider,
-    LLMRequest,
-    LLMResponse,
-    ProviderNotConfigured,
-    StructuredOutputError,
-)
+from intelligence.llm import ProviderNotConfigured, StructuredOutputError
 from intelligence.models.enums import EventType, ExtractionMethod, SeverityLevel, TimePrecision
 from intelligence.pipeline import process_record
+from intelligence.tests.builders import (
+    CONTENT,
+    OFFICIALS,
+    RAIN,
+    STILL_WATCHING,
+    Scripted,
+    quote,
+    water_answer,
+)
 from intelligence.tests.record_fixtures import (
     CYCLONE_WARNING_TEXT,
     base_record,
@@ -46,45 +48,6 @@ from intelligence.tests.record_fixtures import (
     weather_warning,
     waterlogging,
 )
-
-CONTENT = "data.content"
-
-
-@dataclass
-class Scripted(LLMProvider):
-    """Answers with exactly what the test wrote. No determinism is hiding behind it."""
-
-    payload: Any
-    name: str = "scripted"
-    model_id: str = "gpt-oss-120b"
-
-    @property
-    def model(self) -> str:
-        return self.model_id
-
-    def complete(self, request: LLMRequest) -> LLMResponse:
-        body = json.dumps(self.payload) if not isinstance(self.payload, str) else self.payload
-        return LLMResponse(
-            provider=self.name,
-            model=self.model_id,
-            text=body,
-            data=None if isinstance(self.payload, str) else self.payload,
-            latency_ms=12.5,
-        )
-
-
-def quote(content: str, text: str, occurrence: int = 0) -> dict[str, Any]:
-    """A real span: the offset of the nth copy of the text, taken from the field itself."""
-    position = -1
-    for _ in range(occurrence + 1):
-        position = content.index(text, position + 1)
-    return {
-        "value": text,
-        "field": CONTENT,
-        "quote": text,
-        "char_start": position,
-        "confidence": 0.85,
-    }
 
 
 def synth(content: str, *, title: str = "District report", language: str = "en", **fields) -> dict:
@@ -99,43 +62,10 @@ def synth(content: str, *, title: str = "District report", language: str = "en",
     return payload
 
 
-RAIN = "நேற்று மாலை பெய்த கனமழையால் சில பகுதிகளில் சாலைகளில் தண்ணீர் தேங்கியது"
-STILL_WATCHING = "கண்காணித்து வருகின்றனர்"
-OFFICIALS = "அதிகாரிகள்"
-
-
-def water_answer() -> dict[str, Any]:
-    content = waterlogging()["data"]["content"]
-    title = waterlogging()["title"]
-    return {
-        "record_kind": "incident",
-        "title": {"value": title, "field": "title", "quote": title, "char_start": 0,
-                  "confidence": 0.9},
-        "description": quote(content, RAIN),
-        "incident_type": {"value": "urban_waterlogging", "field": CONTENT,
-                          "quote": "தண்ணீர் தேங்கியது",
-                          "char_start": content.index("தண்ணீர் தேங்கியது"), "confidence": 0.8},
-        "severity": {"value": "moderate", "field": CONTENT, "quote": "கனமழையால்",
-                     "char_start": content.index("கனமழையால்"), "confidence": 0.7},
-        "event_status": {"value": "ongoing", "field": CONTENT, "quote": STILL_WATCHING,
-                         "char_start": content.index(STILL_WATCHING), "confidence": 0.9},
-        "event_time": {"value": "2026-10-03T08:30:00", "precision": "minute", "confidence": 0.8},
-        "locations": [{"text": "மதுரை", "normalized_name": "Madurai", "location_type": "district",
-                       "role": "event_container", "district": "Madurai",
-                       "field": CONTENT, "quote": "மதுரை மாவட்டத்தில்",
-                       "char_start": content.index("மதுரை மாவட்டத்தில்"), "confidence": 0.85}],
-        "entities": [{"text": OFFICIALS, "entity_type": "government_official",
-                      "role": "responding_authority", "field": CONTENT, "quote": OFFICIALS,
-                      "char_start": content.index(OFFICIALS), "confidence": 0.8}],
-        "relationships": [{"kind": "responds_to", "subject": OFFICIALS, "object": "Madurai",
-                           "field": CONTENT, "quote": STILL_WATCHING,
-                           "char_start": content.index(STILL_WATCHING), "confidence": 0.7}],
-    }
-
-
 def run(payload: Any, record: Optional[dict] = None):
+    """The semantic chain only: routing is the orchestrator's decision, not the LLM's."""
     subject = record if record is not None else waterlogging()
-    return process_record(subject, provider=Scripted(payload=payload))
+    return extract_incident(subject, provider=Scripted(payload=payload))
 
 
 def test_a_grounded_answer_becomes_an_incident_that_keeps_its_source():
@@ -300,7 +230,13 @@ def test_an_empty_answer_is_an_unresolved_incident_not_a_fabricated_one():
     found = run({})
     assert found.is_empty is True
     assert found.validation.state is ReviewState.UNRESOLVED
-    assert found.claims == [] and found.evidence == []
+    assert found.claims == []
+    assert all(item.method is ExtractionMethod.SOURCE_METADATA for item in found.evidence)
+    assert [item.field for item in found.source_geography] == [
+        "location.raw_text",
+        "location.district",
+        "location.state",
+    ]
     assert found.title is None and found.severity is SeverityLevel.UNRESOLVED
     assert found.provenance.record_id == "NEWS-MDU-WLR-0001"
 

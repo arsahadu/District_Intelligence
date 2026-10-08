@@ -306,8 +306,7 @@ _STRICT_DROPPED_KEYS = frozenset(
 def strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     """Reshape a Pydantic schema into what JSON-Schema strict mode demands.
 
-    Every object closes itself, every property is required and absence is said as null, which is
-    the same absent-or-extracted distinction the draft model already carries. References are
+    Every object closes itself, every property is required, absence is said as null, and references are
     inlined so the answer shape is stated once, in full.
     """
     root = dict(schema)

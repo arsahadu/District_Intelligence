@@ -1,9 +1,8 @@
 """The runnable orchestrator: the backend's CommonRecords go in, validated Incidents come out.
 
-``process_record`` is the one-record boundary. Everything below it only moves records along that
-boundary: it asks the backend API for CommonRecords, runs each through the existing chain, sorts
-what came back and reports it. No prompt, extraction, provider or validation logic lives here, and
-nothing is ever sent back to the backend.
+``process_record`` is the one-record boundary; everything else here only moves records along it - fetch
+from the API, route by shape, sort the results, report them. No prompt, extraction, provider or
+validation logic lives here, and nothing is ever sent back to the platform.
 """
 
 from __future__ import annotations
@@ -26,6 +25,8 @@ from intelligence.contract import Incident, RecordKind
 from intelligence.intelligence import InvalidExtraction, extract_incident
 from intelligence.llm import LLMConfig, LLMError, LLMProvider, build_provider, load_dotenv_file
 from intelligence.records import CONTENT_PATH, MappingError
+from intelligence.router import Mode, route
+from intelligence.structured import process_record as process_structured
 
 #: Where the platform API lives. Intelligence reads it and never writes it.
 ENV_API_BASE_URL = "INTELLIGENCE_API_BASE_URL"
@@ -71,22 +72,26 @@ def process_record(
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
 ) -> Incident:
-    """Run one record through the Stage 1 chain.
+    """Run one record through whichever path its shape asks for.
 
-    With no provider the configuration comes from ``INTELLIGENCE_LLM_*``, in the environment or
-    in the repository ``.env``. If none can be built this raises ``ProviderNotConfigured``: an
-    unavailable model is a failure the caller sees, never an Incident invented from nothing.
+    A structured record never reaches a provider. A narrative one without a provider configured from
+    ``INTELLIGENCE_LLM_*`` raises ``ProviderNotConfigured``: an unavailable model is a failure the
+    caller sees, never an Incident invented from nothing.
     """
+    if route(record) is Mode.STRUCTURED:
+        return process_structured(record, text_keys=text_keys, extra_keys=extra_keys)
     if provider is None:
         provider = build_provider(config, environ=environ)
-    return extract_incident(record, provider=provider, text_keys=text_keys, extra_keys=extra_keys)
+    return extract_incident(
+        record, provider=provider, text_keys=text_keys, extra_keys=extra_keys
+    )
 
 
 def api_base_url(environ: Optional[Mapping[str, str]] = None) -> str:
     """The backend origin, without a trailing slash.
 
-    With no ``environ`` the local ``.env`` is read first, so a deployment URL can live there; a
-    real environment variable (even an empty one) still wins, and an explicit mapping is used as-is.
+    With no ``environ`` the local ``.env`` is read first; a real environment variable, even an empty
+    one, still wins.
     """
     if environ is not None:
         source: Mapping[str, str] = environ
@@ -206,6 +211,7 @@ class Outcome:
     record_type: str
     incident: Optional[Incident] = None
     error: Optional[str] = None
+    mode: Mode = Mode.SEMANTIC
 
     @property
     def failed(self) -> bool:
@@ -226,7 +232,7 @@ class Outcome:
     def describe(self) -> str:
         if self.incident is None:
             return f"{self.record_id} failed: {self.error}"
-        return describe_incident(self.incident)
+        return f"{describe_incident(self.incident)} | path={self.mode.value}"
 
 
 @dataclass
@@ -260,12 +266,23 @@ class RunSummary:
     def failures(self) -> list[Outcome]:
         return [item for item in self.outcomes if item.failed]
 
+    @property
+    def structured(self) -> list[Outcome]:
+        """Read by copying the record's own fields, with no model in the loop."""
+        return [item for item in self.outcomes if item.mode is Mode.STRUCTURED]
+
+    @property
+    def semantic(self) -> list[Outcome]:
+        return [item for item in self.outcomes if item.mode is Mode.SEMANTIC]
+
     def counts(self) -> dict[str, Any]:
         """The console's summary block, in the order it is printed."""
         return {
             "Backend URL": self.base_url,
             "Records fetched": self.fetched,
             "Records processed": self.processed,
+            "Structured (no model)": len(self.structured),
+            "Semantic (model read)": len(self.semantic),
             "Incidents produced": len(self.incidents),
             "Non-incident/contextual": len(self.contextual),
             "Review-required results": len(self.review_required),
@@ -301,28 +318,40 @@ def describe_incident(incident: Incident) -> str:
 def run_record(
     record: Any,
     *,
-    provider: LLMProvider,
+    provider: Optional[LLMProvider] = None,
+    config: Optional[LLMConfig] = None,
+    environ: Optional[Mapping[str, str]] = None,
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
 ) -> Outcome:
-    """One record through the chain, with any refusal turned into a reported failure."""
+    """One record through its own path, with any refusal turned into a reported failure."""
     payload = record if isinstance(record, Mapping) else {}
     record_id = str(payload.get("record_id") or "?")
     source_type = str(payload.get("source_type") or "")
     record_type = str(payload.get("record_type") or "")
+    mode = route(record)
+
+    def stopped(error: str) -> Outcome:
+        return Outcome(record_id, source_type, record_type, error=error, mode=mode)
+
     try:
         incident = process_record(
-            record, provider=provider, text_keys=text_keys, extra_keys=extra_keys
+            record,
+            provider=provider,
+            config=config,
+            environ=environ,
+            text_keys=text_keys,
+            extra_keys=extra_keys,
         )
     except MappingError as error:
-        return Outcome(record_id, source_type, record_type, error=f"record unreadable: {error}")
+        return stopped(f"record unreadable: {error}")
     except InvalidExtraction as error:
-        return Outcome(record_id, source_type, record_type, error=f"extraction refused: {error}")
+        return stopped(f"extraction refused: {error}")
     except ValidationError as error:
-        return Outcome(record_id, source_type, record_type, error=f"contract rejected: {error}")
+        return stopped(f"contract rejected: {error}")
     except LLMError as error:
-        return Outcome(record_id, source_type, record_type, error=f"provider failed: {error}")
-    return Outcome(record_id, source_type, record_type, incident=incident)
+        return stopped(f"provider failed: {error}")
+    return Outcome(record_id, source_type, record_type, incident=incident, mode=mode)
 
 
 def run_pipeline(
@@ -337,14 +366,12 @@ def run_pipeline(
     transport: Optional[Transport] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> RunSummary:
-    """Fetch, process, collect.
+    """Fetch, route, process, collect.
 
-    With no ``record_id`` the whole records list is read and ``limit`` of it is processed; ``limit``
-    is None only when ``all_records`` was asked for. The provider is built once, before any record is
-    fetched, so a missing model configuration stops the run instead of failing every record.
+    ``limit`` is applied client-side because ``GET /records`` has no paging; it is None only when
+    ``all_records`` was asked for. One provider is built per run, and only when a selected record is
+    narrative, so a batch of price lines and forecasts never authenticates and never spends quota.
     """
-    if provider is None:
-        provider = build_provider(config, environ=environ)
     origin = base_url or api_base_url(environ)
     if record_id is not None:
         selected = [
@@ -361,9 +388,12 @@ def run_pipeline(
         fetched = len(records)
         selected = records if all_records or limit is None else records[:limit]
 
+    if provider is None and any(route(record) is Mode.SEMANTIC for record in selected):
+        provider = build_provider(config, environ=environ)
+
     summary = RunSummary(base_url=origin, fetched=fetched)
     for record in selected:
-        summary.add(run_record(record, provider=provider))
+        summary.add(run_record(record, provider=provider, config=config, environ=environ))
     return summary
 
 
@@ -491,6 +521,7 @@ __all__ = [
     "Incident",
     "LLMConfig",
     "LLMProvider",
+    "Mode",
     "Outcome",
     "RunSummary",
     "api_base_url",
@@ -501,6 +532,8 @@ __all__ = [
     "main",
     "print_report",
     "process_record",
+    "process_structured",
+    "route",
     "run_pipeline",
     "run_record",
 ]

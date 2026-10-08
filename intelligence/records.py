@@ -13,6 +13,8 @@ TITLE_PATH = "title"
 CONTENT_PATH = "data.content"
 LANGUAGE_PATH = "data.language"
 DISTRICT_PATH = "location.district"
+STATE_PATH = "location.state"
+RAW_TEXT_PATH = "location.raw_text"
 RETRIEVED_AT_PATH = "retrieved_at"
 EVENT_TIME_PATH = "event_time"
 
@@ -78,21 +80,8 @@ class RecordInput:
     unused_data_keys: tuple[str, ...] = ()
 
     @property
-    def text_paths(self) -> tuple[str, ...]:
-        return tuple(path for path, _ in self.texts)
-
-    @property
     def title(self) -> Optional[str]:
-        return self.texts_by_path().get(TITLE_PATH)
-
-    def texts_by_path(self) -> dict[str, str]:
-        return dict(self.texts)
-
-    def scalar(self, path: str) -> Optional[str]:
-        return dict(self.scalars).get(path)
-
-    def has_text(self) -> bool:
-        return bool(self.texts)
+        return dict(self.texts).get(TITLE_PATH)
 
     def canonical(self) -> str:
         return json.dumps(

@@ -6,11 +6,20 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 from intelligence.contract import Provenance
-from intelligence.records import CONTENT_PATH, RecordInput, input_hash, read_record
+from intelligence.records import CONTENT_PATH, DISTRICT_PATH, RAW_TEXT_PATH, STATE_PATH
+from intelligence.records import RecordInput, input_hash, read_record
 from intelligence.spans import SourceField, compute_field_hash
 
 FIELD_HEADING = "field"
 DATA_PREFIX = "data."
+
+#: The geography the record declared about itself, in the platform's own slot names. These are the
+#: CommonRecord contract's fields, not a feed's, so no source field name is ever looked for here.
+GEOGRAPHY_SLOTS: tuple[tuple[str, str], ...] = (
+    (RAW_TEXT_PATH, "location_raw_text"),
+    (DISTRICT_PATH, "district"),
+    (STATE_PATH, "state"),
+)
 
 #: A language tag labels the record; quoting it as a fact about the world means nothing.
 INHERITED_KEYS = frozenset({"language"})
@@ -36,6 +45,10 @@ class RecordContext:
 
     record: RecordInput
     fields: tuple[SourceField, ...]
+
+    #: Citable like any other field, and never sent to the model: this is what the record said
+    #: about place, which the GIS boundary reads rather than the prompt.
+    geography: tuple[SourceField, ...] = ()
 
     def field(self, path: str) -> Optional[SourceField]:
         return next((item for item in self.fields if item.field == path), None)
@@ -83,6 +96,10 @@ class RecordContext:
                 {"field": item.field, "text": item.text, "text_hash": item.text_hash}
                 for item in self.fields
             ],
+            "geography": [
+                {"field": item.field, "text": item.text, "text_hash": item.text_hash}
+                for item in self.geography
+            ],
             "context_hash": self.context_hash(),
         }
 
@@ -93,10 +110,10 @@ def build_context(
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
 ) -> RecordContext:
-    """Read a record structurally, then keep each field it offers whole so spans stay checkable.
+    """Read a record structurally and keep every field it offers citable and whole, so spans replay.
 
-    Every ``data`` key on the record becomes citable, whatever the source type is: a weather
-    record offers its forecast and its temperatures, a price record its commodity and its rates.
+    The record's own ``location`` slot is citable but stays out of the fields the model reads: it is
+    what the record declared about place, so the GIS boundary takes it, not a prompt.
     """
     declared = tuple(text_keys)
     discovered = tuple(key for key in data_field_paths(obj) if key not in declared)
@@ -113,4 +130,9 @@ def build_context(
         pair for pair in record.scalars if pair[0].startswith(DATA_PREFIX)
     ]
     fields = tuple(SourceField(field=path, text=text, **identity) for path, text in citable)
-    return RecordContext(record=record, fields=fields)
+    slots: list[SourceField] = []
+    for path, attribute in GEOGRAPHY_SLOTS:
+        value = getattr(record, attribute, None)
+        if value:
+            slots.append(SourceField(field=path, text=value, **identity))
+    return RecordContext(record=record, fields=fields, geography=tuple(slots))

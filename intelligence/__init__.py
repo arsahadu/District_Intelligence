@@ -1,14 +1,12 @@
-"""Collector District Intelligence - AI / Intelligence module.
+"""AI / Intelligence module for Collector District Intelligence.
 
-``pipeline.process_record`` turns a CommonRecord into the stable ``contract.Incident`` through one
-provider-neutral LLM call and deterministic evidence checking. ``python -m intelligence.pipeline``
-drives that boundary over the records the platform API serves and reports the batch.
+``pipeline.process_record`` turns a CommonRecord into the stable ``contract.Incident``: ``router`` picks
+the reading the record's shape calls for, ``structured`` copies a price line's or forecast's field values
+with no model, and a narrative record goes through one provider-neutral LLM call plus deterministic
+evidence checking. ``geography`` hands the record's own place values to the GIS boundary.
+``python -m intelligence.pipeline`` runs that over the records the platform API serves.
 
-``records`` reads a CommonRecord, ``context`` makes it citable, ``spans`` grounds every quote,
-``intelligence`` builds and validates the one LLM answer, ``contract`` is the output shape and
-``models`` is the pydantic vocabulary they share.
-
-Intelligence stays inside this package: nothing here imports ingestion, backend or frontend.
+Nothing here imports ingestion, backend, frontend or GIS.
 """
 
 from __future__ import annotations
@@ -36,8 +34,10 @@ from intelligence.contract import (
     Relationship,
     ReviewState,
     SCHEMA_VERSION,
+    SourceGeography,
     Validation,
 )
+from intelligence.geography import source_geography
 from intelligence.intelligence import extract_incident, extraction_request, validate_extraction
 from intelligence.llm import (
     GroqProvider,
@@ -53,6 +53,8 @@ from intelligence.llm import (
     build_provider,
     load_dotenv_file,
 )
+from intelligence.router import Mode, route
+from intelligence.structured import process_record as process_structured
 
 
 def __getattr__(name: str) -> Any:
@@ -85,6 +87,7 @@ __all__ = [
     "LLMRequest",
     "LLMResponse",
     "Location",
+    "Mode",
     "OpenAICompatibleProvider",
     "PriorityLevel",
     "Provenance",
@@ -94,6 +97,7 @@ __all__ = [
     "Relationship",
     "ReviewState",
     "SCHEMA_VERSION",
+    "SourceGeography",
     "StructuredOutputError",
     "TransportError",
     "Validation",
@@ -103,14 +107,20 @@ __all__ = [
     "contract",
     "extract_incident",
     "extraction_request",
+    "geography",
     "intelligence",
     "llm",
     "load_dotenv_file",
     "models",
     "pipeline",
     "process_record",
+    "process_structured",
     "records",
+    "router",
+    "route",
+    "source_geography",
     "spans",
+    "structured",
     "validate_extraction",
 ]
-__version__ = "0.9.0"
+__version__ = "0.11.0"

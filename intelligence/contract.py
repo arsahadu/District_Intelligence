@@ -300,9 +300,8 @@ class Relationship(StrictModel):
 class ContextFact(StrictModel):
     """One value the record carries that states no event: a price, a temperature, a warning level.
 
-    A fact copies rather than interprets, so its value is the words the field it names really holds
-    and its evidence is the span those words occupy. Nothing source-shaped is declared here: the
-    field path is the record's own, whatever a future feed puts in it.
+    A fact copies rather than interprets: the value is what the field it names really holds. Nothing
+    source-shaped is declared here - the field path is the record's own, whatever a feed puts in it.
     """
 
     fact_id: str
@@ -319,6 +318,39 @@ class ContextFact(StrictModel):
     def _accepted_needs_evidence(self) -> "ContextFact":
         if self.review is ReviewState.ACCEPTED and not self.evidence_ids:
             raise ValueError(f"accepted context fact {self.fact_id!r} cites no evidence")
+        return self
+
+
+class SourceGeography(StrictModel):
+    """One place value the record itself carried, kept under the field path that holds it.
+
+    The boundary a GIS resolver reads: the path says where the value came from and the value stays as
+    the source wrote it, so an identifier is never renamed into something canonical. There is
+    deliberately no canonical id, coordinate or resolution state here - that side belongs to
+    ``Location``, which only GIS may fill.
+    """
+
+    geography_id: str
+    field: str
+    value: str
+
+    method: ExtractionMethod = ExtractionMethod.SOURCE_METADATA
+    confidence: OptionalConfidence = None
+    review: ReviewState = ReviewState.ACCEPTED
+    evidence_ids: list[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _copied_not_inferred(self) -> "SourceGeography":
+        if any(character.isspace() for character in self.field):
+            raise ValueError("source geography field must be a dotted path without whitespace")
+        if self.method in _PROBABILISTIC:
+            raise ValueError(
+                f"source geography {self.field!r} cannot come from {self.method.value}: a value "
+                "the model inferred is a location, not something the record carried"
+            )
+        if self.review is ReviewState.ACCEPTED and not self.evidence_ids:
+            raise ValueError(f"accepted source geography {self.geography_id!r} cites no evidence")
         return self
 
 
@@ -418,6 +450,10 @@ class Incident(StrictModel):
     #: use rather than a rejected case.
     context_facts: list[ContextFact] = Field(default_factory=list)
 
+    #: What the record said about place, in its own words and field paths, held out for the GIS
+    #: layer to resolve. Source values here are never canonical ids.
+    source_geography: list[SourceGeography] = Field(default_factory=list)
+
     evidence: list[Evidence] = Field(default_factory=list)
 
     claims: list[Claim] = Field(default_factory=list)
@@ -436,6 +472,7 @@ class Incident(StrictModel):
             ("entity", self.entities, "entity_id"),
             ("relationship", self.relationships, "relationship_id"),
             ("context fact", self.context_facts, "fact_id"),
+            ("source geography", self.source_geography, "geography_id"),
         ):
             repeated = unique_ids(items, id_field)
             if repeated:
@@ -451,6 +488,7 @@ class Incident(StrictModel):
                 "entities": self.entities,
                 "relationships": self.relationships,
                 "context_facts": self.context_facts,
+                "source_geography": self.source_geography,
             }
         )
         dangling = sorted(referenced - known)
@@ -491,8 +529,8 @@ class Incident(StrictModel):
     def _account_is_an_event(self) -> bool:
         """A quoted account of what happened establishes the event even where the type token did not.
 
-        This is what keeps one unreadable classification field from demoting a real incident: the
-        kind rests on the event, and the event rests on any quote that established it.
+        The kind rests on the event, and the event rests on any quote that established it, so one
+        unreadable classification field cannot demote a real incident.
         """
         claim = self._claims_by_field().get("description")
         return (
@@ -540,6 +578,7 @@ class Incident(StrictModel):
                 ("entities", self.entities, "entity_id"),
                 ("relationships", self.relationships, "relationship_id"),
                 ("context_facts", self.context_facts, "fact_id"),
+                ("source_geography", self.source_geography, "geography_id"),
             )
             for item in items
             if item.review is not ReviewState.ACCEPTED
@@ -606,6 +645,10 @@ class Incident(StrictModel):
         ] + [
             f"context_facts[{item.fact_id}]"
             for item in self.context_facts
+            if item.review is not ReviewState.ACCEPTED
+        ] + [
+            f"source_geography[{item.geography_id}]"
+            for item in self.source_geography
             if item.review is not ReviewState.ACCEPTED
         ]
         return open_claims + open_items
