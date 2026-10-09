@@ -315,6 +315,54 @@ def test_main_runs_the_batch_and_only_reads_from_the_backend(capsys, monkeypatch
     assert "INC-NEWS-MDU-WLR-0001" in captured.out
 
 
+def test_main_posts_only_incidents_when_explicitly_enabled(capsys, monkeypatch):
+    records = [waterlogging()]
+    monkeypatch.setattr(
+        pipeline, "process_record",
+        lambda record, **kwargs: stub(record, incident_type=EventType.URBAN_WATERLOGGING),
+    )
+    calls: list[tuple[str, bytes]] = []
+
+    def post_transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        calls.append((url, body))
+        return 201, body.decode("utf-8")
+
+    code = main(
+        ["--limit", "1", "--post-incidents"],
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(*records)),
+        incident_transport=post_transport,
+    )
+
+    captured = capsys.readouterr()
+    assert code == pipeline.EXIT_OK
+    assert len(calls) == 1
+    assert calls[0][0] == f"{BASE}/incidents"
+    assert "POST /incidents: INC-NEWS-MDU-WLR-0001 created (HTTP 201)" in captured.out
+
+
+def test_main_does_not_post_contextual_results(capsys, monkeypatch):
+    monkeypatch.setattr(pipeline, "process_record", lambda record, **kwargs: stub(record))
+    calls: list[str] = []
+
+    def post_transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        calls.append(url)
+        return 201, body.decode("utf-8")
+
+    code = main(
+        ["--limit", "1", "--post-incidents"],
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(waterlogging())),
+        incident_transport=post_transport,
+    )
+
+    assert code == pipeline.EXIT_OK
+    assert not calls
+    assert "no Incident results to send" in capsys.readouterr().out
+
+
 def test_main_prints_full_documents_only_when_asked(capsys, monkeypatch):
     monkeypatch.setattr(pipeline, "process_record", lambda record, **kwargs: stub(record))
 

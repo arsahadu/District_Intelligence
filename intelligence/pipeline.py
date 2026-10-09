@@ -2,8 +2,8 @@
 
 ``process_record`` is the one-record boundary. Everything below it only moves records along that
 boundary: it asks the backend API for CommonRecords, runs each through the existing chain, sorts
-what came back and reports it. No prompt, extraction, provider or validation logic lives here, and
-nothing is ever sent back to the backend.
+what came back and reports it. No prompt, extraction, provider or validation logic lives here.
+Posting Incidents is opt-in with ``--post-incidents``.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
+from intelligence.api_client import IncidentAPIError, PostResult, PostTransport, post_incident
 from intelligence.contract import Incident
 from intelligence.intelligence import InvalidExtraction, extract_incident
 from intelligence.llm import LLMConfig, LLMError, LLMProvider, build_provider, load_dotenv_file
@@ -53,6 +54,7 @@ EXIT_OK = 0
 EXIT_PARTIAL = 1
 EXIT_BACKEND = 2
 EXIT_PROVIDER = 3
+EXIT_POST = 4
 
 #: (url, timeout_seconds) -> (status, body). Injected so a run can be tested without a network.
 Transport = Callable[[str, float], tuple[int, str]]
@@ -407,8 +409,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m intelligence.pipeline",
         description=(
-            "Read CommonRecords from the platform API and run them through the intelligence "
-            "pipeline. Nothing is posted back."
+            "Read CommonRecords and run the intelligence pipeline. "
+            "--post-incidents opts in to writing valid Incidents back."
         ),
     )
     selection = parser.add_argument_group("selection")
@@ -428,6 +430,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="process only this record, read with GET /records/{record_id}",
     )
     parser.add_argument("--json", action="store_true", help="also print each Incident in full")
+    parser.add_argument(
+        "--post-incidents",
+        action="store_true",
+        help="POST produced Incidents to the platform API; contextual results are not posted",
+    )
     args = parser.parse_args(argv)
 
     if args.record_id is not None and (args.all or args.limit is not None):
@@ -456,6 +463,7 @@ def main(
     provider: Optional[LLMProvider] = None,
     environ: Optional[Mapping[str, str]] = None,
     transport: Optional[Transport] = None,
+    incident_transport: Optional[PostTransport] = None,
 ) -> int:
     use_utf8_stdout()
     args = parse_args(argv)
@@ -474,6 +482,28 @@ def main(
     except LLMError as error:
         return abort("provider", str(error), EXIT_PROVIDER)
     print_report(summary, detailed=args.json)
+    if args.post_incidents:
+        if not summary.incidents:
+            print("POST /incidents: no Incident results to send")
+        post_failed = False
+        for outcome in summary.incidents:
+            try:
+                result: PostResult = post_incident(
+                    outcome.incident,
+                    base_url=summary.base_url,
+                    transport=incident_transport,
+                )
+            except IncidentAPIError as error:
+                post_failed = True
+                print(
+                    f"POST /incidents failed for {outcome.incident.incident_id}: {error}",
+                    file=sys.stderr,
+                )
+                continue
+            state = "already exists (duplicate)" if result.duplicate else "created"
+            print(f"POST /incidents: {result.incident_id} {state} (HTTP {result.status_code})")
+        if post_failed:
+            return EXIT_POST
     return EXIT_PARTIAL if summary.failures else EXIT_OK
 
 

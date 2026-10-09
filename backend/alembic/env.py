@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 from app.config import settings
 from app.db.base import Base
 from app.models.common_record import CommonRecord
+from app.models.intelligence_incident import IncidentEvidence, IncidentRecord
 from app.models.source import Source
 
 config = context.config

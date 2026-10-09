@@ -7,9 +7,9 @@ source-independent `CommonRecord` objects from Data Integration and returns stru
 
 **Intelligence lives entirely inside `intelligence/`.** It imports nothing from `ingestion/`, `backend/`, `frontend/` or
 GIS — it reads records by declared field path against a structural protocol, so a renamed or missing field fails loudly
-instead of surfacing as a silent `None`. Where it does talk to the platform it talks HTTP: the orchestrator `GET`s
-CommonRecords from the API and posts nothing back, and it never opens a database connection. Nothing outside this
-directory is changed to make it work, and no other team is required to change its contract to consume it.
+instead of surfacing as a silent `None`. Where it talks to the platform it uses HTTP: the orchestrator `GET`s
+CommonRecords and, only when explicitly invoked with `--post-incidents`, `POST`s validated Incidents. It never opens a
+database connection.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -47,8 +47,12 @@ Platform / GIS / Collector workspace
 ```
 
 `python -m intelligence.pipeline` is the one runnable entry point; `pipeline.process_record(record)` is the one-record
-boundary it drives. `context.build_context`, `intelligence.extraction_request`, `intelligence.extract_incident` and
-`intelligence.validate_extraction` are callable directly for stage-by-stage testing.
+boundary it drives. By default the CLI reads and reports only. Passing `--post-incidents` opts in to posting produced
+Incidents to `POST /incidents`; `INTELLIGENCE_API_BASE_URL` configures the API origin and defaults to
+`http://127.0.0.1:8000`. Duplicate ids are reported as duplicates, API validation/server errors and connection failures
+are reported explicitly, and contextual/non-incident results are never posted. `context.build_context`,
+`intelligence.extraction_request`, `intelligence.extract_incident` and `intelligence.validate_extraction` are callable
+directly for stage-by-stage testing.
 
 **One chain, three sources.** `data` is source-specific while the CommonRecord around it is not, so the context builder
 discovers the keys a record actually carries instead of assuming a news-shaped one: a Dinamalar article offers
@@ -224,7 +228,7 @@ parsing, similarity calculations.
 | --- | --- | --- |
 | 1 | LLM foundation, `Incident` contract, evidence-first validation, provider abstraction | **Complete** |
 | 2 | Real extraction — call a live model over the capture, measure prompt quality, JSON compliance and recall | **In progress — shape conforms, recall tuning remains** |
-| 2b | Runnable orchestration: `python -m intelligence.pipeline` reads the platform API and reports a batch | **Complete — read-only; posting results back is not built** |
+| 2b | Runnable orchestration: `python -m intelligence.pipeline` reads the platform API and reports a batch | **Complete — read-only by default; opt-in Incident POST is available** |
 | 3 | Entity and location resolution hand-off (GIS) | Planned |
 | 4 | LLM classification and relevance | Planned |
 | 5 | Severity, priority, operational status, department routing | Planned |
@@ -252,13 +256,13 @@ Integration uses this contract, not the extraction internals:
   every accepted claim's `evidence_ids` resolve to spans that replay against the stored field text.
 - `review_required` is a human's to confirm. `unresolved` and `unknown` are non-authoritative — the absence of a
   finding, not a finding of absence.
-- The API code here is a read-only client: `pipeline.py` `GET`s records and prints what the chain made of them. It never
-  posts an Incident, never writes to PostgreSQL and never connects to the database itself.
+- The API client only communicates over HTTP: it reads CommonRecords and can optionally post validated Incidents.
+  Intelligence never writes to PostgreSQL or connects to the database itself.
 
 ## 12. Tests and verification
 
 ```bash
-python -m pytest intelligence/tests -q      # 869 passed
+python -m pytest intelligence/tests -q      # 880 passed
 python -m compileall intelligence           # clean
 ```
 
@@ -325,10 +329,10 @@ too, but needs more completion room than this account's tier allows (§13).
   up as `span_mismatch`/`invalid_value` findings, and one that abstains shows up as `unresolved` fields — both measurable
   per record with `python -m intelligence.pipeline --record-id <id>`.
 - One record in, one incident out. No cross-record view yet (Stages 7, 9).
-- The batch path ends at the console. Nothing is posted back to the platform, so `python -m intelligence.pipeline` is a
-  development and verification tool until an endpoint or a job runner takes the Incidents it prints. `--limit` is applied
-  client-side because `GET /records` has no paging, records are processed one after another, and a rate-limited provider
-  makes the rest of a large `--all` run fail per record — reported, not retried.
+- The batch path remains opt-in for writes: a default `python -m intelligence.pipeline` run is read-only, while
+  `--post-incidents` sends validated Incident results to the platform API. `--limit` is applied client-side because
+  `GET /records` has no paging, records are processed one after another, and a rate-limited provider makes the rest of a
+  large `--all` run fail per record — reported, not retried.
 - Grounding is quote-only, so a correct claim the model cannot quote verbatim is refused. Recall will sit below the
   deterministic path until the prompt is tuned; precision is the deliberate priority.
 - Language and normalisation handling is not wired into the LLM path yet — record text reaches the model untouched, so

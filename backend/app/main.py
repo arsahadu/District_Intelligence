@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
+from app.api.incidents import router as incidents_router
 from app.api.records import router as records_router
 from app.api.sources import router as sources_router
 
@@ -25,6 +26,7 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(records_router)
+app.include_router(incidents_router)
 app.include_router(sources_router)
 
 
