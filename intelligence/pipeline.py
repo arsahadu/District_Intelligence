@@ -1,9 +1,9 @@
 """The runnable orchestrator: the backend's CommonRecords go in, validated Incidents come out.
 
-``process_record`` is the one-record boundary; everything else here only moves records along it - fetch
-from the API, route by shape, read them in batches, persist progress so a stopped run resumes, sort the
-results, report them. No prompt, extraction, provider or validation logic lives here, and nothing is ever
-sent back to the platform.
+``process_record`` is the one-record boundary; everything else here only moves records along it: fetch
+CommonRecords from the API, route by shape, read them in batches, persist progress so a stopped run
+resumes, sort the results, and report them. No prompt, extraction, provider or validation logic lives
+here. Posting Incidents back to the platform is opt-in with ``--post-incidents``.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
+from intelligence.api_client import IncidentAPIError, PostResult, PostTransport, post_incident
 from intelligence.checkpoint import (
     COMPLETED,
     DEFERRED,
@@ -62,7 +63,7 @@ from intelligence.records import CONTENT_PATH, MappingError
 from intelligence.router import Mode, route
 from intelligence.structured import MAPPING_VERSION, process_record as process_structured
 
-#: Where the platform API lives. Intelligence reads it and never writes it.
+#: Where the platform API lives. Reads are default; Incident POSTs require explicit opt-in.
 ENV_API_BASE_URL = "INTELLIGENCE_API_BASE_URL"
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_TIMEOUT_SECONDS = 15.0
@@ -98,6 +99,8 @@ EXIT_PROVIDER = 3
 #: Semantic records were left unread because the provider refused them on its limits.
 EXIT_DEFERRED = 4
 EXIT_CHECKPOINT = 5
+#: One or more explicitly requested Incident POSTs failed.
+EXIT_POST = 6
 
 #: (url, timeout_seconds) -> (status, body). Injected so a run can be tested without a network.
 Transport = Callable[[str, float], tuple[int, str]]
@@ -1147,8 +1150,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m intelligence.pipeline",
         description=(
-            "Read CommonRecords from the platform API and run them through the intelligence "
-            "pipeline. Nothing is posted back."
+            "Read CommonRecords and run the intelligence pipeline. "
+            "--post-incidents opts in to writing valid Incidents back."
         ),
     )
     selection = parser.add_argument_group("selection")
@@ -1209,6 +1212,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--json", action="store_true", help="also print each Incident in full")
+    parser.add_argument(
+        "--post-incidents",
+        action="store_true",
+        help="POST produced Incidents to the platform API; contextual results are not posted",
+    )
     args = parser.parse_args(argv)
 
     if args.record_id is not None and (args.all or args.limit is not None):
@@ -1243,6 +1251,7 @@ def main(
     provider: Optional[LLMProvider] = None,
     environ: Optional[Mapping[str, str]] = None,
     transport: Optional[Transport] = None,
+    incident_transport: Optional[PostTransport] = None,
 ) -> int:
     use_utf8_stdout()
     args = parse_args(argv)
@@ -1271,6 +1280,30 @@ def main(
     except LLMError as error:
         return abort("provider", str(error), EXIT_PROVIDER)
     print_report(summary, detailed=args.json)
+    if args.post_incidents:
+        if not summary.incidents:
+            print("POST /incidents: no Incident results to send")
+        post_failed = False
+        for outcome in summary.incidents:
+            if outcome.incident is None:
+                continue
+            try:
+                result: PostResult = post_incident(
+                    outcome.incident,
+                    base_url=summary.base_url,
+                    transport=incident_transport,
+                )
+            except IncidentAPIError as error:
+                post_failed = True
+                print(
+                    f"POST /incidents failed for {outcome.incident.incident_id}: {error}",
+                    file=sys.stderr,
+                )
+                continue
+            state = "already exists (duplicate)" if result.duplicate else "created"
+            print(f"POST /incidents: {result.incident_id} {state} (HTTP {result.status_code})")
+        if post_failed:
+            return EXIT_POST
     if summary.stop_reason:
         return EXIT_DEFERRED
     return EXIT_PARTIAL if summary.failures else EXIT_OK
@@ -1288,6 +1321,7 @@ __all__ = [
     "ENV_CHAIN_FILE",
     "EXIT_CHECKPOINT",
     "EXIT_DEFERRED",
+    "EXIT_POST",
     "Incident",
     "LLMConfig",
     "LLMProvider",

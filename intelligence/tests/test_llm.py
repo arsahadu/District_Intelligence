@@ -13,6 +13,7 @@ from groq import APIConnectionError, AuthenticationError, BadRequestError, RateL
 
 from intelligence.llm import (
     DEFAULT_MAX_WAIT_SECONDS,
+    DOTENV_PATH,
     ENV_API_KEY,
     ENV_BASE_URL,
     ENV_MAX_WAIT,
@@ -111,6 +112,14 @@ def local_env_file(monkeypatch, tmp_path, text: str) -> str:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("intelligence.llm.DOTENV_PATH", str(path))
     return str(path)
+
+
+def test_default_dotenv_path_is_next_to_the_intelligence_package(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    expected = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
+    assert os.path.normpath(DOTENV_PATH) == expected
+    assert os.path.isfile(DOTENV_PATH)
+    assert load_dotenv_file(".env") is True
 
 
 def test_a_local_env_file_configures_the_provider(tmp_path, monkeypatch):

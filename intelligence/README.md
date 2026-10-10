@@ -6,6 +6,12 @@ The AI/NLP layer of the Collector's District Intelligence Platform. It reads sou
 and returns evidence-grounded `Incident`s: every field the pipeline asserts carries the quote it came from, or it says it
 does not know.
 
+**Intelligence lives entirely inside `intelligence/`.** It imports nothing from `ingestion/`, `backend/`, `frontend/` or
+GIS — it reads records by declared field path against a structural protocol, so a renamed or missing field fails loudly
+instead of surfacing as a silent `None`. Where it talks to the platform it uses HTTP: the orchestrator `GET`s
+CommonRecords and, only when explicitly invoked with `--post-incidents`, `POST`s validated Incidents. It never opens a
+database connection.
+
 | Owner | Responsibility |
 | --- | --- |
 | Ahad — Data Integration | Source → `CommonRecord` |
@@ -46,6 +52,21 @@ contract.Incident (schema 2.0)    — claims + evidence + validation + generatio
 ```
 
 Entry point: `python -m intelligence.pipeline`. Per-record boundary: `pipeline.process_record(record)`.
+
+By default the CLI reads and reports only. Passing `--post-incidents` opts in to posting produced Incidents to
+`POST /incidents`; `INTELLIGENCE_API_BASE_URL` configures the API origin and defaults to
+`http://127.0.0.1:8000`. Duplicate ids are reported as duplicates, API validation/server errors and connection failures
+are reported explicitly, and contextual/non-incident results are never posted. `context.build_context`,
+`intelligence.extraction_request`, `intelligence.extract_incident` and `intelligence.validate_extraction` are callable
+directly for stage-by-stage testing.
+
+**One chain, three sources.** `data` is source-specific while the CommonRecord around it is not, so the context builder
+discovers the keys a record actually carries instead of assuming a news-shaped one: a Dinamalar article offers
+`data.content`, an IMD record `data.warning`/`data.forecast` and its temperatures, a market line `data.commodity`,
+`data.market` and its prices. Strings and rendered numbers both become citable fields, so a quote of `50.0` from
+`data.max_price` grounds exactly like a Tamil sentence. There is no `NewsPipeline`/`IMDPipeline`/`AgriPipeline` and no
+field list per `source_type` — `source_type` and `record_type` reach the model as context, and the prompt tells it that
+a field another source usually carries does not exist here unless it is printed.
 
 | File | Responsibility |
 | --- | --- |
@@ -121,7 +142,7 @@ Deliberately not implemented: OCR, chatbot, deduplication, cross-record correlat
 ## Input
 
 HTTP only. `pipeline.py` `GET`s `/records` and `/records/{record_id}` from `INTELLIGENCE_API_BASE_URL`
-(default `http://127.0.0.1:8000`). It never opens a database connection and never posts anything back. Records are read
+(default `http://127.0.0.1:8000`). It never opens a database connection. Posting is disabled by default and only occurs with `--post-incidents`. Records are read
 by declared field path against a structural protocol, so a renamed or missing field fails loudly instead of surfacing as
 a silent `None`. `data` is source-specific, so both readers discover the keys a record actually carries:
 `data.content` for an article, `data.warning`/`data.max_temp_c` for IMD, `data.commodity`/`data.min_price` for markets.
@@ -413,10 +434,25 @@ the layer already needed a bounded-wait send policy and a status code it can cla
 one documented endpoint buys nothing. Every request field is built in one place, so a field Google renames is a
 correction in one function rather than a migration.
 
+## Integration contract
+
+- Storable columns include `incident_id`, scalar fields, `event_time`, `provenance.*`, `validation.state`, and
+  `generation.model` / `prompt_version` / `input_hash`.
+- `to_storage_document()` serialises the whole incident; `Incident.model_validate_json` reads it back with its
+  validators intact.
+- **View Source** depends on `provenance.source_url` and `raw_reference` being preserved, and accepted claims' evidence
+  ids resolving to spans that replay against stored field text.
+- `review_required` needs human confirmation. `unresolved` and `unknown` are non-authoritative: absence of a finding,
+  not a finding of absence.
+- The API client communicates over HTTP: it reads CommonRecords and can optionally post validated Incidents.
+  Intelligence never writes to PostgreSQL or connects to the database itself.
+
 ## Tests
 
 ```bash
-python -m pytest intelligence/tests -q      # 450 passed, 2026-10-10, no provider reachable
+python -m pytest intelligence/tests -q
+python -m compileall intelligence
+```
 python -m compileall intelligence           # clean
 ```
 
