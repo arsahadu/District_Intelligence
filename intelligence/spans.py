@@ -46,7 +46,13 @@ class OccurrenceOutOfBoundsError(SpanError):
 
 @dataclass(frozen=True)
 class Span:
-    """A character range that is known to reproduce a quote from a text."""
+    """A character range that is known to reproduce a quote from a text.
+
+    Offsets are Python character indices into one field's own untouched text: Unicode code points,
+    0-based, counted from the start of that field - never bytes, never a UTF-16 unit, never the start
+    of a prompt. Tamil combining marks count as the characters Python reads them as, which is why a
+    span is always derived from the text and never typed.
+    """
 
     quote: str
     char_start: int

@@ -2,3 +2,6 @@
 .env.*
 !.env.example
 __pycache__/
+
+# Bulk-run progress: results.jsonl and checkpoint.json land here when --state-dir is used.
+runs/

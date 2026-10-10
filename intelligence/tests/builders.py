@@ -147,3 +147,32 @@ def water_answer() -> dict[str, Any]:
                            "field": CONTENT, "quote": STILL_WATCHING,
                            "char_start": content.index(STILL_WATCHING), "confidence": 0.7}],
     }
+
+
+def responder(*responses: tuple[int, str]) -> Any:
+    """A transport that answers each read with the next status/body and remembers the URLs."""
+    calls: list[str] = []
+    queue = list(responses)
+
+    def transport(url: str, timeout_seconds: float) -> tuple[int, str]:
+        calls.append(url)
+        status, body = queue.pop(0) if len(queue) > 1 else queue[0]
+        return status, body
+
+    transport.calls = calls  # type: ignore[attr-defined]
+    return transport
+
+
+def unreachable(error: BaseException) -> Any:
+    def transport(url: str, timeout_seconds: float) -> tuple[int, str]:
+        raise error
+
+    return transport
+
+
+def listing(*records: dict) -> tuple[int, str]:
+    return 200, json.dumps(list(records))
+
+
+def single(record: dict) -> tuple[int, str]:
+    return 200, json.dumps(record)

@@ -220,7 +220,7 @@ def test_the_semantic_path_still_reads_a_narrative_record_through_the_provider()
 
 
 def test_a_structured_record_reports_its_path_in_the_run(capsys):
-    summary = pipeline.RunSummary(base_url="http://backend.test", fetched=1)
+    summary = pipeline.RunSummary(base_url="http://backend.test", fetched=1, selected=1)
     summary.add(
         pipeline.run_record(weather_warning(text=CYCLONE_WARNING_TEXT), provider=NeverCalled())
     )
@@ -229,5 +229,5 @@ def test_a_structured_record_reports_its_path_in_the_run(capsys):
 
     out = capsys.readouterr().out
     assert "Structured (no model): 1" in out
-    assert "Semantic (model read): 0" in out
+    assert "Narrative (model needed): 0" in out
     assert "path=structured" in out

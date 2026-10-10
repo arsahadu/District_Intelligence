@@ -14,7 +14,13 @@ _HEX64 = r"^[0-9a-f]{64}$"
 
 
 class Evidence(StrictModel):
-    """A verbatim quote pinned to a character range in one CommonRecord field."""
+    """A verbatim quote pinned to a character range in one CommonRecord field.
+
+    ``char_start`` and ``char_end`` are Python character indices into the field's own text as stored -
+    Unicode code points, 0-based, measured from the start of ``field``. ``field_text_hash`` is a digest
+    over the UTF-8 bytes of that text, which proves which field a span came from; it is not an offset
+    and no offset is counted in bytes.
+    """
 
     evidence_id: str
     record_id: str

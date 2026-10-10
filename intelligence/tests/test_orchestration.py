@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import urllib.error
 from typing import Any, Optional
 
@@ -31,7 +30,14 @@ from intelligence.pipeline import (
     main,
     run_pipeline,
 )
-from intelligence.tests.builders import Scripted, water_answer
+from intelligence.tests.builders import (
+    Scripted,
+    listing,
+    responder,
+    single,
+    unreachable,
+    water_answer,
+)
 from intelligence.tests.record_fixtures import market_price, waterlogging, weather_forecast
 
 BASE = "http://backend.test"
@@ -44,35 +50,6 @@ PRICE_PAYLOAD = {
     "category": {"value": "agriculture", "field": "data.commodity", "quote": "Tomato",
                  "char_start": 0},
 }
-
-
-def responder(*responses: tuple[int, str]) -> Any:
-    """A transport that answers each read with the next status/body and remembers the URLs."""
-    calls: list[str] = []
-    queue = list(responses)
-
-    def transport(url: str, timeout_seconds: float) -> tuple[int, str]:
-        calls.append(url)
-        status, body = queue.pop(0) if len(queue) > 1 else queue[0]
-        return status, body
-
-    transport.calls = calls  # type: ignore[attr-defined]
-    return transport
-
-
-def unreachable(error: BaseException) -> Any:
-    def transport(url: str, timeout_seconds: float) -> tuple[int, str]:
-        raise error
-
-    return transport
-
-
-def listing(*records: dict) -> tuple[int, str]:
-    return 200, json.dumps(list(records))
-
-
-def single(record: dict) -> tuple[int, str]:
-    return 200, json.dumps(record)
 
 
 def stub(record: dict, *, incident_type: Optional[EventType] = None) -> Incident:
@@ -184,7 +161,7 @@ def test_a_run_of_only_structured_records_needs_no_provider_at_all(capsys, monke
     out = capsys.readouterr().out
     assert code == pipeline.EXIT_OK
     assert "Structured (no model): 5" in out
-    assert "Semantic (model read): 0" in out
+    assert "Narrative (model needed): 0" in out
     assert "path=structured" in out
 
 
@@ -251,8 +228,8 @@ def test_the_run_classifies_incidents_context_and_failures():
 
     assert (len(summary.incidents), len(summary.contextual)) == (1, 1)
     assert summary.failures == [] and summary.review_required == []
-    assert summary.counts()["Incidents produced"] == 1
-    assert summary.counts()["Non-incident/contextual"] == 1
+    assert summary.counts()["Accepted incidents"] == 1
+    assert summary.counts()["Accepted context"] == 1
     assert summary.incidents[0].incident.record_kind is RecordKind.INCIDENT
     assert summary.incidents[0].incident.incident_type is EventType.URBAN_WATERLOGGING
     assert summary.contextual[0].incident.record_kind is RecordKind.CONTEXT
@@ -333,7 +310,7 @@ def test_the_console_line_names_every_field_a_run_is_read_by():
 
 
 def test_the_summary_prints_counts_and_groups_the_results(capsys):
-    summary = pipeline.RunSummary(base_url=BASE, fetched=42)
+    summary = pipeline.RunSummary(base_url=BASE, fetched=42, selected=3)
     summary.add(pipeline.Outcome("R-1", "news", "article",
                                  incident=stub(waterlogging(),
                                                incident_type=EventType.URBAN_WATERLOGGING)))
@@ -346,15 +323,17 @@ def test_the_summary_prints_counts_and_groups_the_results(capsys):
     for label, value in (
         ("Backend URL", BASE),
         ("Records fetched", 42),
-        ("Records processed", 3),
-        ("Incidents produced", 1),
-        ("Non-incident/contextual", 1),
-        ("Review-required results", 2),
-        ("Failures", 1),
+        ("Records attempted", 3),
+        ("Accepted incidents", 0),
+        ("Accepted context", 0),
+        ("Review-required", 2),
+        ("Failed", 1),
     ):
         assert f"{label}: {value}" in out
+    #: Both results carry an Incident and both need a person: they are counted once, as review-required.
+    assert "3 attempted = 2 review-required + 1 failed" in out
     assert "Failures (1)" in out and "R-3 failed: extraction refused" in out
-    assert "nothing in these evidenced an event" in out
+    assert "waits for a person" in out
     assert "Needs a person: INC-NEWS-MDU-WLR-0001, INC-AGRI" in out
     assert out.count("INC-NEWS-MDU-WLR-0001 |") == 1
 
@@ -373,7 +352,7 @@ def test_no_argument_processes_only_the_safe_default_number_of_records(capsys, m
     out = capsys.readouterr().out
     assert code == pipeline.EXIT_OK
     assert f"Records fetched: {DEFAULT_LIMIT + 3}" in out
-    assert f"Records processed: {DEFAULT_LIMIT}" in out
+    assert f"Records attempted: {DEFAULT_LIMIT}" in out
 
 
 def test_main_runs_the_batch_and_only_reads_from_the_backend(capsys, monkeypatch):
@@ -393,7 +372,7 @@ def test_main_runs_the_batch_and_only_reads_from_the_backend(capsys, monkeypatch
     captured = capsys.readouterr()
     assert code == pipeline.EXIT_OK
     assert transport.calls == [f"{BASE}/records"]
-    assert "Incidents produced: 1" in captured.out
+    assert "Review-required: 1" in captured.out
     assert "INC-NEWS-MDU-WLR-0001" in captured.out
 
 

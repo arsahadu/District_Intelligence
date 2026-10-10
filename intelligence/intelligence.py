@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -49,7 +51,7 @@ from intelligence.records import CONTENT_PATH
 from intelligence.spans import SpanError, find_spans
 
 PROVIDER = "intelligence.intelligence"
-PROMPT_VERSION = "stage-2.8"
+PROMPT_VERSION = "stage-2.12"
 
 #: Strict mode makes every list item a full object, so "name every place and person" is an unbounded
 #: answer that overruns one completion. The ceiling is stated in the prompt and the first items kept.
@@ -65,6 +67,12 @@ UNREPORTED_CONFIDENCE = (
 
 #: Only free text the record itself carries may be grounded by echoing the value back.
 VERBATIM_FIELDS = ("title", "description")
+
+#: The fields the record carries whole, in its own field of the same name: an answer here is expected
+#: to copy, so an answer that rewrites is refused and the record's own characters are kept as the
+#: record's own copy - the same treatment structured.py gives a title and the semantic path gives the
+#: record's declared event_time.
+COPIED_FIELDS = ("title",)
 
 #: A model cannot resolve GIS and cannot mint evidence ids. Anything trying to is dropped loudly.
 FORBIDDEN_ITEM_KEYS = frozenset(
@@ -232,22 +240,8 @@ class _Report:
             self.warnings.append(detail)
 
 
-def extraction_request(context: RecordContext) -> LLMRequest:
-    """One prompt, one call. No chains, no per-domain cues, no per-source branching."""
-    record = context.record
-    metadata = {
-        "record_id": record.record_id,
-        "source_id": record.source_id,
-        "source_type": record.source_type,
-        "record_type": record.record_type,
-        "event_time": None if record.event_time is None else record.event_time.isoformat(),
-        "declared_severity": record.severity,
-        "declared_status": record.status,
-        "district": record.district,
-        "state": record.state,
-        "location": record.location_raw_text,
-        "language": record.language_hint,
-    }
+def prompt_vocabulary() -> dict[str, list[str]]:
+    """Every token the taxonomy offers, in the order each enum declares it."""
     vocabulary = {
         name: [member.value for member in spec]
         for name, spec in SCALAR_FIELDS
@@ -257,23 +251,94 @@ def extraction_request(context: RecordContext) -> LLMRequest:
     vocabulary["event_time_precision"] = [member.value for member in TimePrecision]
     vocabulary["record_kind"] = [member.value for member in RecordKind]
     vocabulary["context_type"] = [member.value for member in ContextType]
-    system = (
+    return vocabulary
+
+
+def answer_shape() -> str:
+    """The shape of the answer, typed from the schema that answer is validated against.
+
+    One provider is sent the schema itself; every other endpoint is only told to answer JSON, so this
+    block is where such a model learns which fields are objects and which are bare tokens. It is
+    rendered from ``REQUEST_SCHEMA`` rather than written out, so the shape a model is asked for and
+    the shape the validator enforces cannot drift apart.
+    """
+    defs = REQUEST_SCHEMA.get("$defs") or {}
+    vocabulary = prompt_vocabulary()
+
+    def name_of(spec: Mapping[str, Any]) -> str:
+        return str(spec.get("$ref", "")).rsplit("/", 1)[-1]
+
+    def keys_of(ref: str) -> str:
+        return ", ".join(((defs.get(ref) or {}).get("properties") or {}).keys())
+
+    def bare_token(field: str) -> str:
+        #: A field the answer carries as plain text, named beside a token of its own so it is not read
+        #: as one of the objects the nine fields above it are.
+        example = (vocabulary.get(field) or ["a token"])[0]
+        return (
+            'a bare token as a string, never an object: write "' + example + '", not '
+            '{"value": "' + example + '"}'
+        )
+
+    def typed(field: str, spec: Mapping[str, Any]) -> str:
+        parts: list[str] = []
+        for option in (spec.get("anyOf") or [spec]):
+            if "$ref" in option:
+                parts.append(f"object{{{keys_of(name_of(option))}}}")
+            elif option.get("type") == "array":
+                items = option.get("items") or {}
+                parts.append(
+                    "list of "
+                    + (f"object{{{keys_of(name_of(items))}}}" if "$ref" in items else str(items))
+                )
+            elif option.get("type") == "string":
+                parts.append(bare_token(field))
+            else:
+                parts.append(str(option.get("type")))
+        return " | ".join(dict.fromkeys(parts))
+
+    return (
+        "Answer shape, typed from the schema this answer is validated against. An `object{...}` is one "
+        "JSON object carrying exactly those keys, `null` answers that whole field with nothing, and a "
+        "`list of object{...}` is empty when the record carries none:\n"
+        + "\n".join(
+            f"- {field}: {typed(field, spec)}"
+            for field, spec in REQUEST_SCHEMA["properties"].items()
+        )
+        + "\n\n"
+    )
+
+
+def prompt_text() -> str:
+    """The prompt every narrative record is read with, minus the one record's own metadata block.
+
+    A reading is identified by this text and the schema it is asked against, not only by the version
+    label beside it: a rule reworded here changes the digest, so a cached result the older wording
+    produced is read again rather than reused as though nothing had changed.
+    """
+    return (
         "You read one record about events in a Tamil Nadu district and report only what that record "
-        "supports. Answer with one JSON object in exactly the shape of the schema you are given.\n\n"
+        "supports. Answer with one JSON object in exactly the shape printed under `Answer shape` "
+        "below - that is the schema your answer is validated against.\n\n"
         "Rules:\n"
         "1. title, description, incident_type, category, department, severity, priority, "
-        "event_status and event_time are each an OBJECT with the keys their schema names - never a "
-        "bare string. Sentence text never goes into incident_type, category, department, severity, "
-        "priority or event_status: those carry one token in `value`. Only record_kind and "
-        "context_type are bare tokens.\n"
+        "event_status and event_time are each an OBJECT with the keys `Answer shape` names for them "
+        "- never a bare string. Sentence text never goes into incident_type, category, department, "
+        "severity, priority or event_status: those carry one token in `value`. record_kind and "
+        "context_type are the only bare tokens: each is one word as a plain string, never an "
+        "object holding that word.\n"
         "2. Every quote names the field whose text it copies, and `quote` is an exact substring of "
         "that field - never paraphrased, never translated, never reconstructed from memory of the "
-        "meaning. Keep it short: the fewest characters that still support the value, not the "
-        "sentence around it. `title` and the body are different fields: words read in the body are "
-        "quoted from the body, so never cite the title for what the body says and never cite the "
-        "body for words only the title carries. The pipeline re-reads the field you name and "
-        "refuses words that are not in it. A field another kind of source usually carries does not "
-        "exist here unless it is printed.\n"
+        "meaning. Take the shortest span that still identifies one occurrence: long enough to be "
+        "found once in that field, and no longer than that needs. Brevity that makes a quote come "
+        "again elsewhere is not brevity, it is a quote this pipeline will refuse. `title` is the "
+        "record's own headline, printed as a field of its own: answering it means copying that "
+        "field's characters exactly, in the record's own language - never a summary of the story, "
+        "never a translation, never a sentence assembled from the body. `title` and the body are "
+        "different fields: words read in the body are quoted from the body, so never cite the title "
+        "for what the body says and never cite the body for words only the title carries. The "
+        "pipeline re-reads the field you name and refuses words that are not in it. A field another "
+        "kind of source usually carries does not exist here unless it is printed.\n"
         "3. A quote proves what happened; it does not have to contain the word for it. For "
         "incident_type, category, department, severity, priority and event_status the `value` is "
         "this taxonomy's name for an event and the `quote` is the record's own words for it, so "
@@ -283,10 +348,17 @@ def extraction_request(context: RecordContext) -> LLMRequest:
         "plainly that the list has no name for, not a way out of reading the list. Read the three "
         "classification fields as three different questions about one event: incident_type is the "
         "act itself, category is the district's area of work the act falls in, and department is "
-        "whose job it is - the authority the record names as acting or responsible, or the subject "
-        "the event belongs to when it names none. One body sentence may carry all three and one "
-        "quote may support all three. What stays null is a token with no event behind it: a topic, "
-        "a heading, an institution's routine work or your own expectation of such records.\n"
+        "whose job it is - the authority the record names as acting or responsible, or, where it "
+        "names none, the work the act falls to. One body sentence may carry all three and one "
+        "quote may support all three, but a span supports a field only when that span alone gives "
+        "that field its answer. The word for what an article is about - the water, the road, the "
+        "crop - names its subject, runs through the whole text and proves nobody's job: for each "
+        "field cite the clause saying what was done, to whom or by whom, in words long enough to "
+        "occur once. Where the only words you can point at for a field are ones the article keeps "
+        "repeating, that field is not evidenced: null it, because a repeated word cannot say which "
+        "of its copies you meant and a refused quote answers nothing. What stays null is a token "
+        "with no event behind it: a topic, a heading, an institution's routine work or your own "
+        "expectation of such records.\n"
         "4. severity, priority and event_status are three different reads of one event. severity is "
         "the harm or scale the text states - lives lost or threatened, injuries, how many people, "
         "fields or shops are affected, how long power, water or a road is out, the size of a loss, "
@@ -305,7 +377,11 @@ def extraction_request(context: RecordContext) -> LLMRequest:
         "only when the record truly says nothing about now. Take status from those words and from "
         "nothing else: not from the feed that carried the record, and not from the kind of event - a "
         "crime described is not by itself an investigation, and an authority mentioned is not by "
-        "itself action taken. An event whose own sentence speaks of the present is not unknown. A "
+        "itself action taken. `resolved` belongs only to a record saying the matter itself is "
+        "settled: an event that is a protest, a strike, a court hearing, an inspection or a meeting "
+        "says the issue was raised or examined, not that anything ended, so such a record is "
+        "`reported`, `under_investigation` or `action_taken` as its own words say and never "
+        "`resolved`. An event whose own sentence speaks of the present is not unknown. A "
         "record that states no happening has no status to report: leave the field null rather than "
         "answering `unknown` for it.\n"
         "5. Not every record is an incident, and the kind is the first read of a record, not the "
@@ -335,7 +411,9 @@ def extraction_request(context: RecordContext) -> LLMRequest:
         "field verbatim in `quote`. Two to eight, the most informative first. A fact is one data "
         "point a field holds - a price, a count, a level, a name, an id - never a headline and "
         "never the body's prose: prose is an account or nothing. A fact copies and never "
-        "interprets: no restating, converting, rounding, translating, no unit the field does not "
+        "interprets: its `value` is the field's own characters in the field's own language, so a "
+        "translated or glossed value is not a copy even when its quote is verbatim - no "
+        "restating, converting, rounding, translating, no unit the field does not "
         "carry, and never a field the record does not print. An incident may carry facts too for "
         "figures its event fields do not hold, but its event fields are answered first.\n"
         "6. Read the event from the body, not from the headline: the sentence saying what happened "
@@ -358,15 +436,24 @@ def extraction_request(context: RecordContext) -> LLMRequest:
         "a longer list cannot be answered inside one completion. `locations` and `entities` are "
         "empty only for a record that names nothing, never because its text is in another language: "
         "a place's `text` keeps the record's language while its token fields stay English.\n"
-        "8. Offsets count from the start of the field you named, not from the start of this prompt. "
-        "Always set `char_start`, even when you believe the words appear once: this pipeline refuses "
-        "a quote that occurs more than once and it will not choose an occurrence for you.\n"
+        "8. An offset counts in Unicode characters of the field you named: `char_start` 0 is that "
+        "field's own first character, and the count is not bytes, not UTF-16 units, not from the "
+        "start of this prompt. Always set `char_start` when you can. A quote occurring more than "
+        "once is refused unless the offset you name is exactly one of its copies, and an offset "
+        "that is nearly right is refused as flatly as one that is far wrong, because this pipeline "
+        "will not choose an occurrence for you. So settle the quote first and the offset with it: "
+        "extend the span into the clause around it until it identifies the one occurrence you are "
+        "reading, which is the only way an answer survives a word the article keeps repeating.\n"
         "9. Record metadata is not text. Never name a field such as 'metadata', 'record metadata' "
         "or 'source metadata'. Metadata never supports a classification, a location, an entity or a "
         "kind: a declared severity, status, district or timestamp in the block printed below is "
-        "context that the record's own text must confirm, not proof by itself. When event_time is "
-        "the record's own stamp, answer `value` with no `field` and no `quote` - the pipeline reads "
-        "it from the record.\n"
+        "context that the record's own text must confirm, not proof by itself. `event_time` is the "
+        "one field that may be answered with `value` and no `field` and no `quote`, and only when "
+        "that value is the record's own stamp - the pipeline reads it from the record and records it "
+        "as the record's own, which is not the same as the article placing its event on a clock: "
+        "never quote the page's date stamp to dress that stamp up as article evidence. Every other "
+        "field you answer names one of the printed fields and quotes it; a value offered with no "
+        "field to copy from is not a reading, it is a guess.\n"
         "10. `confidence` is how sure you are of the meaning you picked, not whether the quote "
         "exists: a verbatim span with an uncertain reading is around 0.5 and nothing is 1.0 just "
         "because it was found in the text. Report it for every field you answer; leaving it out is "
@@ -385,10 +472,43 @@ def extraction_request(context: RecordContext) -> LLMRequest:
         "14. A field may open with page navigation or a timestamp before its real text. It is "
         "still the record's own text - quote it exactly, in its own language, and do not read "
         "furniture as an event. Navigation links, related-story listings and date stamps describe "
-        "no event and support no classification, entity or location.\n\n"
-        "Tokens per enumerated field:\n"
-        + "\n".join(f"- {name}: {', '.join(tokens)}" for name, tokens in vocabulary.items())
-        + "\n\nThe record's own metadata, for context only, never quotable: "
+        "no event and support no classification, entity or location. The stamp a page printed above "
+        "its own text says when the page was written, never when something happened: event_time "
+        "comes from the words that place the event, and stays null when none do.\n\n"
+        + answer_shape()
+        + "Tokens per enumerated field:\n"
+        + "\n".join(f"- {name}: {', '.join(tokens)}" for name, tokens in prompt_vocabulary().items())
+        + "\n\n"
+    )
+
+
+#: The prompt text and the schema it is answered against, in one short digest. A stored reading is
+#: reused only while this matches, so rewording a rule re-reads what the older wording produced
+#: instead of trusting a label beside it.
+PROMPT_DIGEST = hashlib.sha256(
+    (prompt_text() + json.dumps(REQUEST_SCHEMA, sort_keys=True)).encode("utf-8")
+).hexdigest()[:16]
+
+
+def extraction_request(context: RecordContext) -> LLMRequest:
+    """One prompt, one call. No chains, no per-domain cues, no per-source branching."""
+    record = context.record
+    metadata = {
+        "record_id": record.record_id,
+        "source_id": record.source_id,
+        "source_type": record.source_type,
+        "record_type": record.record_type,
+        "event_time": None if record.event_time is None else record.event_time.isoformat(),
+        "declared_severity": record.severity,
+        "declared_status": record.status,
+        "district": record.district,
+        "state": record.state,
+        "location": record.location_raw_text,
+        "language": record.language_hint,
+    }
+    system = (
+        prompt_text()
+        + "The record's own metadata, for context only, never quotable: "
         + repr(metadata)
     )
     user = (
@@ -436,12 +556,58 @@ def _bound_lists(draft: ExtractionDraft, report: _Report) -> ExtractionDraft:
     return draft.model_copy(update=kept) if kept else draft
 
 
+#: A schema-invalid answer can refuse on many fields at once, so the report names the first few and
+#: counts the rest rather than repeating a validator's whole rendering.
+DIAGNOSIS_FIELDS = 8
+
+
+def _received(value: Any) -> str:
+    """What actually arrived for a field, in the shape a deployment has to be told about.
+
+    A value's own text is never echoed beyond a handful of characters: the finding is the shape the
+    answer came in, and a record's sentences do not belong in a failure message.
+    """
+    if isinstance(value, Mapping):
+        keys = ", ".join(sorted(str(key) for key in value))
+        return f"an object{{{keys}}}" if keys else "an empty object"
+    if isinstance(value, list):
+        return f"a list of {len(value)} item(s)"
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return f"a string ({value[:32]!r})"
+    if isinstance(value, bool):
+        return f"the boolean {value}"
+    return f"a {type(value).__name__} ({value})"
+
+
+def draft_diagnosis(error: ValidationError) -> str:
+    """Which fields of the answer were the wrong shape, and what arrived for each.
+
+    The reading is refused whole and this says so: nothing here coerces an object into a token, keeps
+    the half of an answer that did validate, or drops a field to make the shape fit.
+    """
+    said = [
+        f"{'.'.join(str(part) for part in item.get('loc') or ()) or '(the whole answer)'} arrived "
+        f"as {_received(item.get('input'))}: {item.get('msg')}"
+        for item in error.errors(include_url=False)[:DIAGNOSIS_FIELDS]
+    ]
+    left = error.error_count() - len(said)
+    return (
+        "the answer does not match the schema it is validated against - "
+        + "; ".join(said)
+        + (f"; {left} further field(s) refused the same way" if left > 0 else "")
+        + ". Nothing was coerced, repaired or quietly dropped, so no part of this answer becomes a "
+        "fact and the record stays unread by this model."
+    )
+
+
 def validate_extraction(output: StructuredOutput, context: RecordContext) -> Incident:
     """Check the answer field by field. Nothing the record cannot repeat stays a fact."""
     try:
         draft = ExtractionDraft.model_validate(output.payload)
     except ValidationError as error:
-        raise InvalidExtraction(str(error)) from error
+        raise InvalidExtraction(draft_diagnosis(error)) from error
 
     report = _Report()
     draft = _bound_lists(draft, report)
@@ -530,12 +696,27 @@ def _ground(
 
     source = context.field(str(field_path or ""))
     if source is None:
-        return finding(
-            IssueCode.UNKNOWN_FIELD,
-            f"quoted {field_path!r}, which this record does not carry; the fields available are "
-            + ", ".join(context.paths),
-            f"field {field_path!r} is not text this record offers",
+        #: Where these words really are, when they are somewhere: an answer that named the wrong
+        #: field, or none at all, is told which one to name rather than just refused.
+        verbatim = [item.field for item in context.fields if str(quote) in item.text]
+        if field_path in (None, ""):
+            detail = (
+                f"the answer quoted {str(quote)[:80]!r} but named no field, and a quote has to say "
+                f"whose text it copies; the fields this record carries are " + ", ".join(context.paths)
+            )
+            reason = "no field was named for the quote"
+        else:
+            detail = (
+                f"quoted {field_path!r}, which this record does not carry; the fields available are "
+                + ", ".join(context.paths)
+            )
+            reason = f"field {field_path!r} is not text this record offers"
+        detail += (
+            f"; those words are verbatim in {', '.join(verbatim)}, which is the field to name"
+            if verbatim
+            else "; those words are verbatim in none of them"
         )
+        return finding(IssueCode.UNKNOWN_FIELD, detail, reason)
 
     try:
         spans = find_spans(source.text, str(quote))
@@ -563,10 +744,20 @@ def _ground(
         stated = getattr(answer, "char_start", None)
         matched = next((span for span in spans if span.char_start == stated), None)
         if matched is None:
+            places = ", ".join(str(span.char_start) for span in spans[:12])
+            if len(spans) > 12:
+                places += ", ..."
             return finding(
                 IssueCode.AMBIGUOUS_QUOTE,
-                f"{str(quote)[:80]!r} occurs {len(spans)} times in {source.field} and no "
-                "char_start chose between them",
+                f"{str(quote)[:80]!r} occurs {len(spans)} times in {source.field} "
+                f"(at {places}) and no char_start chose between them; "
+                + (
+                    f"the answer named {stated}, which is none of them"
+                    if stated is not None
+                    else "the answer named no char_start"
+                )
+                + " - cite the clause that states the act or names the actor rather than a word "
+                "the article keeps repeating",
                 f"the quote occurs {len(spans)} times",
             )
         chosen = matched
@@ -629,6 +820,19 @@ def _is_declared_stamp(parsed: datetime, declared: Optional[datetime]) -> bool:
         return True
     naive = parsed.tzinfo is None and declared.tzinfo is None
     return naive and parsed.date() == declared.date()
+
+
+def _is_the_capture_stamp(parsed: datetime, captured: datetime) -> bool:
+    """True when the answer's event moment is the moment this record was fetched, to the second.
+
+    An event on the same day as the capture is ordinary: only a matching second is a copy of the clock
+    that stamps every record, which is not evidence of when anything happened.
+    """
+    if parsed == captured:
+        return True
+    if parsed.tzinfo is None and captured.tzinfo is None:
+        return parsed.replace(microsecond=0) == captured.replace(microsecond=0)
+    return False
 
 
 def _key(name: str) -> str:
@@ -695,9 +899,34 @@ def _assemble(
             return
         spans_seen.setdefault(key, (subject, kind))
 
+    def own_copy(name: str) -> Optional[tuple[str, _Grounded]]:
+        """The record's own characters for a field it carries whole, cited as the record's own."""
+        held = context.field(name)
+        if held is None or not held.text.strip():
+            return None
+        return held.text, _Grounded(
+            evidence=held.metadata_evidence(),
+            review=ReviewState.ACCEPTED,
+            reason=f"the record carries this {name} itself",
+        )
+
+    def copied_claim(name: str, own: tuple[str, _Grounded]) -> Claim:
+        text, grounded = own
+        return Claim(
+            field=name,
+            value=text,
+            method=ExtractionMethod.SOURCE_METADATA,
+            evidence_ids=publish(grounded),
+            review=ReviewState.ACCEPTED,
+            notes=f"copied from the record's own {name}, which carries it whole",
+        )
+
     for name, spec in SCALAR_FIELDS:
         answer = getattr(draft, name)
+        own = own_copy(name) if name in COPIED_FIELDS else None
         if answer is None or answer.value in (None, ""):
+            #: An abstention is left as one. A copy replaces an answer that rewrote the record's own
+            #: text; it never stands in for a field the model declined to read.
             continue
         resolved = answer.value if spec == "text" else _enum(
             spec, answer.value, subject=name, report=report
@@ -714,6 +943,35 @@ def _assemble(
                 confidence=answer.confidence,
                 allow_value_as_quote=name in VERBATIM_FIELDS,
             )
+        if own is not None and not _kept(grounded.review):
+            #: Whatever the reason the answer did not ground - a rewrite, a translation, the record's
+            #: own words with no field named - the refusal is reported as it was found, then the
+            #: record's characters stand as the record's own copy. No model is the source of a headline
+            #: the record printed itself, and a field the record carries whole is not left blank.
+            if grounded.issue is not None:
+                report.issue(
+                    grounded.issue.code,
+                    field=grounded.issue.field,
+                    detail=grounded.issue.detail,
+                )
+            rewrote = _key(str(answer.value)) != _key(own[0])
+            report.issue(
+                IssueCode.UNSUPPORTED_CLAIM,
+                field=name,
+                detail=f"the answer put {str(answer.value)[:80]!r} in {name}, "
+                + (
+                    f"which is not the {name} this record carries ({own[0][:80]!r}): a headline the "
+                    "record printed is copied, never summarised, rewritten or translated, so the "
+                    "answer's words were dropped and the record's own kept as the record's own"
+                    if rewrote
+                    else "which are this record's own words, quoted without naming the field or the "
+                    f"span they sit in, so {name} is filled from the record as its own copy while "
+                    "the answer itself stays reported as refused"
+                ),
+            )
+            claims.append(copied_claim(name, own))
+            values[name] = own[0]
+            continue
         confidence = _confidence(answer.confidence, report, subject=name)
         claims.append(
             Claim(
@@ -731,6 +989,7 @@ def _assemble(
 
     event_time: Optional[datetime] = None
     event_precision = TimePrecision.UNKNOWN
+    time_from_metadata = False
     answer = draft.event_time
     if answer is not None and answer.value not in (None, ""):
         parsed = _timestamp(answer.value, subject="event_time", report=report)
@@ -743,10 +1002,28 @@ def _assemble(
                                confidence=answer.confidence)
             if not _kept(grounded.review) and _is_declared_stamp(parsed, record.event_time):
                 method = ExtractionMethod.SOURCE_METADATA
-                grounded = _Grounded(review=ReviewState.ACCEPTED,
-                                     reason="copied from the record's own event_time field")
+                grounded = _Grounded(
+                    review=ReviewState.ACCEPTED,
+                    reason="the record's own declared event_time, copied from its metadata and "
+                    "carrying no span of its text",
+                )
+            elif _kept(grounded.review) and _is_the_capture_stamp(parsed, record.retrieved_at):
+                report.issue(
+                    IssueCode.PROVIDER_WARNING,
+                    field="event_time",
+                    detail="the answer's event moment is the instant this record was captured, so "
+                    "the page's own clock was read as the time something happened; the field stays "
+                    "unresolved",
+                )
+                grounded = _Grounded(
+                    evidence=grounded.evidence,
+                    review=ReviewState.REVIEW_REQUIRED,
+                    reason="the stamp repeats the record's capture time, not a moment the article "
+                    "evidenced",
+                )
         if _kept(grounded.review):
             event_time = parsed
+            time_from_metadata = method is ExtractionMethod.SOURCE_METADATA
             precision = _enum(TimePrecision, answer.precision,
                               subject="event_time_precision", report=report)
             event_precision = precision or TimePrecision.UNKNOWN
@@ -900,6 +1177,7 @@ def _assemble(
         grounded = _ground(context, item, subject=subject, report=report,
                            confidence=item.confidence)
         if _kept(grounded.review) and not _value_is_in_field(context, item.field, str(item.value)):
+            cited = grounded.evidence.quote if grounded.evidence is not None else ""
             grounded = _Grounded(
                 evidence=grounded.evidence,
                 review=ReviewState.REVIEW_REQUIRED,
@@ -907,8 +1185,10 @@ def _assemble(
                 issue=Issue(
                     code=IssueCode.UNSUPPORTED_CLAIM,
                     field=subject,
-                    detail=f"{item.value!r} is not a value {item.field!r} carries: a fact copies "
-                    "its field, so this stays for a person to read against the source",
+                    detail=f"{item.value!r} is not a value {item.field!r} carries; the words at the "
+                    f"span this fact cites are {cited!r}. A fact copies its field in the "
+                    "language the field is written in, so this stays for a person to read against "
+                    "the source",
                 ),
             )
         facts.append(
@@ -1034,14 +1314,21 @@ def _assemble(
                 "an incident whose text grounded no event_status is filed as unknown, which is "
                 "this pipeline saying the source never said whether it is still happening"
             )
-        # A null the dashboard reads is said out loud too: both of these stay independent of the
-        # bands above them and stay unresolved rather than being filled from what the feed stamped.
-        if values.get("event_time") is None and not any(
+        # A null the dashboard reads is said out loud too, and so is a time it reads that the
+        # record's own metadata supplied: one names nothing in the text, the other names a clock.
+        if event_time is None and not any(
             issue.field == "event_time" for issue in report.issues
         ):
             report.warn(
                 "no span and no stamp of the record's own placed this event on a clock, so "
                 "event_time stays unresolved instead of borrowing the retrieval time"
+            )
+        elif time_from_metadata:
+            report.warn(
+                "event_time is the timestamp this record carries as its own, copied from its "
+                "metadata with no span of its text cited: it is the record's clock, not a moment "
+                "the article evidenced, and for a news page that clock is usually when the page "
+                "was written"
             )
         if values.get("priority") is None and not any(
             issue.field == "priority" for issue in report.issues

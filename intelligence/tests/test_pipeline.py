@@ -39,6 +39,7 @@ from intelligence.tests.builders import (
 )
 from intelligence.tests.record_fixtures import (
     CYCLONE_WARNING_TEXT,
+    RETRIEVED_AT,
     base_record,
     crop_distress_report,
     events_listing,
@@ -415,6 +416,7 @@ def test_the_prompt_reads_an_event_from_the_body_instead_of_a_token_from_the_hea
     assert "Navigation links, related-story listings and date stamps describe no event" in rules
     assert "stay null unless the record" not in rules
     assert "do not read furniture as an event" in rules
+    assert "says when the page was written, never when something happened" in rules
     assert "does not exist here unless it is printed" in rules
 
 
@@ -618,7 +620,8 @@ def test_the_prompt_holds_the_stage_2_5_rules_and_names_the_fields_a_quote_may_c
     assert "not proof by itself" in rules
     assert "Every quote names the field whose text it copies" in rules
     assert "never cite the title for what the body says" in rules
-    assert "Offsets count from the start of the field you named" in rules
+    assert "long enough to be found once in that field" in rules
+    assert "An offset counts in Unicode characters of the field you named" in rules
 
     assert "Every `field` names one of these, exactly as printed above" in request.user
     for path in context.paths:
@@ -1468,3 +1471,311 @@ def test_the_prompt_asks_whether_something_happened_before_it_asks_for_a_label()
     assert "searching into it or has filed a case about it" in rules
     assert "A record that states no happening has no status to report" in rules
     assert "leave the event fields null for those" not in rules
+
+
+CAPTURE_STAMP = RETRIEVED_AT.split(".")[0]
+
+
+def stamp_answer(*, stamp: str) -> tuple[dict, dict]:
+    """One waterlogging account whose body carries a timestamp, so the stamp is quotable prose."""
+    body = (
+        f"The portal stamped this page {stamp}. Water stood on three roads after heavy rain "
+        "and officials were still monitoring the situation."
+    )
+    answer = {
+        "record_kind": "incident",
+        "description": quote(body, "Water stood on three roads after heavy rain"),
+        "incident_type": quote(body, "Water stood on three roads")
+        | {"value": "urban_waterlogging"},
+        "event_status": quote(body, "officials were still monitoring the situation")
+        | {"value": "ongoing"},
+        "event_time": quote(body, f"stamped this page {stamp}")
+        | {"value": stamp, "precision": "second"},
+    }
+    return synth(body), answer
+
+
+def test_a_stamp_that_is_the_instant_the_record_was_captured_is_not_the_time_it_happened():
+    record, answer = stamp_answer(stamp=CAPTURE_STAMP)
+    found = run(answer, record)
+
+    assert found.event_time is None
+    assert found.event_time_precision is TimePrecision.UNKNOWN
+    claim = found.claim("event_time")
+    assert claim.review is ReviewState.REVIEW_REQUIRED
+    assert "capture time" in (claim.notes or "")
+    assert found.evidence_by_id()[claim.evidence_ids[0]].quote == f"stamped this page {CAPTURE_STAMP}"
+    assert any(
+        item.field == "event_time" and item.code is IssueCode.PROVIDER_WARNING
+        for item in found.validation.issues
+    )
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert "event_time" in found.unaccepted_fields()
+
+
+def test_a_body_stamp_on_the_capture_day_that_is_not_the_capture_second_is_still_a_time():
+    record, answer = stamp_answer(stamp="2026-10-03T04:15:00")
+    found = run(answer, record)
+
+    assert found.event_time is not None
+    assert found.event_time.isoformat() == "2026-10-03T04:15:00"
+    assert found.claim("event_time").review is ReviewState.ACCEPTED
+    assert not any(item.field == "event_time" for item in found.validation.issues)
+    assert found.review_required is False
+
+
+def test_the_district_the_record_declared_about_itself_is_not_prose_the_model_may_quote():
+    payload = water_answer()
+    payload["locations"].append(
+        {
+            "text": "Madurai",
+            "normalized_name": "Madurai",
+            "location_type": "district",
+            "role": "event_container",
+            "district": "Madurai",
+            "field": "location.district",
+            "quote": "Madurai",
+            "confidence": 0.9,
+        }
+    )
+    found = run(payload)
+
+    assert found.locations[-1].review is not ReviewState.ACCEPTED
+    assert len([item for item in found.locations if item.review is ReviewState.ACCEPTED]) == 1
+    issue = next(
+        item for item in found.validation.issues if item.code is IssueCode.UNKNOWN_FIELD
+    )
+    assert "location.district" in issue.detail
+    assert "does not carry" in issue.detail
+    assert ("location.district", "Madurai") in [
+        (item.field, item.value) for item in found.source_geography
+    ]
+
+
+def test_a_priority_the_ladder_does_not_carry_is_refused_rather_than_rounded_to_the_nearest_band():
+    payload = water_answer()
+    payload["priority"] = quote(waterlogging()["data"]["content"], OFFICIALS) | {
+        "value": "urgent"
+    }
+    found = run(payload)
+
+    assert found.priority is None
+    claim = found.claim("priority")
+    assert claim.review is ReviewState.REVIEW_REQUIRED
+    assert claim.evidence_ids == []
+    assert "taxonomy" in (claim.notes or "")
+    assert any(
+        item.field == "priority" and item.code is IssueCode.INVALID_VALUE
+        for item in found.validation.issues
+    )
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_an_evidenced_incident_that_also_names_a_context_type_keeps_the_event_and_drops_the_type():
+    found = run(water_answer() | {"context_type": "market_price"})
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.context_type is None
+    assert any("the context label is dropped" in w for w in found.generation.warnings)
+    assert found.review_required is False
+
+
+SHORTAGE_TAMIL = (
+    "மதுரை: செல்லூர் பகுதி மக்களுக்கு நான்கு வாரமாக குடிநீர் இல்லை. குடிநீர் இல்லாததால் "
+    "பெண்கள் காலைதோறும் நீண்ட தூரம் நடைகின்றனர். நாள்தோறும் 12 டேங்கர் லாரிகள் வந்தன. "
+    "செப்டம்பர் 30 அன்று புகார் கொடுக்கப்பட்டது. நகராட்சியின் குடிநீர் விநியோகப் பிரிவு "
+    "ஒழுங்காக இயங்கவில்லை. புகாரின் பேரில் மதுரை மாநகராட்சி ஆணையர் புதிய பொறுப்பை ஏற்றார்."
+)
+WATER_WORD = "குடிநீர்"
+WATER_AT = [47, 63, 221]
+ACT_CLAUSE = "செல்லூர் பகுதி மக்களுக்கு நான்கு வாரமாக குடிநீர் இல்லை"
+AUTHORITY_CLAUSE = "மதுரை மாநகராட்சி ஆணையர்"
+DATE_CLAUSE = "செப்டம்பர் 30 அன்று"
+TANKER_SPAN = "12 டேங்கர் லாரிகள்"
+
+
+def shortage_record(**fields: Any) -> dict:
+    """A district water-shortage body: the subject word recurs, the actor is named once."""
+    return synth(SHORTAGE_TAMIL, title="குடிநீர் இல்லாத செல்லூர்", language="ta", **fields)
+
+
+def shortage_answer() -> dict[str, Any]:
+    """A clean reading of such a body: every classification field cites the clause that carries it."""
+    body = SHORTAGE_TAMIL
+    return {
+        "record_kind": "incident",
+        "description": quote(body, ACT_CLAUSE),
+        "incident_type": quote(body, "குடிநீர் இல்லாததால்") | {"value": "drinking_water_shortage"},
+        "severity": quote(body, "நான்கு வாரமாக") | {"value": "moderate"},
+        "event_status": quote(body, TANKER_SPAN) | {"value": "ongoing"},
+        "category": quote(body, ACT_CLAUSE) | {"value": "water"},
+        "department": quote(body, AUTHORITY_CLAUSE) | {"value": "water_resources"},
+        "locations": [{"text": "செல்லூர்", "normalized_name": "Sellur", "location_type": "locality",
+                       "role": "event_location", "field": CONTENT, "quote": "செல்லூர்",
+                       "char_start": body.index("செல்லூர்"), "confidence": 0.85}],
+    }
+
+
+def repeated_word(payload: dict[str, Any]) -> dict[str, Any]:
+    """The same answer with both classification fields pointed at the word the article repeats."""
+    for name, token in (("category", "water"), ("department", "water_resources")):
+        payload[name] = {"value": token, "field": CONTENT, "quote": WATER_WORD, "confidence": 0.8}
+    return payload
+
+
+def test_a_word_the_article_keeps_repeating_grounds_neither_category_nor_department():
+    found = run(repeated_word(shortage_answer()), shortage_record())
+
+    assert found.category is IncidentCategory.UNRESOLVED
+    assert found.department is Department.UNRESOLVED
+    for name in ("category", "department"):
+        claim = found.claim(name)
+        assert claim.review is ReviewState.UNRESOLVED
+        assert claim.evidence_ids == []
+        assert claim.notes == f"the quote occurs {len(WATER_AT)} times"
+    ambiguous = [
+        item for item in found.validation.issues if item.code is IssueCode.AMBIGUOUS_QUOTE
+    ]
+    assert [item.field for item in ambiguous] == ["category", "department"]
+    for issue in ambiguous:
+        assert f"occurs {len(WATER_AT)} times in data.content" in issue.detail
+        assert "the answer named no char_start" in issue.detail
+        assert str(WATER_AT[0]) in issue.detail and str(WATER_AT[-1]) in issue.detail
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_the_ambiguous_quote_leaves_the_fields_the_body_does_evidence_untouched():
+    found = run(repeated_word(shortage_answer()), shortage_record())
+
+    assert found.incident_type is EventType.DRINKING_WATER_SHORTAGE
+    assert found.severity is SeverityLevel.MODERATE
+    assert found.event_status is EventStatus.ONGOING
+    assert found.description == ACT_CLAUSE
+    assert found.locations[0].review is ReviewState.ACCEPTED
+    assert found.record_kind is RecordKind.INCIDENT
+    assert "category" in found.unaccepted_fields()
+    assert "department" in found.unaccepted_fields()
+
+
+def test_a_char_start_naming_one_copy_of_a_repeated_word_grounds_it():
+    payload = repeated_word(shortage_answer())
+    payload["category"] = quote(SHORTAGE_TAMIL, WATER_WORD, occurrence=2) | {"value": "water"}
+    found = run(payload, shortage_record())
+
+    claim = found.claim("category")
+    assert found.category is IncidentCategory.WATER
+    assert claim.review is ReviewState.ACCEPTED
+    cited = found.evidence_by_id()[claim.evidence_ids[0]]
+    assert (cited.field, cited.char_start, cited.quote) == (CONTENT, WATER_AT[2], WATER_WORD)
+    assert [
+        item.field
+        for item in found.validation.issues
+        if item.code is IssueCode.AMBIGUOUS_QUOTE
+    ] == ["department"]
+    assert found.department is Department.UNRESOLVED
+
+
+def test_each_classification_field_is_grounded_by_the_clause_that_carries_its_answer():
+    found = run(shortage_answer(), shortage_record())
+
+    assert found.category is IncidentCategory.WATER
+    assert found.department is Department.WATER_RESOURCES
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+    assert found.claim("category").evidence_ids != found.claim("department").evidence_ids
+
+
+def test_a_context_fact_that_translates_its_field_reports_the_field_s_own_words():
+    payload = shortage_answer()
+    payload["context_facts"] = [
+        {"field": CONTENT, "value": "12 tankers", "quote": TANKER_SPAN,
+         "char_start": SHORTAGE_TAMIL.index(TANKER_SPAN), "confidence": 0.9}
+    ]
+    found = run(payload, shortage_record())
+
+    fact = found.context_facts[0]
+    assert fact.review is ReviewState.REVIEW_REQUIRED
+    assert fact.value == "12 tankers"
+    assert "the value is not what the field it names holds" in fact.notes
+    cited = found.evidence_by_id()[fact.evidence_ids[0]]
+    assert (cited.quote, cited.span_validation.value) == (TANKER_SPAN, "validated")
+    issue = next(
+        item for item in found.validation.issues if item.field == "context_facts[fact-1]"
+    )
+    assert issue.code is IssueCode.UNSUPPORTED_CLAIM
+    assert "'12 tankers' is not a value 'data.content' carries" in issue.detail
+    assert repr(TANKER_SPAN) in issue.detail
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_a_context_fact_written_in_the_field_s_own_characters_is_copied():
+    payload = shortage_answer()
+    payload["context_facts"] = [
+        {"field": CONTENT, "value": TANKER_SPAN, "quote": TANKER_SPAN,
+         "char_start": SHORTAGE_TAMIL.index(TANKER_SPAN), "confidence": 0.9}
+    ]
+    found = run(payload, shortage_record())
+
+    assert found.context_facts[0].review is ReviewState.ACCEPTED
+    assert not any(item.code is IssueCode.UNSUPPORTED_CLAIM for item in found.validation.issues)
+
+
+def test_the_record_s_own_declared_stamp_is_kept_and_said_to_be_the_record_s_clock():
+    record = shortage_record(event_time="2026-10-02T17:45:00")
+    payload = shortage_answer()
+    payload["event_time"] = {"value": "2026-10-02T17:45:00", "precision": "minute",
+                             "confidence": 0.8}
+    found = run(payload, record)
+
+    assert found.event_time is not None and found.event_time.isoformat() == "2026-10-02T17:45:00"
+    claim = found.claim("event_time")
+    assert claim.method is ExtractionMethod.SOURCE_METADATA
+    assert claim.review is ReviewState.ACCEPTED
+    assert claim.evidence_ids == []
+    assert "the record's own declared event_time" in (claim.notes or "")
+    assert found.validation.issues == []
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.review_required is False
+    said = " ".join(found.generation.warnings)
+    assert "the record's clock, not a moment the article evidenced" in said
+    assert "event_time stays unresolved" not in said
+
+
+def test_a_time_the_article_itself_states_is_evidenced_and_carries_no_clock_warning():
+    record = shortage_record(event_time="2026-10-02T17:45:00")
+    payload = shortage_answer()
+    payload["event_time"] = quote(SHORTAGE_TAMIL, DATE_CLAUSE) | {
+        "value": "2026-09-30T00:00:00", "precision": "day"
+    }
+    found = run(payload, record)
+
+    claim = found.claim("event_time")
+    assert claim.method is ExtractionMethod.LLM
+    assert claim.review is ReviewState.ACCEPTED
+    assert found.event_time_precision is TimePrecision.DAY
+    assert found.evidence_by_id()[claim.evidence_ids[0]].quote == DATE_CLAUSE
+    said = " ".join(found.generation.warnings)
+    assert "the record's clock" not in said and "stays unresolved" not in said
+
+
+def test_an_answer_that_omits_the_clock_leaves_it_unresolved_though_the_record_declares_one():
+    record = shortage_record(event_time="2026-10-02T17:45:00")
+    found = run(shortage_answer(), record)
+
+    assert found.event_time is None
+    assert found.event_time_precision is TimePrecision.UNKNOWN
+    said = " ".join(found.generation.warnings)
+    assert "event_time stays unresolved" in said
+    assert "the record's clock" not in said
+
+
+def test_the_prompt_holds_the_stage_2_10_rules_for_the_span_that_carries_each_answer():
+    rules = extraction_request(build_context(shortage_record())).system.split("Rules:\n")[1]
+
+    assert "a span supports a field only when that span alone gives" in rules
+    assert "names its subject, runs through the whole text and proves nobody" in rules
+    assert "a repeated word cannot say which" in rules
+    assert "until it identifies the one occurrence you are" in rules
+    assert "an offset that is nearly right is refused as flatly as one that is far wrong" in rules
+    assert "a translated or glossed value is not a copy even when its quote is verbatim" in rules
+    assert "never quote the page's date stamp to dress that" in rules

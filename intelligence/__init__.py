@@ -40,6 +40,7 @@ from intelligence.contract import (
 from intelligence.geography import source_geography
 from intelligence.intelligence import extract_incident, extraction_request, validate_extraction
 from intelligence.llm import (
+    GeminiProvider,
     GroqProvider,
     LLMConfig,
     LLMError,
@@ -76,6 +77,7 @@ __all__ = [
     "EventStatus",
     "Evidence",
     "Generation",
+    "GeminiProvider",
     "GroqProvider",
     "Incident",
     "IncidentCategory",
@@ -123,4 +125,4 @@ __all__ = [
     "structured",
     "validate_extraction",
 ]
-__version__ = "0.11.0"
+__version__ = "0.12.0"
