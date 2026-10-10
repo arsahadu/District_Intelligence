@@ -36,10 +36,10 @@ TRUNCATION_HINT = (
     f"{ENV_MAX_TOKENS} or set {ENV_REASONING_EFFORT}=low to spend less of it on reasoning"
 )
 
-#: The repository's local settings file. Intelligence reads it and never writes it.
-DOTENV_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
-)
+#: The package-local settings file. Intelligence reads it and never writes it.
+# The repository root is not the right location for this project: the config lives next to the
+# package code, and it must be found even when the process starts from a different working dir.
+DOTENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
 #: Endpoint names, so a deployment reads as a deployment rather than as a vendor SDK.
 ALIAS_BASE_URLS = {
@@ -69,7 +69,10 @@ class StructuredOutputError(LLMError):
 
 def load_dotenv_file(path: Optional[str] = None) -> bool:
     """Put the local ``.env`` into ``os.environ``, leaving any real variable (even empty) alone."""
-    target = path or DOTENV_PATH
+    candidate = path or DOTENV_PATH
+    if not os.path.isabs(candidate):
+        candidate = os.path.abspath(os.path.join(os.path.dirname(__file__), candidate))
+    target = candidate
     if not os.path.isfile(target):
         return False
     try:
