@@ -1,17 +1,28 @@
 :root {
-  font-family: 'Avenir Next', Avenir, 'Trebuchet MS', sans-serif;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-weight: 400;
-  color: #263f48;
-  background: #f5f8fa;
+  color: #34485b;
+  background: #f5f7f8;
   color-scheme: light;
+  --navy: #21394f;
+  --ink: #34485b;
+  --ink-soft: #607080;
+  --muted: #788693;
+  --line: #e1e6ea;
 }
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: #f5f7f8;
 }
 
 body {
@@ -21,14 +32,27 @@ body {
 }
 
 button,
-a {
-  -webkit-tap-highlight-color: transparent;
-}
-
-button {
+input,
+select {
   font-family: inherit;
 }
 
-#root {
-  min-height: 100vh;
+button,
+a,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid #8eb2cf;
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #d8e6f0;
+  color: #1f3d57;
 }
