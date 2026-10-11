@@ -57,6 +57,8 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
     ]),
   ])
   const provenanceUrl = safeHttpUrl(incident?.provenance?.source_url)
+  const sourceRecordId = incident?.provenance?.record_id || incident?.source_record_id || incident?.provenance?.source_record_id
+  const contextFacts = incident?.context_facts || []
 
   return (
     <div className="detail-backdrop" onMouseDown={(event) => {
@@ -118,8 +120,10 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
             <section className="detail-section">
               <h3>Incident summary</h3>
               <dl className="detail-grid">
+                <DetailField label="Record kind">{displayValue(incident.record_kind || (incident.context_type ? 'context' : 'incident'))}</DetailField>
                 <DetailField label="Category">{displayValue(incident.category)}</DetailField>
                 <DetailField label="Type">{displayValue(incident.incident_type)}</DetailField>
+                <DetailField label="Context type">{displayValue(incident.context_type)}</DetailField>
                 <DetailField label="Priority">{displayValue(incident.priority)}</DetailField>
                 <DetailField label="Status">{displayValue(incident.event_status)}</DetailField>
                 <DetailField label="Event time">{formatDateTime(incident.event_time)}</DetailField>
@@ -128,6 +132,19 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
                 <DetailField label="Location">{incidentLocation(incident)}</DetailField>
               </dl>
             </section>
+
+            {contextFacts.length ? (
+              <section className="detail-section">
+                <h3>Context facts</h3>
+                <dl className="detail-grid">
+                  {contextFacts.map((fact, index) => (
+                    <DetailField key={`${fact?.field || 'fact'}-${index}`} label={displayValue(fact?.field || 'Field')}>
+                      {displayValue(fact?.value ?? 'Not specified')}
+                    </DetailField>
+                  ))}
+                </dl>
+              </section>
+            ) : null}
 
             <section className="detail-section evidence-section">
               <div className="section-heading">
@@ -205,9 +222,17 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
                 <DetailField label="Checked at">{formatDateTime(incident.validation?.checked_at)}</DetailField>
                 <DetailField label="Source">{incident.provenance?.source_id}</DetailField>
                 <DetailField label="Source type">{incident.provenance?.source_type}</DetailField>
-                <DetailField label="Source record">{incident.provenance?.record_id}</DetailField>
+                <DetailField label="Source record">{sourceRecordId || incident.provenance?.record_id}</DetailField>
+                <DetailField label="Declared event time">{formatDateTime(incident.provenance?.declared_event_time)}</DetailField>
+                <DetailField label="Declared precision">{formatPrecision(incident.provenance?.declared_event_time_precision)}</DetailField>
+                <DetailField label="Fields without value">{Array.isArray(incident.provenance?.fields_without_value) ? incident.provenance.fields_without_value.join(', ') : displayValue(incident.provenance?.fields_without_value)}</DetailField>
                 <DetailField label="Retrieved at">{formatDateTime(incident.provenance?.retrieved_at)}</DetailField>
                 <DetailField label="Schema version">{incident.schema_version}</DetailField>
+                {sourceRecordId ? (
+                  <DetailField label="Original record">
+                    <a href={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/records/${encodeURIComponent(sourceRecordId)}`} target="_blank" rel="noopener noreferrer">Open original CommonRecord</a>
+                  </DetailField>
+                ) : null}
                 {provenanceUrl ? (
                   <DetailField label="Source URL">
                     <a href={provenanceUrl} target="_blank" rel="noopener noreferrer">Open source</a>

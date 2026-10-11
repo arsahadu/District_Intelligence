@@ -82,7 +82,38 @@ export function isNewsIncident(incident) {
     || (incident.evidence || []).some((item) => item.source_type?.toLowerCase() === 'news')
 }
 
+export function recordKindOf(incident) {
+  const raw = String(incident?.record_kind ?? '').trim().toLowerCase()
+  if (raw === 'forecast') return 'forecast'
+  if (raw === 'context') return 'context'
+  if (raw === 'unresolved') return 'unresolved'
+  if (incident?.context_type) return 'context'
+  if (raw === 'incident') return 'incident'
+  return 'incident'
+}
+
+export function isIncidentRecord(incident) {
+  return recordKindOf(incident) === 'incident'
+}
+
+export function isForecastRecord(incident) {
+  return recordKindOf(incident) === 'forecast'
+    || incident?.record_kind === 'forecast'
+    || (incident?.context_type || '').toLowerCase().includes('weather')
+}
+
+export function isContextRecord(incident) {
+  return recordKindOf(incident) === 'context'
+    || incident?.record_kind === 'context'
+    || !!incident?.context_type
+}
+
+export function isUnresolvedRecord(incident) {
+  return recordKindOf(incident) === 'unresolved'
+}
+
 export function isAgricultureIncident(incident) {
+  if (isContextRecord(incident) && (incident.context_type || '').toLowerCase().includes('market')) return true
   return incident.category === 'agriculture'
     || incident.provenance?.source_type?.toLowerCase().includes('agriculture')
     || incident.provenance?.record_type?.toLowerCase().includes('market')
@@ -91,6 +122,7 @@ export function isAgricultureIncident(incident) {
 }
 
 export function isWeatherIncident(incident) {
+  if (isForecastRecord(incident) || (incident?.context_type || '').toLowerCase().includes('weather')) return true
   const searchable = [
     incident.incident_type,
     incident.category,
