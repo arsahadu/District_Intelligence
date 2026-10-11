@@ -1,5 +1,3 @@
-"""Evidence span arithmetic - the only sanctioned producer of `Evidence`."""
-
 from __future__ import annotations
 
 import hashlib
@@ -18,15 +16,15 @@ PROBABILISTIC_METHODS = frozenset({ExtractionMethod.LLM, ExtractionMethod.STATIS
 
 
 class SpanError(ValueError):
-    """Base for span arithmetic failures."""
+    ...
 
 
 class EmptyQuoteError(SpanError):
-    """The quote could not identify anything even if it were found."""
+    ...
 
 
 class QuoteNotFoundError(SpanError):
-    """The quote is not present in the source field as written."""
+    ...
 
 
 class AmbiguousQuoteError(SpanError):
@@ -41,19 +39,11 @@ class AmbiguousQuoteError(SpanError):
 
 
 class OccurrenceOutOfBoundsError(SpanError):
-    """The requested occurrence does not exist."""
+    ...
 
 
 @dataclass(frozen=True)
 class Span:
-    """A character range that is known to reproduce a quote from a text.
-
-    Offsets are Python character indices into one field's own untouched text: Unicode code points,
-    0-based, counted from the start of that field - never bytes, never a UTF-16 unit, never the start
-    of a prompt. Tamil combining marks count as the characters Python reads them as, which is why a
-    span is always derived from the text and never typed.
-    """
-
     quote: str
     char_start: int
     char_end: int
@@ -72,12 +62,10 @@ class Span:
 
 
 def compute_field_hash(text: str) -> str:
-    """sha256 hex of the UTF-8 encoding of the *whole* original field text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _normalisation_hint(text: str, quote: str) -> str:
-    """Explain a near-miss without repairing it."""
     for form in ("NFC", "NFD", "NFKC", "NFKD"):
         if unicodedata.normalize(form, quote) in unicodedata.normalize(form, text):
             return (
@@ -89,7 +77,6 @@ def _normalisation_hint(text: str, quote: str) -> str:
 
 
 def find_spans(text: str, quote: str) -> list[Span]:
-    """Every occurrence of ``quote`` in ``text``, overlapping ones included."""
     if not quote:
         raise EmptyQuoteError("an empty quote identifies nothing in the source")
     if not quote.strip():
@@ -106,7 +93,6 @@ def find_spans(text: str, quote: str) -> list[Span]:
 
 
 def locate(text: str, quote: str, *, occurrence: Optional[int] = None) -> Span:
-    """Cut one span out of ``text``, refusing to guess which occurrence is meant."""
     spans = find_spans(text, quote)
     if not spans:
         raise QuoteNotFoundError(
@@ -127,8 +113,6 @@ def locate(text: str, quote: str, *, occurrence: Optional[int] = None) -> Span:
 
 
 class SourceField(StrictModel):
-    """One field of one record, exactly as stored - the only text a span may be cut from."""
-
     model_config = ConfigDict(frozen=True)
 
     record_id: str
@@ -137,7 +121,6 @@ class SourceField(StrictModel):
 
     field: str
 
-    #: The untouched original. Never stripped, never normalised.
     text: str
 
     source_url: Optional[str] = None
@@ -220,7 +203,6 @@ class SourceField(StrictModel):
 
 
 def derive_evidence_id(source: SourceField, span: Span, method: ExtractionMethod) -> str:
-    """Deterministic id so the same fact from the same field always reuses it."""
     digest = hashlib.sha256(
         "\x1f".join(
             (
@@ -258,7 +240,6 @@ def build_evidence_at(
     modality: Modality = Modality.TEXT,
     notes: Optional[str] = None,
 ) -> Evidence:
-    """Produce Evidence for a span the caller already located (regex, OCR, LLM offsets)."""
     _check_method(method, confidence)
 
     if span.char_start < 0 or span.char_end < span.char_start:
@@ -308,7 +289,6 @@ def build_evidence(
     modality: Modality = Modality.TEXT,
     notes: Optional[str] = None,
 ) -> Evidence:
-    """Quote a source field and get Evidence with offsets derived, never typed."""
     span = locate(source.text, quote, occurrence=occurrence)
     return build_evidence_at(
         source,
@@ -322,7 +302,6 @@ def build_evidence(
 
 
 def derive_metadata_evidence_id(source: SourceField) -> str:
-    """Deterministic id for field-level provenance, which has no span to key on."""
     digest = hashlib.sha256(
         "\x1f".join(
             (source.record_id, source.field, ExtractionMethod.SOURCE_METADATA.value)
@@ -339,7 +318,6 @@ def build_metadata_evidence(
     modality: Modality = Modality.TEXT,
     notes: Optional[str] = None,
 ) -> Evidence:
-    """Field-level provenance for a value the record already carried, so it quotes nothing."""
     return Evidence(
         evidence_id=evidence_id or derive_metadata_evidence_id(source),
         record_id=source.record_id,
@@ -360,8 +338,6 @@ def build_metadata_evidence(
 
 @dataclass(frozen=True)
 class SpanCheck:
-    """The outcome of replaying one Evidence against a field's current text."""
-
     evidence_id: str
     validation: SpanValidation
     reason: str
@@ -377,7 +353,6 @@ class SpanCheck:
 
 
 def verify_evidence(evidence: Evidence, source_text: str) -> SpanCheck:
-    """Check an Evidence against the text the field holds *now*."""
     actual_hash = compute_field_hash(source_text)
 
     if not evidence.has_span:
@@ -433,7 +408,6 @@ def verify_evidence(evidence: Evidence, source_text: str) -> SpanCheck:
 
 
 def revalidate(evidence: Evidence, source_text: str) -> tuple[Evidence, SpanCheck]:
-    """Return the evidence in its honest validation state, plus the check."""
     check = verify_evidence(evidence, source_text)
     if check.validation is evidence.span_validation:
         return evidence, check

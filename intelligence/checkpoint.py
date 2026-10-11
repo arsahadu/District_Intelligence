@@ -1,5 +1,3 @@
-"""The resumable run store: one durable line per record, written so an interruption cannot lose progress."""
-
 from __future__ import annotations
 
 import hashlib
@@ -28,33 +26,23 @@ FAILED = "failed"
 DEFERRED = "deferred"
 STATES = (COMPLETED, REVIEW_REQUIRED, FAILED, DEFERRED)
 
-#: Only these two hold a finished reading, so only these two are ever reused on a resume.
 REUSABLE_STATES = (COMPLETED, REVIEW_REQUIRED)
 
 _REQUIRED_KEYS = ("record_id", "state", "mode", "prompt_version", "schema_version")
 
-#: What the manifest must state at all. ``base_url``, ``provider`` and ``model`` may legitimately be
-#: empty - a store used without a backend, or a run that read nothing but copies, cannot say who read
-#: what - but they have to be spoken for, or the file was not written by this store.
 _REQUIRED_META = (
     "updated_at", "schema_version", "base_url", "provider", "model", "records", "states",
     "results_file", "results_digest",
 )
 
-#: The ones an empty value makes useless: they are what ties this manifest to the results beside it.
 _DECISIVE_META = ("schema_version", "results_file", "results_digest")
 
 
 class CheckpointError(RuntimeError):
-    """Saved progress cannot be trusted: unreadable, incomplete, or refused by the contract."""
+    ...
 
 
 def fingerprint(record: Any) -> Optional[str]:
-    """Everything the pipeline would read from this record, hashed - or None if it cannot be read.
-
-    This is the reuse key: a reissued record whose text or geography changed gets read again rather
-    than answered from the store.
-    """
     try:
         return record_input_hash(build_context(record).record)
     except MappingError:
@@ -63,8 +51,6 @@ def fingerprint(record: Any) -> Optional[str]:
 
 @dataclass(frozen=True)
 class Entry:
-    """One record's saved state, carrying the Incident it produced whenever there was one."""
-
     record_id: str
     state: str
     mode: str
@@ -78,10 +64,7 @@ class Entry:
     error: Optional[str] = None
     incident: Optional[dict[str, Any]] = None
     saved_at: str = ""
-    #: The digest of the prompt text and schema this reading was produced against. A version label is
-    #: written by a person and can be left behind when a rule is reworded; this cannot.
     prompt_digest: str = ""
-    #: Every candidate that was skipped or refused before this reading, in the order it happened.
     attempts: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -148,14 +131,6 @@ class Entry:
 
 
 class Checkpoint:
-    """``results.jsonl`` plus ``checkpoint.json``, replaced atomically at every batch boundary.
-
-    The results log is authoritative: it is written first, so an interruption between the two
-    replacements can only leave the manifest behind it, never ahead. ``load`` cross-checks the
-    manifest against the log it claims to describe and refuses anything else, because a checkpoint
-    that cannot account for its own results is not progress - it is a claim about progress.
-    """
-
     def __init__(
         self,
         directory: Any,
@@ -171,29 +146,20 @@ class Checkpoint:
         self.base_url = base_url
         self.provider = provider
         self.model = model
-        #: Every ``(provider, model)`` this run is prepared to ask. Empty means the single comparison
-        #: ``provider``/``model`` above, which is what a run without a chain is.
         self.candidates = tuple(
             (str(name), str(model)) for name, model in candidates if str(model or "")
         )
         self.entries: dict[str, Entry] = {}
         self.superseded = 0
         self.loaded = False
-        #: What the saved manifest stated, once it had been read and reconciled.
         self.manifest: Optional[dict[str, Any]] = None
-        #: Set when the results log holds more than the manifest counted: a crash between the writes.
         self.incomplete: Optional[str] = None
-        #: Set when the manifest was written by another contract version.
         self.stale_version: Optional[str] = None
-        #: The backend the saved pair was written against, so a move can be reported, not hidden.
         self.previous_base_url = ""
-        #: Why an existing entry was refused for reuse, per record, so a run can say so out loud.
         self.invalidated: dict[str, str] = {}
-        #: Finished readings a failed or deferred re-read was refused the chance to overwrite.
         self.preserved: dict[str, str] = {}
 
     def load(self) -> "Checkpoint":
-        """Read what an earlier run left, or refuse the file with the reason it cannot be trusted."""
         text: Optional[str] = None
         if self.results_path.exists():
             try:
@@ -215,7 +181,6 @@ class Checkpoint:
         return self
 
     def _read_manifest(self) -> Optional[dict[str, Any]]:
-        """The metadata file, but only if it states enough to be compared with the results."""
         if not self.checkpoint_path.exists():
             return None
         where = str(self.checkpoint_path)
@@ -253,7 +218,6 @@ class Checkpoint:
         return payload
 
     def _reconcile(self, manifest: Optional[dict[str, Any]], text: Optional[str]) -> None:
-        """Agree the manifest with the log, or refuse: untrusted progress is never overwritten."""
         if manifest is None:
             if text is not None:
                 self.incomplete = (
@@ -326,7 +290,6 @@ class Checkpoint:
         input_hash: Optional[str],
         prompt_digest: str = "",
     ) -> Optional[Incident]:
-        """The saved reading, but only when this run would produce exactly that one."""
         entry = self.get(record_id)
         if entry is None or entry.state not in REUSABLE_STATES:
             return None
@@ -356,7 +319,6 @@ class Checkpoint:
         input_hash: Optional[str],
         prompt_digest: str = "",
     ) -> Optional[str]:
-        """Why this saved reading is not the one the current run would produce, or None."""
         if entry.mode != mode:
             return f"it was read as {entry.mode} while this record routes as {mode}"
         if entry.prompt_version != prompt_version:
@@ -367,7 +329,6 @@ class Checkpoint:
             return "this record cannot be fingerprinted, so its saved result cannot be matched to it"
         if entry.input_hash != input_hash:
             return "the record's own text or geography changed since it was read"
-        #: A copy is a copy whoever runs it; a reading is one model's answer to one prompt.
         if mode != Mode.SEMANTIC.value:
             return None
         if prompt_digest and entry.prompt_digest != prompt_digest:
@@ -381,8 +342,6 @@ class Checkpoint:
                 f"{prompt_digest}, so a rule in the prompt has since been reworded"
             )
         if self.candidates:
-            #: A chain: whichever candidate this reading came from, this run is prepared to ask that
-            #: same reader again, so it is the answer this run would produce.
             if (entry.provider, entry.model) not in self.candidates:
                 return (
                     f"it was read by {entry.provider or 'an unknown provider'}/"
@@ -413,7 +372,6 @@ class Checkpoint:
         prompt_digest: str = "",
         attempts: Sequence[str] = (),
     ) -> Entry:
-        """Replace this record's entry. One record is one line, so resuming cannot duplicate it."""
         if state not in STATES:
             raise CheckpointError(f"{state!r} is not a state this store records: {', '.join(STATES)}")
         if state in REUSABLE_STATES and incident is None:
@@ -442,9 +400,6 @@ class Checkpoint:
             and previous.state in REUSABLE_STATES
             and state not in REUSABLE_STATES
         ):
-            #: A re-read that came back refused or deferred says nothing about the reading an earlier
-            #: run finished, and that reading is the only copy of it: it stays, reported as stale in
-            #: the reuse check rather than replaced by a failure that would discard the work.
             self.preserved[entry.record_id] = (
                 f"kept as {previous.state} from {previous.prompt_version}; this run's re-read ended "
                 f"{state}: {_one_line(error)}"
@@ -460,12 +415,6 @@ class Checkpoint:
         return found
 
     def flush(self) -> None:
-        """Write both files completely, then move each over the last one: a crash leaves the older copy.
-
-        The results log goes first. A crash between the two replacements therefore leaves a manifest
-        counting fewer records than the log holds, which ``load`` reads as exactly that and keeps;
-        no other disagreement is possible from this code, and none is tolerated.
-        """
         body = "".join(entry.line() for entry in self.entries.values())
         metadata = {
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -473,8 +422,6 @@ class Checkpoint:
             "base_url": self.base_url,
             "provider": self.provider,
             "model": self.model,
-            #: Who else this run was prepared to ask, in order. Descriptive only: each saved reading
-            #: is matched on its own ``provider``/``model``, so a chain never vouches for a result.
             "chain": [f"{name}/{model}" for name, model in self.candidates],
             "records": len(self.entries),
             "states": self.counts(),
@@ -491,10 +438,6 @@ class Checkpoint:
                 "from the previous checkpoint"
             ) from error
         self.manifest = metadata
-        # What load() found stays found: this run already reused a log on those terms, and a later
-        # batch must not erase the fact from the report that explained the reuse.
-
-
 def _one_line(text: Optional[str]) -> str:
     return " ".join(str(text or "without a reason").split())[:220]
 

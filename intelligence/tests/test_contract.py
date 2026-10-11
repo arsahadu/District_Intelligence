@@ -1,5 +1,3 @@
-"""Stage 1 contract: what may be stated, and only with what behind it."""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -12,7 +10,9 @@ from intelligence.contract import (
     ContextFact,
     ContextType,
     Entity,
+    EventStatus,
     Incident,
+    IncidentCategory,
     Issue,
     IssueCode,
     Location,
@@ -25,6 +25,7 @@ from intelligence.contract import (
     Validation,
 )
 from intelligence.models.enums import (
+    Department,
     EventType,
     ExtractionMethod,
     Modality,
@@ -112,7 +113,6 @@ def test_a_bare_incident_is_legal_and_says_so():
 
 
 def an_event() -> dict:
-    """The same Incident with a flood the evidence established, ready for the kind checks."""
     return {
         "incident_type": EventType.FLOOD,
         "claims": [claim(), claim("incident_type", "flood")],
@@ -120,7 +120,6 @@ def an_event() -> dict:
 
 
 def an_account() -> dict:
-    """A quoted account of what happened with no type token behind it — kind's second route."""
     return {
         "description": QUOTE,
         "claims": [claim(), claim("description", QUOTE)],
@@ -139,7 +138,11 @@ def test_one_unreadable_classification_field_does_not_demote_an_evidenced_happen
     assert accounted.incident_type is EventType.UNRESOLVED
     assert accounted.claim("description").review is ReviewState.ACCEPTED
 
-    quiet = incident(record_kind=RecordKind.CONTEXT, **an_account())
+    quiet = incident(
+        record_kind=RecordKind.CONTEXT,
+        severity=SeverityLevel.UNRESOLVED,
+        **an_account(),
+    )
     assert quiet.record_kind is RecordKind.CONTEXT
 
 
@@ -149,7 +152,11 @@ def test_context_cannot_be_stated_while_the_quotes_establish_an_event():
     with pytest.raises(ValidationError, match="an evidenced event is not context"):
         incident(record_kind=RecordKind.FORECAST, **an_event())
 
-    quiet = incident(record_kind=RecordKind.FORECAST, context_type=ContextType.WEATHER_FORECAST)
+    quiet = incident(
+        record_kind=RecordKind.FORECAST,
+        context_type=ContextType.WEATHER_FORECAST,
+        severity=SeverityLevel.UNRESOLVED,
+    )
     assert quiet.context_type is ContextType.WEATHER_FORECAST
     assert quiet.incident_type is EventType.UNRESOLVED
 
@@ -161,9 +168,48 @@ def test_a_context_type_only_rides_a_record_that_states_no_event():
         incident(record_kind=RecordKind.INCIDENT, context_type=ContextType.MARKET_PRICE,
                  **an_event())
 
-    priced = incident(record_kind=RecordKind.CONTEXT, context_type=ContextType.MARKET_PRICE)
+    priced = incident(
+        record_kind=RecordKind.CONTEXT,
+        context_type=ContextType.MARKET_PRICE,
+        severity=SeverityLevel.UNRESOLVED,
+    )
     assert priced.to_storage_document()["context_type"] == "market_price"
     assert Incident.model_validate(priced.to_storage_document()).record_kind is RecordKind.CONTEXT
+
+
+def test_a_record_that_states_no_happening_holds_every_event_field_open():
+    for name, value, token in (
+        ("category", IncidentCategory.AGRICULTURE, "agriculture"),
+        ("department", Department.AGRICULTURE, "agriculture"),
+        ("severity", SeverityLevel.HIGH, "high"),
+        ("priority", PriorityLevel.LOW, "low"),
+        ("event_status", EventStatus.REPORTED, "reported"),
+    ):
+        with pytest.raises(ValidationError, match="an event field is filled"):
+            incident(
+                record_kind=RecordKind.CONTEXT,
+                context_type=ContextType.MARKET_PRICE,
+                claims=[claim(name, token)],
+                **{name: value},
+            )
+        with pytest.raises(ValidationError, match="an event field is filled"):
+            incident(
+                record_kind=RecordKind.FORECAST,
+                context_type=ContextType.WEATHER_FORECAST,
+                claims=[claim(name, token)],
+                **{name: value},
+            )
+
+    quiet = incident(
+        record_kind=RecordKind.CONTEXT,
+        context_type=ContextType.MARKET_PRICE,
+        severity=SeverityLevel.UNRESOLVED,
+        claims=[],
+    )
+    assert quiet.validation.state is ReviewState.ACCEPTED
+    assert quiet.category is IncidentCategory.UNRESOLVED
+    assert quiet.priority is None
+    assert quiet.event_status is EventStatus.UNKNOWN
 
 
 def test_a_context_fact_is_a_quoted_value_and_is_checked_like_one():
@@ -177,7 +223,7 @@ def test_a_context_fact_is_a_quoted_value_and_is_checked_like_one():
         evidence_ids=["ev-1"],
     )
     carried = incident(record_kind=RecordKind.CONTEXT, context_type=ContextType.MARKET_PRICE,
-                       context_facts=[fact])
+                       severity=SeverityLevel.UNRESOLVED, context_facts=[fact])
     assert carried.context_facts[0].field == "data.min_price"
     document = carried.to_storage_document()
     assert document["context_facts"][0]["value"] == "55.0"
@@ -199,6 +245,7 @@ def test_a_context_fact_is_a_quoted_value_and_is_checked_like_one():
                          method=ExtractionMethod.LLM, confidence=0.8)
     open_one = incident(
         record_kind=RecordKind.CONTEXT,
+        severity=SeverityLevel.UNRESOLVED,
         context_facts=[unsure],
         validation=Validation(state=ReviewState.REVIEW_REQUIRED, issues=[
             Issue(code=IssueCode.SPAN_MISMATCH, field="data.min_price", detail="not verbatim")]),

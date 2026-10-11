@@ -1,5 +1,3 @@
-"""The stable Intelligence output contract: what the LLM pipeline emits and the dashboard stores."""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -17,7 +15,6 @@ from intelligence.models.evidence import Evidence
 
 SCHEMA_VERSION = "2.0"
 
-#: Who is allowed to say an Incident has been checked.
 VALIDATOR = "intelligence.intelligence"
 
 _HEX64 = r"^[0-9a-f]{64}$"
@@ -26,16 +23,12 @@ _PROBABILISTIC = frozenset({ExtractionMethod.LLM, ExtractionMethod.STATISTICAL})
 
 
 class ReviewState(str, Enum):
-    """How far one claim has been checked, not how sure a model felt about it."""
-
     ACCEPTED = "accepted"
     REVIEW_REQUIRED = "review_required"
     UNRESOLVED = "unresolved"
 
 
 class EventStatus(str, Enum):
-    """What the source says is happening. Controlled so the dashboard can filter."""
-
     REPORTED = "reported"
     ONGOING = "ongoing"
     UNDER_INVESTIGATION = "under_investigation"
@@ -45,8 +38,6 @@ class EventStatus(str, Enum):
 
 
 class IncidentCategory(str, Enum):
-    """Coarse district-administration grouping, one level above ``incident_type``."""
-
     DISASTER = "disaster"
     WATER = "water"
     AGRICULTURE = "agriculture"
@@ -64,8 +55,6 @@ class IncidentCategory(str, Enum):
 
 
 class PriorityLevel(str, Enum):
-    """Escalation band. Absent rather than guessed, so the field is nullable."""
-
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -73,8 +62,6 @@ class PriorityLevel(str, Enum):
 
 
 class RecordKind(str, Enum):
-    """What kind of statement the record makes. Read from the source's meaning, never from the feed."""
-
     INCIDENT = "incident"
     FORECAST = "forecast"
     CONTEXT = "context"
@@ -82,9 +69,6 @@ class RecordKind(str, Enum):
 
 
 class ContextType(str, Enum):
-    """The shape of a record that states no event, so context is filed as itself instead of as a
-    hollow case with every incident field empty."""
-
     MARKET_PRICE = "market_price"
     WEATHER_FORECAST = "weather_forecast"
     ADMINISTRATIVE_NOTICE = "administrative_notice"
@@ -93,8 +77,6 @@ class ContextType(str, Enum):
 
 
 class EntityType(str, Enum):
-    """Who or what a source names. Places that act as parties live here; sites go to locations."""
-
     PERSON = "person"
     GOVERNMENT_OFFICIAL = "government_official"
     GOVERNMENT_BODY = "government_body"
@@ -114,8 +96,6 @@ class EntityType(str, Enum):
 
 
 class RelationshipKind(str, Enum):
-    """How two parts of one Incident relate. Deliberately free of verdicts."""
-
     LOCATED_AT = "located_at"
     INVOLVES = "involves"
     RESPONDS_TO = "responds_to"
@@ -124,8 +104,6 @@ class RelationshipKind(str, Enum):
 
 
 class IssueCode(str, Enum):
-    """Deterministic findings from the validation layer. Never a semantic judgement."""
-
     UNSUPPORTED_CLAIM = "unsupported_claim"
     SPAN_MISMATCH = "span_mismatch"
     INVALID_VALUE = "invalid_value"
@@ -138,8 +116,6 @@ class IssueCode(str, Enum):
 
 
 class Provenance(StrictModel):
-    """Where an Incident came from. Copied from the record, never from the model's answer."""
-
     record_id: str
     source_id: str
     source_type: str
@@ -157,17 +133,19 @@ class Provenance(StrictModel):
     declared_severity: Optional[str] = None
     declared_status: Optional[str] = None
 
+    declared_event_time: Optional[datetime] = None
+    declared_event_time_precision: Optional[TimePrecision] = None
+
+    fields_without_value: list[str] = Field(default_factory=list)
+
     input_hash: Optional[str] = Field(default=None, pattern=_HEX64)
 
     @property
     def has_view_source(self) -> bool:
-        """True when the dashboard can offer a "View Source" action."""
         return self.source_url is not None or self.raw_reference is not None
 
 
 class Claim(StrictModel):
-    """One asserted Incident field, the quote it came from and how it was checked."""
-
     field: str
     value: Optional[str] = None
 
@@ -201,8 +179,6 @@ class Claim(StrictModel):
 
 
 class Location(StrictModel):
-    """One place as the source named it. GIS fills the canonical fields later."""
-
     location_id: str
     text: str
 
@@ -247,8 +223,6 @@ class Location(StrictModel):
 
 
 class Entity(StrictModel):
-    """One named party, institution or grouped body."""
-
     entity_id: str
     text: str
 
@@ -270,8 +244,6 @@ class Entity(StrictModel):
 
 
 class Relationship(StrictModel):
-    """A stated link between two parts of this Incident."""
-
     relationship_id: str
     kind: RelationshipKind = RelationshipKind.RELATED_TO
 
@@ -298,12 +270,6 @@ class Relationship(StrictModel):
 
 
 class ContextFact(StrictModel):
-    """One value the record carries that states no event: a price, a temperature, a warning level.
-
-    A fact copies rather than interprets: the value is what the field it names really holds. Nothing
-    source-shaped is declared here - the field path is the record's own, whatever a feed puts in it.
-    """
-
     fact_id: str
     field: str
     value: str
@@ -322,14 +288,6 @@ class ContextFact(StrictModel):
 
 
 class SourceGeography(StrictModel):
-    """One place value the record itself carried, kept under the field path that holds it.
-
-    The boundary a GIS resolver reads: the path says where the value came from and the value stays as
-    the source wrote it, so an identifier is never renamed into something canonical. There is
-    deliberately no canonical id, coordinate or resolution state here - that side belongs to
-    ``Location``, which only GIS may fill.
-    """
-
     geography_id: str
     field: str
     value: str
@@ -355,8 +313,6 @@ class SourceGeography(StrictModel):
 
 
 class Issue(StrictModel):
-    """One deterministic finding about the model's answer."""
-
     code: IssueCode
     field: Optional[str] = None
     detail: str
@@ -368,8 +324,6 @@ class Issue(StrictModel):
 
 
 class Validation(StrictModel):
-    """Whether this Incident may be treated as authoritative, and what said otherwise."""
-
     state: ReviewState = ReviewState.UNRESOLVED
     issues: list[Issue] = Field(default_factory=list)
     validator: str = VALIDATOR
@@ -390,8 +344,6 @@ class Validation(StrictModel):
 
 
 class Generation(StrictModel):
-    """Reproducibility record for one LLM call."""
-
     provider: str
     model: str
     prompt_version: str
@@ -402,7 +354,6 @@ class Generation(StrictModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-#: The Incident fields that carry a model's claim rather than a list of them.
 SCALAR_CLAIM_FIELDS = (
     "title",
     "description",
@@ -415,16 +366,16 @@ SCALAR_CLAIM_FIELDS = (
     "event_time",
 )
 
+# each of these answers a question about a happening, so a record stating none leaves it open
+EVENT_ONLY_FIELDS = ("category", "department", "severity", "priority", "event_status")
+
 
 class Incident(StrictModel):
-    """Structured intelligence derived from one or more CommonRecords."""
-
     schema_version: str = SCHEMA_VERSION
 
     incident_id: str
     provenance: Provenance
 
-    #: What the record turned out to be: an event, a forecast, or information about a state.
     record_kind: RecordKind = RecordKind.UNRESOLVED
     context_type: Optional[ContextType] = None
 
@@ -446,12 +397,8 @@ class Incident(StrictModel):
     entities: list[Entity] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
 
-    #: The values a record that states no event still carries, kept because they are the record's
-    #: use rather than a rejected case.
     context_facts: list[ContextFact] = Field(default_factory=list)
 
-    #: What the record said about place, in its own words and field paths, held out for the GIS
-    #: layer to resolve. Source values here are never canonical ids.
     source_geography: list[SourceGeography] = Field(default_factory=list)
 
     evidence: list[Evidence] = Field(default_factory=list)
@@ -503,7 +450,6 @@ class Incident(StrictModel):
 
     @model_validator(mode="after")
     def _kind_is_what_the_evidence_said(self) -> "Incident":
-        """One truth about what a record is: an evidenced event makes an incident, nothing else does."""
         typed = not self._value_is_open("incident_type")
         if self.record_kind is RecordKind.INCIDENT and not (typed or self._account_is_an_event()):
             raise ValueError(
@@ -516,6 +462,21 @@ class Incident(StrictModel):
                 f"record_kind={self.record_kind.value} while incident_type carries "
                 f"{self.incident_type.value}: an evidenced event is not context"
             )
+        if self.record_kind in (RecordKind.FORECAST, RecordKind.CONTEXT):
+            filled = [
+                f"{name}={getattr(self, name).value}"
+                for name in EVENT_ONLY_FIELDS
+                if not self._value_is_open(name)
+            ]
+            if filled:
+                raise ValueError(
+                    "record_kind=" + self.record_kind.value + " while an event field is filled ("
+                    + ", ".join(filled) + "): each of these answers a question about a happening - "
+                    "which event, whose job, how much harm, how soon to act, whether it is still "
+                    "going - and a record read as a forecast or as context states no happening, so "
+                    "each holds its absence value while context_type and context_facts carry what "
+                    "the record actually says"
+                )
         if self.context_type is not None and self.record_kind not in (
             RecordKind.FORECAST,
             RecordKind.CONTEXT,
@@ -527,11 +488,6 @@ class Incident(StrictModel):
         return self
 
     def _account_is_an_event(self) -> bool:
-        """A quoted account of what happened establishes the event even where the type token did not.
-
-        The kind rests on the event, and the event rests on any quote that established it, so one
-        unreadable classification field cannot demote a real incident.
-        """
         claim = self._claims_by_field().get("description")
         return (
             self.description is not None
@@ -612,7 +568,6 @@ class Incident(StrictModel):
 
     @property
     def is_empty(self) -> bool:
-        """Nothing was established: an honest result, not a usable Incident."""
         return not any(claim.review is ReviewState.ACCEPTED for claim in self.claims)
 
     def claim(self, field: str) -> Optional[Claim]:
@@ -626,7 +581,6 @@ class Incident(StrictModel):
         return [index[eid] for eid in evidence_ids if eid in index]
 
     def unaccepted_fields(self) -> list[str]:
-        """Every part of this Incident a person should look at, in field order."""
         open_claims = [
             claim.field for claim in self.claims if claim.review is not ReviewState.ACCEPTED
         ]
@@ -654,5 +608,4 @@ class Incident(StrictModel):
         return open_claims + open_items
 
     def to_storage_document(self) -> dict:
-        """JSON-safe document for the Intelligence database."""
         return self.model_dump(mode="json")

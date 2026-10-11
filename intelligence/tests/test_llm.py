@@ -1,5 +1,3 @@
-"""The provider seam: configuration from the environment or a local .env, transport errors, structured answers."""
-
 from __future__ import annotations
 
 import json
@@ -39,7 +37,7 @@ from intelligence.llm import (
     parse_json_object,
     retry_guidance,
 )
-from intelligence.intelligence import ExtractionDraft
+from intelligence.intelligence import PROMPT_DIGEST, ExtractionDraft
 
 KEY = "sk-not-a-real-key"
 
@@ -106,8 +104,6 @@ CONFIG_VARS = (ENV_PROVIDER, ENV_MODEL, ENV_BASE_URL, ENV_API_KEY, ENV_TIMEOUT)
 def local_env_file(monkeypatch, tmp_path, text: str) -> str:
     path = tmp_path / ".env"
     path.write_text(text, encoding="utf-8")
-    # A real variable of this name would outrank the file, so it goes first. What the file then puts
-    # into os.environ is taken back by conftest's per-test restore, which delenv cannot do itself.
     for name in CONFIG_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("intelligence.llm.DOTENV_PATH", str(path))
@@ -207,11 +203,6 @@ def groq_reply(content: str, *, finish: str = "stop") -> Any:
 
 
 class GroqCompletions:
-    """The one SDK method this provider calls: client.chat.completions.create.
-
-    ``answers``, when given, is the sequence it replies with: a reply, or the error to raise.
-    """
-
     def __init__(
         self,
         reply: Any,
@@ -402,6 +393,21 @@ def test_the_request_schema_is_the_draft_the_pipeline_parses():
     assert "latitude" not in json.dumps(schema)
 
 
+def test_the_answer_shape_a_provider_is_asked_for_survives_a_cleanup_pass():
+    schema = json_schema_for(ExtractionDraft)
+    assert schema["description"] == "The whole model answer for one record."
+    assert schema["$defs"]["ContextFactDraft"]["description"].startswith(
+        "One value the record carries."
+    )
+    assert PROMPT_DIGEST == "00c1a6b51e8467a7", (
+        "the reuse key moved: it hashes the prompt text and the answer shape together, and the shape "
+        "is generated from the draft models' docstrings, so trimming one of those rewrites what a "
+        "provider is asked to answer and strands every semantic reading already in a checkpoint - "
+        "stage-2.17 compacted the rules and grouped the repeated answer shapes, and the readings taken "
+        "under stage-2.14 will be re-asked of the billed provider"
+    )
+
+
 def test_a_response_carries_what_the_endpoint_reported():
     built, _ = provider([(200, json.dumps({"model": "gpt-oss-120b-prod", "choices": [
         {"message": {"content": "{\"a\": 1}"}, "finish_reason": "stop"}]}))])
@@ -471,7 +477,6 @@ def test_a_strict_answer_the_endpoint_could_never_validate_points_at_the_budget(
 
 
 def groq_refusal(status: int, body: Any) -> Any:
-    """A status refusal exactly as the SDK raises it, so the provider reads what it would read."""
     return RateLimitError(
         f"Error code: {status}",
         response=httpx.Response(
@@ -492,7 +497,6 @@ def test_only_a_refusal_the_endpoint_actually_made_is_read_as_a_limit():
                                         "message": "Too many requests"}}) == "rate"
     assert limit_state(429, "Too Many Requests") == "rate"
     assert limit_state(402, "card declined") == "quota"
-    #: A refusal that named neither an allowance nor a window is never read as an exhausted allowance.
     assert limit_state(429, "a body that names nothing") == LIMIT_UNCLASSIFIED
 
 
@@ -547,8 +551,6 @@ def test_a_busy_window_is_waited_out_over_its_sends_and_then_named_as_a_rate_lim
     with pytest.raises(RateLimitedError, match="answered 429"):
         built.generate_structured(request())
 
-    #: The endpoint said it was busy but not for how long, so the whole waiting budget was spread
-    #: over the sends it allows and nothing was asked after that.
     assert len(recorder.calls) == 3 and recorder.slept == [30.0, 30.0]
     assert sum(recorder.slept) == DEFAULT_MAX_WAIT_SECONDS
 

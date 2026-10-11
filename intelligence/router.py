@@ -1,27 +1,19 @@
-"""Which of the two processing paths one CommonRecord takes."""
-
 from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
 from typing import Any, Mapping
 
-#: Feeds whose records are field values rather than prose.
 STRUCTURED_SOURCE_TYPES = frozenset({"agriculture", "weather"})
 
-#: The CommonRecord body slot. A record whose body says something is read for its meaning,
-#: whatever feed carried it.
 NARRATIVE_KEY = "content"
 
-#: ``data.language`` names the record instead of carrying a value.
 INHERITED_KEY = "language"
 
 _SCALARS = (bool, int, float, str, date, datetime)
 
 
 class Mode(str, Enum):
-    """How one record gets read."""
-
     STRUCTURED = "structured"
     SEMANTIC = "semantic"
 
@@ -33,7 +25,6 @@ def _value(record: Any, name: str) -> Any:
 
 
 def _is_field_value(value: Any) -> bool:
-    """One field value: a scalar, nothing nested, nothing running over several lines."""
     if value is None:
         return True
     if not isinstance(value, _SCALARS):
@@ -42,11 +33,6 @@ def _is_field_value(value: Any) -> bool:
 
 
 def route(record: Any) -> Mode:
-    """STRUCTURED only when the feed's own metadata and the shape of its data both say so.
-
-    Anything that cannot read as a table of values - prose, nested data, an unknown feed - is SEMANTIC,
-    so an unfamiliar record is never flattened into facts it does not hold.
-    """
     source_type = str(_value(record, "source_type") or "").strip().casefold()
     if source_type not in STRUCTURED_SOURCE_TYPES:
         return Mode.SEMANTIC

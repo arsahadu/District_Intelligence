@@ -1,5 +1,3 @@
-"""CommonRecord fixtures shaped like the real October 2026 Madurai capture."""
-# Copied field for field from the Dinamalar capture, stamps and commentbox twin included; nothing is read from disk.
 from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
@@ -166,7 +164,6 @@ class Place(BaseModel):
     district: Optional[str] = None
     state: Optional[str] = None
 class CommonRecordShape(BaseModel):
-    """ingestion's CommonRecord field for field, so ingestion is never imported here."""
     record_id: str
     source_id: str
     source_type: str
@@ -208,7 +205,6 @@ def tamil_article(
     language_hint: Optional[str] = "ta",
     **fields: Any,
 ) -> dict[str, Any]:
-    """The lead article of the capture, stamps and all."""
     payload = base_record(
         record_id="NEWS-MDU-0001",
         title=ARTICLE_TITLE,
@@ -228,7 +224,6 @@ def twin_article(
     language_hint: Optional[str] = "ta",
     **fields: Any,
 ) -> dict[str, Any]:
-    """The same page scraped a second time through its comment anchor."""
     payload = base_record(
         record_id="NEWS-MDU-0002",
         title=ARTICLE_TITLE,
@@ -248,7 +243,6 @@ def temple_closure(
     language_hint: Optional[str] = "ta",
     **fields: Any,
 ) -> dict[str, Any]:
-    """Carries the only relative event date in the capture."""
     payload = base_record(
         record_id="NEWS-MDU-0004",
         title=CLOSURE_TITLE,
@@ -268,7 +262,6 @@ def power_outage(
     language_hint: Optional[str] = "ta",
     **fields: Any,
 ) -> dict[str, Any]:
-    """Clock times with no date attached to any of them."""
     payload = base_record(
         record_id="NEWS-MDU-0006",
         title=OUTAGE_TITLE,
@@ -288,7 +281,6 @@ def events_listing(
     language_hint: Optional[str] = "ta",
     **fields: Any,
 ) -> dict[str, Any]:
-    """A diary listing: bare weekday names and dozens of clock times."""
     payload = base_record(
         record_id="NEWS-MDU-0007",
         title=LISTING_TITLE,
@@ -361,7 +353,6 @@ def weather_forecast(*, district: Optional[str] = DISTRICT, **fields: Any) -> di
     payload.update(fields)
     return payload
 def capture() -> tuple[dict[str, Any], ...]:
-    """The seven distinct records, one per incident id."""
     return (
         tamil_article(),
         twin_article(),
@@ -383,7 +374,6 @@ def market_price(
     district: Optional[str] = DISTRICT,
     **fields: Any,
 ) -> dict[str, Any]:
-    """One Uzhavar Santhai price line, field for field as the marketing feed states it."""
     place = f"{market} Uzhavar Santhai"
     url = f"https://agrimark.tn.gov.in/home/getPrice_dir/2026-10-03/21/{market_id}"
     payload = base_record(
@@ -422,7 +412,6 @@ def weather_warning(
     district: Optional[str] = DISTRICT,
     **fields: Any,
 ) -> dict[str, Any]:
-    """The city weather page's warning line, with the forecast field left as empty as the capture held it."""
     url = f"https://city.imd.gov.in/citywx/city_weather_test_try_warnings.php?id={station_id}"
     payload = base_record(
         record_id=f"WEATHER-{station_id}-{record_type}",
@@ -457,7 +446,6 @@ def crop_distress_report(
     language_hint: Optional[str] = "ta",
     **fields: Any,
 ) -> dict[str, Any]:
-    """An agriculture record whose own prose states what happened."""
     payload = base_record(
         record_id="AGRI-MDU-DISTRESS-0001",
         source_id="tn_agri_marketing",
@@ -527,7 +515,6 @@ WATERLOGGING_CONTENT = (
 
 
 def waterlogging(**fields: Any) -> dict[str, Any]:
-    """The brief's own example: rain-driven waterlogging, officials still monitoring."""
     payload = base_record(
         record_id="NEWS-MDU-WLR-0001",
         title=WATERLOGGING_TITLE,

@@ -1,7 +1,6 @@
-"""The orchestrator: reads CommonRecords from the platform API, runs the chain, reports the run."""
-
 from __future__ import annotations
 
+import json
 import urllib.error
 from typing import Any, Optional
 
@@ -14,6 +13,7 @@ from intelligence.contract import (
     Provenance,
     RecordKind,
     ReviewState,
+    Validation,
 )
 from intelligence.llm import LLMProvider, LLMRequest, LLMResponse, TransportError
 from intelligence.models.enums import EventType, ExtractionMethod
@@ -31,6 +31,7 @@ from intelligence.pipeline import (
     run_pipeline,
 )
 from intelligence.tests.builders import (
+    NeverCalled,
     Scripted,
     listing,
     responder,
@@ -38,7 +39,13 @@ from intelligence.tests.builders import (
     unreachable,
     water_answer,
 )
-from intelligence.tests.record_fixtures import market_price, waterlogging, weather_forecast
+from intelligence.tests.record_fixtures import (
+    FORECAST_TEXT,
+    market_price,
+    twin_article,
+    waterlogging,
+    weather_forecast,
+)
 
 BASE = "http://backend.test"
 
@@ -47,13 +54,16 @@ PRICE_PAYLOAD = {
     "context_type": "market_price",
     "title": {"value": market_price()["title"], "field": "title"},
     "description": {"value": "46.0", "field": "data.min_price", "quote": "46.0", "char_start": 0},
-    "category": {"value": "agriculture", "field": "data.commodity", "quote": "Tomato",
-                 "char_start": 0},
 }
 
 
-def stub(record: dict, *, incident_type: Optional[EventType] = None) -> Incident:
-    """A minimal legal Incident: enough to count, with no model in the loop."""
+def stub(
+    record: dict,
+    *,
+    incident_type: Optional[EventType] = None,
+    accepted: bool = False,
+) -> Incident:
+    review = ReviewState.ACCEPTED if accepted else ReviewState.UNRESOLVED
     provenance = Provenance(
         record_id=record["record_id"],
         source_id=record["source_id"],
@@ -64,7 +74,7 @@ def stub(record: dict, *, incident_type: Optional[EventType] = None) -> Incident
             field="title",
             value=record["title"],
             method=ExtractionMethod.SOURCE_METADATA,
-            review=ReviewState.UNRESOLVED,
+            review=review,
         )
     ]
     fields: dict[str, Any] = {"title": record["title"]}
@@ -76,13 +86,14 @@ def stub(record: dict, *, incident_type: Optional[EventType] = None) -> Incident
                 field="incident_type",
                 value=incident_type.value,
                 method=ExtractionMethod.SOURCE_METADATA,
-                review=ReviewState.UNRESOLVED,
+                review=review,
             )
         )
     return Incident(
         incident_id=f"INC-{record['record_id']}",
         provenance=provenance,
         claims=claims,
+        validation=Validation(state=review),
         **fields,
     )
 
@@ -170,7 +181,6 @@ def test_a_hundred_price_lines_and_twenty_forecasts_process_with_no_model_config
         dict(market_price(), record_id=f"AGRI-{index}") for index in range(100)
     ] + [dict(weather_forecast(), record_id=f"WX-{index}") for index in range(20)]
 
-    # Nothing but the backend URL is configured: a record routed to the model would fail the run.
     summary = run_pipeline(
         all_records=True,
         base_url=BASE,
@@ -309,6 +319,20 @@ def test_the_console_line_names_every_field_a_run_is_read_by():
     assert "facts=" not in describe_incident(incident)
 
 
+def test_a_day_the_record_stated_is_printed_as_the_day_and_not_as_a_midnight():
+    line = describe_incident(
+        pipeline.process_record(weather_forecast(event_time="2026-10-03"), provider=NeverCalled())
+    )
+
+    assert "event_time=2026-10-03 |" in line
+    assert "T00:00:00" not in line
+
+    stated = pipeline.process_record(
+        weather_forecast(event_time="2026-10-03T14:32:05"), provider=NeverCalled()
+    )
+    assert "event_time=2026-10-03T14:32:05 |" in describe_incident(stated)
+
+
 def test_the_summary_prints_counts_and_groups_the_results(capsys):
     summary = pipeline.RunSummary(base_url=BASE, fetched=42, selected=3)
     summary.add(pipeline.Outcome("R-1", "news", "article",
@@ -330,7 +354,6 @@ def test_the_summary_prints_counts_and_groups_the_results(capsys):
         ("Failed", 1),
     ):
         assert f"{label}: {value}" in out
-    #: Both results carry an Incident and both need a person: they are counted once, as review-required.
     assert "3 attempted = 2 review-required + 1 failed" in out
     assert "Failures (1)" in out and "R-3 failed: extraction refused" in out
     assert "waits for a person" in out
@@ -376,40 +399,24 @@ def test_main_runs_the_batch_and_only_reads_from_the_backend(capsys, monkeypatch
     assert "INC-NEWS-MDU-WLR-0001" in captured.out
 
 
-def test_main_posts_only_incidents_when_explicitly_enabled(capsys, monkeypatch):
-    records = [waterlogging()]
-    monkeypatch.setattr(
-        pipeline, "process_record",
-        lambda record, **kwargs: stub(record, incident_type=EventType.URBAN_WATERLOGGING),
-    )
+def poster(status_code: int = 201) -> tuple[list[tuple[str, bytes]], Any]:
     calls: list[tuple[str, bytes]] = []
 
-    def post_transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
         calls.append((url, body))
-        return 201, body.decode("utf-8")
+        return status_code, body.decode("utf-8")
 
-    code = main(
-        ["--limit", "1", "--post-incidents"],
-        provider=Scripted(payload={}),
-        environ={ENV_API_BASE_URL: BASE},
-        transport=responder(listing(*records)),
-        incident_transport=post_transport,
+    return calls, transport
+
+
+def test_main_posts_an_accepted_incident_when_explicitly_enabled(capsys, monkeypatch):
+    monkeypatch.setattr(
+        pipeline, "process_record",
+        lambda record, **kwargs: stub(
+            record, incident_type=EventType.URBAN_WATERLOGGING, accepted=True
+        ),
     )
-
-    captured = capsys.readouterr()
-    assert code == pipeline.EXIT_OK
-    assert len(calls) == 1
-    assert calls[0][0] == f"{BASE}/incidents"
-    assert "POST /incidents: INC-NEWS-MDU-WLR-0001 created (HTTP 201)" in captured.out
-
-
-def test_main_does_not_post_contextual_results(capsys, monkeypatch):
-    monkeypatch.setattr(pipeline, "process_record", lambda record, **kwargs: stub(record))
-    calls: list[str] = []
-
-    def post_transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
-        calls.append(url)
-        return 201, body.decode("utf-8")
+    calls, post_transport = poster()
 
     code = main(
         ["--limit", "1", "--post-incidents"],
@@ -419,9 +426,395 @@ def test_main_does_not_post_contextual_results(capsys, monkeypatch):
         incident_transport=post_transport,
     )
 
+    captured = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert len(calls) == 1
+    assert calls[0][0] == f"{BASE}/incidents"
+    assert json.loads(calls[0][1])["incident_id"] == "INC-NEWS-MDU-WLR-0001"
+    assert "POST /incidents: INC-NEWS-MDU-WLR-0001 created (HTTP 201)" in captured
+    assert "Accepted incidents: 1" in captured
+
+
+def test_main_does_not_post_a_new_review_required_incident(capsys, monkeypatch):
+    monkeypatch.setattr(
+        pipeline, "process_record",
+        lambda record, **kwargs: stub(record, incident_type=EventType.URBAN_WATERLOGGING),
+    )
+    calls, post_transport = poster()
+
+    code = main(
+        ["--limit", "1", "--post-incidents"],
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(waterlogging())),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert "Review-required: 1" in out
+    assert not calls
+    assert "nothing to send" in out
+    assert "held back" not in out
+
+
+def test_main_posts_an_accepted_imd_forecast_and_keeps_it_a_forecast(capsys):
+    record = weather_forecast(event_time="2026-10-03")
+    calls, post_transport = poster()
+
+    code = main(
+        ["--record-id", "WEATHER-MDU-03-Oct", "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(record)),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert len(calls) == 1
+    assert calls[0][0] == f"{BASE}/incidents"
+    sent = json.loads(calls[0][1])
+    assert sent["incident_id"] == "INC-WEATHER-MDU-03-Oct"
+    assert sent["record_kind"] == "forecast"
+    assert sent["context_type"] == "weather_forecast"
+    assert sent["event_time_precision"] == "day"
+    assert sent["event_time"].startswith("2026-10-03")
+    assert sent["validation"]["state"] == "accepted"
+    facts = {item["field"]: item["value"] for item in sent["context_facts"]}
+    assert facts["data.forecast"] == FORECAST_TEXT
+    assert facts["data.max_temp_c"] == "33.1"
+    assert facts["data.min_temp_c"] == "24.5"
+    assert facts["data.station_id"] == "MDU"
+    assert "data.warning" not in facts
+    assert sent["incident_type"] == "unresolved"
+    assert sent["category"] == "unresolved"
+    assert sent["department"] == "unresolved"
+    assert sent["severity"] == "unresolved"
+    assert sent["event_status"] == "unknown"
+    assert sent["priority"] is None
+    assert sent["provenance"]["source_url"] == "https://mausam.imd.gov.in/chennai/693769"
+    assert [item["field"] for item in sent["source_geography"]]
+    assert sent["evidence"] and all(item["field"] for item in sent["evidence"])
+    cited = {item["evidence_id"] for item in sent["evidence"]}
+    assert all(set(item["evidence_ids"]) <= cited for item in sent["context_facts"])
+    assert "POST /incidents: forecast INC-WEATHER-MDU-03-Oct created (HTTP 201)" in out
+
+
+def test_main_posts_an_accepted_agriculture_price_and_its_fact_values(capsys):
+    record = market_price()
+    calls, post_transport = poster()
+
+    code = main(
+        ["--record-id", record["record_id"], "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(record)),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert len(calls) == 1
+    sent = json.loads(calls[0][1])
+    assert sent["incident_id"] == f"INC-{record['record_id']}"
+    assert sent["record_kind"] == "context"
+    assert sent["context_type"] == "market_price"
+    assert sent["validation"]["state"] == "accepted"
+    facts = {item["field"]: item["value"] for item in sent["context_facts"]}
+    assert facts["data.commodity"] == "Tomato"
+    assert facts["data.market"] == "Anna nagar"
+    assert facts["data.min_price"] == "46.0"
+    assert facts["data.max_price"] == "50.0"
+    assert facts["data.unit"] == "kg"
+    assert facts["data.quantity"] == "800.0"
+    assert sent["incident_type"] == "unresolved"
+    assert sent["category"] == "unresolved"
+    assert sent["department"] == "unresolved"
+    assert sent["severity"] == "unresolved"
+    assert sent["event_status"] == "unknown"
+    assert sent["priority"] is None
+    assert sent["provenance"]["source_url"].startswith("https://agrimark.tn.gov.in/")
+    assert [item["field"] for item in sent["source_geography"]]
+    assert [item["text"] for item in sent["locations"]] == [
+        "Anna nagar Uzhavar Santhai, Madurai",
+        "Madurai",
+    ]
+    assert sent["evidence"] and all(item["field"] for item in sent["evidence"])
+    assert (
+        "POST /incidents: context INC-AGRI-MDU-ANNA_NAGAR-TOMATO-2026-10-03 created (HTTP 201)"
+        in out
+    )
+
+
+def test_main_does_not_post_a_review_required_forecast(capsys, monkeypatch):
+    def flagged(record, **kwargs):
+        # no structured record arrives ungrounded, so a human flag is modelled on the real reading
+        incident = pipeline.process_structured(record)
+        review = incident.validation.model_copy(update={"state": ReviewState.REVIEW_REQUIRED})
+        return incident.model_copy(update={"validation": review})
+
+    monkeypatch.setattr(pipeline, "process_record", flagged)
+    calls, post_transport = poster()
+
+    code = main(
+        ["--record-id", "WEATHER-MDU-03-Oct", "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(weather_forecast())),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert "Review-required: 1" in out
+    assert not calls
+    assert "nothing to send" in out
+
+
+def test_main_does_not_post_an_unresolved_reading(capsys, monkeypatch):
+    monkeypatch.setattr(
+        pipeline, "process_record", lambda record, **kwargs: stub(record, accepted=True)
+    )
+    calls, post_transport = poster()
+
+    code = main(
+        ["--limit", "1", "--post-incidents"],
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(waterlogging())),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
     assert code == pipeline.EXIT_OK
     assert not calls
-    assert "no Incident results to send" in capsys.readouterr().out
+    assert "nothing to send" in out
+
+
+def test_a_reused_forecast_is_posted_and_the_backend_copy_reports_a_duplicate(tmp_path, capsys):
+    directory = tmp_path / "run"
+    argv = ["--record-id", "WEATHER-MDU-03-Oct", "--state-dir", str(directory)]
+
+    assert main(
+        argv,
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(weather_forecast())),
+    ) == pipeline.EXIT_OK
+    capsys.readouterr()
+
+    calls, post_transport = poster(409)
+    assert main(
+        [*argv, "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(weather_forecast())),
+        incident_transport=post_transport,
+    ) == pipeline.EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "Records reused: 1" in out and "Records attempted: 0" in out
+    assert len(calls) == 1
+    assert json.loads(calls[0][1])["record_kind"] == "forecast"
+    assert (
+        "POST /incidents: forecast INC-WEATHER-MDU-03-Oct already exists (duplicate) (HTTP 409)"
+        in out
+    )
+
+
+def test_a_backend_detail_page_on_a_duplicate_is_still_read_as_a_duplicate(capsys):
+    calls: list[tuple[str, bytes]] = []
+
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        calls.append((url, body))
+        return 409, '{"detail":"Incident already exists"}'
+
+    code = main(
+        ["--record-id", market_price()["record_id"], "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(market_price())),
+        incident_transport=transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert len(calls) == 1
+    assert (
+        "POST /incidents: context INC-AGRI-MDU-ANNA_NAGAR-TOMATO-2026-10-03 already exists "
+        "(duplicate) (HTTP 409)" in out
+    )
+
+
+def test_a_backend_that_strips_the_kind_from_a_posted_forecast_fails_the_post(capsys):
+    def rewritten(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        sent = json.loads(body)
+        del sent["record_kind"], sent["context_type"]
+        return 201, json.dumps(sent)
+
+    code = main(
+        ["--record-id", "WEATHER-MDU-03-Oct", "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(weather_forecast())),
+        incident_transport=rewritten,
+    )
+
+    captured = capsys.readouterr()
+    assert code == pipeline.EXIT_POST
+    assert captured.out.count("POST /incidents:") == 0
+    assert "changed the Incident contract" in captured.err
+
+
+def test_main_posts_a_reused_incident_only_when_explicitly_enabled(tmp_path, capsys):
+    directory = tmp_path / "run"
+    argv = ["--record-id", "NEWS-MDU-WLR-0001", "--state-dir", str(directory)]
+    calls, post_transport = poster()
+
+    code = main(
+        argv,
+        provider=Scripted(payload=water_answer()),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(waterlogging())),
+        incident_transport=post_transport,
+    )
+
+    assert code == pipeline.EXIT_OK
+    assert not calls
+    assert "POST /incidents" not in capsys.readouterr().out
+
+    code = main(
+        [*argv, "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(waterlogging())),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert "Records reused: 1" in out and "Records attempted: 0" in out
+    assert len(calls) == 1
+    assert calls[0][0] == f"{BASE}/incidents"
+    assert json.loads(calls[0][1])["incident_id"] == "INC-NEWS-MDU-WLR-0001"
+    assert "POST /incidents: INC-NEWS-MDU-WLR-0001 created (HTTP 201)" in out
+
+
+def test_main_does_not_post_a_reused_review_required_incident(tmp_path, capsys, monkeypatch):
+    directory = tmp_path / "run"
+    argv = ["--record-id", "NEWS-MDU-WLR-0001", "--state-dir", str(directory)]
+    monkeypatch.setattr(
+        pipeline, "process_record",
+        lambda record, **kwargs: stub(record, incident_type=EventType.URBAN_WATERLOGGING),
+    )
+
+    code = main(
+        argv,
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(waterlogging())),
+    )
+
+    assert code == pipeline.EXIT_OK
+    assert "Review-required: 1" in capsys.readouterr().out
+
+    calls, post_transport = poster()
+    code = main(
+        [*argv, "--post-incidents"],
+        provider=NeverCalled(),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(waterlogging())),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert "Records reused: 1" in out
+    assert not calls
+    assert "nothing to send" in out
+
+
+def test_main_posts_an_incident_id_at_most_once_per_run(tmp_path, capsys, monkeypatch):
+    directory = tmp_path / "run"
+    stored = main(
+        ["--record-id", "NEWS-MDU-WLR-0001", "--state-dir", str(directory)],
+        provider=Scripted(payload=water_answer()),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(single(waterlogging())),
+    )
+    assert stored == pipeline.EXIT_OK
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        pipeline, "process_record",
+        lambda record, **kwargs: stub(
+            waterlogging(), incident_type=EventType.URBAN_WATERLOGGING, accepted=True
+        ),
+    )
+    calls, post_transport = poster()
+    code = main(
+        ["--limit", "2", "--state-dir", str(directory), "--post-incidents"],
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(waterlogging(), twin_article())),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert "Records reused: 1" in out and "Records attempted: 1" in out
+    assert len(calls) == 1
+    assert "POST /incidents: INC-NEWS-MDU-WLR-0001 created (HTTP 201)" in out
+    assert out.count("POST /incidents:") == 1
+
+
+def test_main_reports_a_backend_duplicate_as_already_exists(capsys, monkeypatch):
+    monkeypatch.setattr(
+        pipeline, "process_record",
+        lambda record, **kwargs: stub(
+            record, incident_type=EventType.URBAN_WATERLOGGING, accepted=True
+        ),
+    )
+    calls, post_transport = poster(409)
+
+    code = main(
+        ["--limit", "1", "--post-incidents"],
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(waterlogging())),
+        incident_transport=post_transport,
+    )
+
+    out = capsys.readouterr().out
+    assert code == pipeline.EXIT_OK
+    assert len(calls) == 1
+    assert "POST /incidents: INC-NEWS-MDU-WLR-0001 already exists (duplicate) (HTTP 409)" in out
+
+
+def test_main_exits_with_the_post_code_when_the_backend_refuses(capsys, monkeypatch):
+    monkeypatch.setattr(
+        pipeline, "process_record",
+        lambda record, **kwargs: stub(
+            record, incident_type=EventType.URBAN_WATERLOGGING, accepted=True
+        ),
+    )
+    calls, post_transport = poster(500)
+
+    code = main(
+        ["--limit", "2", "--post-incidents"],
+        provider=Scripted(payload={}),
+        environ={ENV_API_BASE_URL: BASE},
+        transport=responder(listing(waterlogging(), twin_article())),
+        incident_transport=post_transport,
+    )
+
+    captured = capsys.readouterr()
+    assert code == pipeline.EXIT_POST
+    assert len(calls) == 2
+    assert captured.out.count("POST /incidents:") == 0
+    assert captured.err.count("POST /incidents failed for INC-") == 2
+    assert "HTTP 500" in captured.err
 
 
 def test_main_prints_full_documents_only_when_asked(capsys, monkeypatch):

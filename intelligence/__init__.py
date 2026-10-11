@@ -1,14 +1,3 @@
-"""AI / Intelligence module for Collector District Intelligence.
-
-``pipeline.process_record`` turns a CommonRecord into the stable ``contract.Incident``: ``router`` picks
-the reading the record's shape calls for, ``structured`` copies a price line's or forecast's field values
-with no model, and a narrative record goes through one provider-neutral LLM call plus deterministic
-evidence checking. ``geography`` hands the record's own place values to the GIS boundary.
-``python -m intelligence.pipeline`` runs that over the records the platform API serves.
-
-Nothing here imports ingestion, backend, frontend or GIS.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -59,8 +48,6 @@ from intelligence.structured import process_record as process_structured
 
 
 def __getattr__(name: str) -> Any:
-    """``process_record`` is resolved lazily: importing it here would make
-    ``python -m intelligence.pipeline`` re-import the module it is about to run and warn about it."""
     if name == "process_record":
         from intelligence.pipeline import process_record
 
@@ -125,4 +112,4 @@ __all__ = [
     "structured",
     "validate_extraction",
 ]
-__version__ = "0.12.0"
+__version__ = "0.16.0"

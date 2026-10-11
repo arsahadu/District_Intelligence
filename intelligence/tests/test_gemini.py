@@ -1,11 +1,3 @@
-"""Gemini: Google's own request dialect behind this layer's send policy, answered offline.
-
-Nothing here sends anything. Every request is answered by an injected transport with a body shaped the
-way the Gemini API's own documentation shapes one - ``output_text`` and ``steps`` for an answer,
-``error.code``/``error.status``/``error.details`` for a refusal - so what is under test is this layer's
-reading of those bodies, not a live account's mood.
-"""
-
 from __future__ import annotations
 
 import json
@@ -63,8 +55,6 @@ GEMINI = "https://generativelanguage.googleapis.com"
 INTERACTIONS = f"{GEMINI}/v1beta/interactions"
 PRIMARY_MODEL = "gemini-3.8-flash"
 
-#: The shipped file, read here rather than restated, because which model is asked first is a deployment
-#: choice and what has to hold either way is the order and identity the file gives.
 DEPLOYED = str(Path(__file__).resolve().parents[1] / "chain.gemini.json")
 ENTRIES = json.loads(Path(DEPLOYED).read_text(encoding="utf-8"))["candidates"]
 PRIMARY = ENTRIES[0]["model"]
@@ -72,7 +62,6 @@ FALLBACK = ENTRIES[1]["model"]
 
 
 def config(model: str = PRIMARY_MODEL, **overrides: Any) -> LLMConfig:
-    """One candidate's configuration: no retries unless the test asks, so one send is exactly one send."""
     settings: dict[str, Any] = {
         "provider": "gemini",
         "model": model,
@@ -86,8 +75,6 @@ def config(model: str = PRIMARY_MODEL, **overrides: Any) -> LLMConfig:
 
 
 class Recorder:
-    """Answers the sends in order and keeps each request, so a test counts what was actually sent."""
-
     def __init__(self, replies: list[Any]) -> None:
         self.replies = list(replies)
         self.calls: list[dict[str, Any]] = []
@@ -129,14 +116,11 @@ def request(**overrides: Any) -> LLMRequest:
 
 
 def answer(payload: Any, **body: Any) -> str:
-    """A finished interaction: the answer in ``output_text``, and no ``model`` of its own - the response
-    is named by whoever was asked, which is what a chain test has to be able to tell apart."""
     text = payload if isinstance(payload, str) else json.dumps(payload)
     return json.dumps({"id": "int_1", "status": "completed", "output_text": text, **body})
 
 
 def steps(*carries: tuple[str, str], **body: Any) -> str:
-    """An answer that arrived as steps rather than ``output_text``, each carry one a text part."""
     return json.dumps(
         {
             "status": body.pop("status", "completed"),
@@ -149,7 +133,6 @@ def steps(*carries: tuple[str, str], **body: Any) -> str:
 
 
 def refused(status: int, word: str, message: str, *, reason: Optional[str] = None, retry: Optional[str] = None) -> str:
-    """An error body the way the endpoint writes one: a numeric code, a status word, detail blocks."""
     error: dict[str, Any] = {"code": status, "message": message, "status": word}
     details: list[dict[str, str]] = []
     if reason is not None:
@@ -164,8 +147,6 @@ def refused(status: int, word: str, message: str, *, reason: Optional[str] = Non
 
 
 class Endpoint:
-    """Answers per model and counts the sends each one cost, for the chain tests."""
-
     def __init__(self, **by_model: Any) -> None:
         self.by_model = dict(by_model)
         self.sends: list[str] = []
@@ -195,7 +176,6 @@ def deployed_keys(**extra: str) -> dict[str, str]:
 
 
 def other_service() -> LLMConfig:
-    """The configuration this chain replaces, so inheritance can be shown to skip what identifies a reader."""
     return LLMConfig(
         provider="groq",
         model="openai/gpt-oss-20b",
@@ -310,8 +290,6 @@ def test_the_schema_sent_carries_the_shape_and_none_of_the_keywords_this_endpoin
 
 
 def test_a_field_of_the_answer_that_happens_to_be_called_title_survives_the_conversion():
-    #: The schema's keywords are not the answer's field names: treating ``title`` as a label would have
-    #: dropped the field the contract asks for, and the model would never have been told it exists.
     converted = gemini_schema(json_schema_for(ExtractionDraft))
 
     assert "title" in converted["properties"]
@@ -490,7 +468,6 @@ def test_the_shipped_chain_asks_the_gemini_model_named_first_and_the_other_one_s
     assert [item.label for item in candidates] == [f"gemini/{PRIMARY}", f"gemini/{FALLBACK}"]
     assert [item.config.resolved_base_url() for item in candidates] == [GEMINI, GEMINI]
     assert [item.key_source for item in candidates] == [ENV_GEMINI_API_KEY] * 2
-    #: Inherited: the numbers, never the identity of the reader whose place they took.
     assert [item.config.max_tokens for item in candidates] == [2048, 2048]
     assert [item.config.api_key for item in candidates] == [KEY, KEY]
     assert [type(item.build()) for item in candidates] == [type(candidates[0].build())] * 2
@@ -609,7 +586,6 @@ def test_a_run_on_the_gemini_chain_records_who_answered_in_the_checkpoint(tmp_pa
     assert summary.outcomes[0].answered_by == f"gemini/{FALLBACK}"
     assert summary.answered_by() == {f"gemini/{FALLBACK}": 1}
     assert len(summary.incidents) == 1 and summary.deferred == []
-    #: The run is named by the reader it would ask first, and the reading is stamped by the one that answered.
     assert (store.provider, store.model) == ("gemini", PRIMARY)
     assert store.candidates == [("gemini", PRIMARY), ("gemini", FALLBACK)]
     entry = store.get("N-0")
@@ -618,7 +594,6 @@ def test_a_run_on_the_gemini_chain_records_who_answered_in_the_checkpoint(tmp_pa
 
 
 def test_an_extraction_gemini_answered_outside_the_shape_is_refused_and_says_what_arrived(tmp_path):
-    """The schema is the contract: an object where a bare token belongs is reported, never converted."""
     wrapped = dict(water_answer(), record_kind={"value": "incident", "field": "data.content"})
     store = Checkpoint(tmp_path / "run")
     summary = run_pipeline(
@@ -650,7 +625,6 @@ def test_an_injected_transport_reaches_a_gemini_candidate_and_still_not_an_sdk_o
 
 
 def test_a_gemini_provider_that_was_handed_over_is_the_one_the_run_asks(tmp_path):
-    """A caller that names the reader means that reader, not a chain the local configuration happens to name."""
     built, recorder = provider([answer(water_answer())], settings=config(model=PRIMARY_MODEL))
     store = Checkpoint(tmp_path / "run")
     summary = run_pipeline(

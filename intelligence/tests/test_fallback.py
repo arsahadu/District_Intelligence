@@ -1,10 +1,3 @@
-"""The chain: what each refusal means for the next candidate, and what a run records about the turn.
-
-Nothing here sends anything. A candidate is a configured endpoint answered by an injected transport, so
-a test shows the provider's own words travelling through the real classification path into the real
-policy instead of agreeing with a stub that already knew the answer.
-"""
-
 import io
 import json
 from pathlib import Path
@@ -50,7 +43,6 @@ OTHER = "http://127.0.0.1:8081/v1"
 
 
 def config(model: str, base_url: str = LOCAL) -> LLMConfig:
-    """One candidate's configuration: a real endpoint, no retries, so one send is exactly one send."""
     return LLMConfig(
         provider="openai_compatible",
         model=model,
@@ -74,7 +66,6 @@ def refused_json(code: str, message: str) -> str:
 
 
 def completion(answer: Any, *, finish: Optional[str] = "stop", content: Optional[str] = None) -> str:
-    """A chat completion holding exactly what the model answered with."""
     text = content if content is not None else (
         answer if isinstance(answer, str) else json.dumps(answer)
     )
@@ -84,8 +75,6 @@ def completion(answer: Any, *, finish: Optional[str] = "stop", content: Optional
 
 
 class Endpoint:
-    """Answers per model and counts the sends each model actually cost."""
-
     def __init__(self, **by_model: Any) -> None:
         self.by_model = dict(by_model)
         self.sends: list[str] = []
@@ -107,14 +96,12 @@ def status(code: int, body: str) -> tuple[int, str]:
 
 
 def chain_of(*models: str, transport: Any = None, elsewhere=()) -> Chain:
-    """A chain over one endpoint and credential, except for any model named in ``elsewhere``."""
     apart = set(elsewhere)
     candidates = [stub(model, base_url=OTHER if model in apart else LOCAL) for model in models]
     return Chain(candidates, transport=transport)
 
 
 def reads(**answers: Any) -> Any:
-    """A record read that answers or fails per model, so a policy can be judged without a transport."""
     def ask(provider: Any) -> Any:
         model = str(provider.model)
         found = answers.get(model)
@@ -162,7 +149,6 @@ def test_a_candidate_inherits_the_configured_budget_and_timeout_rather_than_a_ne
     assert (found.provider, found.model) == ("ollama", "gemma3:27b")
     assert found.timeout_seconds == 37.5 and found.max_tokens == 999
     assert found.reasoning_effort == "low"
-    #: A candidate on another service is reached at that service's own address, not the one that refused.
     assert found.base_url is None and found.resolved_base_url() == "http://127.0.0.1:11434/v1"
 
 
@@ -287,7 +273,6 @@ def test_a_model_the_endpoint_will_not_serve_gives_the_next_candidate_its_turn()
 
 
 def test_a_rate_limit_closes_every_model_behind_the_same_endpoint_and_credential():
-    """A window belongs to the account, not the model: asking the second one would cost a refusal."""
     endpoint = Endpoint(first=(429, refused_json("rate_limit_exceeded", "Rate limit reached")))
     chain = chain_of("first", "second", transport=endpoint)
 
@@ -489,7 +474,6 @@ def test_a_chain_defers_what_it_could_not_read_and_a_resume_asks_again(tmp_path)
 
 
 def test_a_finished_reading_survives_a_later_run_that_could_not_read_it(tmp_path):
-    """A re-read a prompt change forced must not erase the only copy of what an earlier run read."""
     directory = tmp_path / "run"
     store = Checkpoint(directory)
     run_pipeline(
@@ -657,7 +641,6 @@ def test_the_chain_says_which_account_closed_and_never_the_credential():
 
 
 def test_the_report_names_the_chain_who_answered_and_the_turns_it_took():
-    """A reader has to see which model was configured, which one answered, and why they differ."""
     stream = io.StringIO()
     endpoint = Endpoint(
         first=status(404, refused_json("model_not_found", "The model `first` does not exist.")),
@@ -683,8 +666,6 @@ def test_the_report_names_the_chain_who_answered_and_the_turns_it_took():
 
 DEPLOYED = str(Path(__file__).resolve().parents[1] / "chain.openrouter.json")
 OPENROUTER = "https://openrouter.ai/api/v1"
-#: The shipped file, read here rather than restated, because which of the two is asked first is a
-#: deployment choice and what has to be true either way is the set of models and the order the file gives.
 ENTRIES = json.loads(Path(DEPLOYED).read_text(encoding="utf-8"))["candidates"]
 PRIMARY = ENTRIES[0]["model"]
 FALLBACK = ENTRIES[1]["model"]
@@ -692,11 +673,6 @@ OPENROUTER_MODELS = {"qwen/qwen3.8-flash", "openai/gpt-oss-120b"}
 
 
 def other_service() -> LLMConfig:
-    """The configuration this chain replaces: a different service, its own endpoint and credential.
-
-    A candidate inherits numbers from it, so a test has to show that none of what identifies a reader
-    came across - not the provider, not the model, not the endpoint and above all not its key.
-    """
     return LLMConfig(
         provider="groq",
         model="openai/gpt-oss-20b",
@@ -712,7 +688,6 @@ def deployed_keys(**extra: str) -> dict[str, str]:
 
 
 def deployed(endpoint: Any) -> Chain:
-    """The shipped chain, answered by a transport that keys on the model, so nothing leaves this test."""
     return build_chain(other_service(), environ=deployed_keys(), chain_path=DEPLOYED, transport=endpoint)
 
 
@@ -728,7 +703,6 @@ def test_the_deployed_chain_asks_the_named_model_first_and_the_other_one_second(
     ]
     assert [item.config.resolved_base_url() for item in candidates] == [OPENROUTER, OPENROUTER]
     assert [item.key_source for item in candidates] == ["OPENROUTER_API_KEY"] * 2
-    #: The budget is inherited so one run spends one timeout on either model.
     assert candidates[0].config.max_retries == 0 and candidates[0].config.max_tokens == 2048
     assert [item.provider for item in candidates] == [None, None], "naming is not asking"
     assert all(isinstance(item.build(), OpenAICompatibleProvider) for item in candidates)
@@ -765,8 +739,6 @@ def test_the_deployed_chain_never_carries_a_credential_from_the_configuration_it
         f"openai_compatible/{PRIMARY}",
         f"openai_compatible/{FALLBACK}",
     ]
-    #: No OpenRouter key means no credential at all, never the other service's: a run asks and is
-    #: refused for its own account, which is the honest report rather than a paid call elsewhere.
     assert [item.config.api_key for item in unheld] == [None, None]
 
 
@@ -791,7 +763,6 @@ def test_a_spent_openrouter_allowance_costs_the_deployed_chain_one_send():
     )
     assert chain.available() == []
 
-    #: The next record of the same run is deferred the same way, with nothing sent for it.
     with pytest.raises(ChainExhaustedError) as again:
         chain.read(lambda provider: provider.generate_structured(request()))
 
@@ -827,7 +798,6 @@ def test_a_model_openrouter_does_not_serve_gives_the_deployed_fallback_its_turn(
     assert answered.attempts[0].startswith(f"openai_compatible/{PRIMARY}: model:")
     assert endpoint.sends == [PRIMARY, FALLBACK]
 
-    #: A model nobody serves closes that candidate alone, so the next record goes straight to the survivor.
     chain.read(lambda provider: provider.generate_structured(request()))
 
     assert endpoint.sends == [PRIMARY, FALLBACK, FALLBACK]

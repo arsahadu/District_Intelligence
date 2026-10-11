@@ -1,5 +1,3 @@
-"""The GIS resolution boundary: a source's own geography stays source geography until GIS says so."""
-
 from __future__ import annotations
 
 import json
@@ -11,7 +9,9 @@ from intelligence import pipeline
 from intelligence.context import build_context
 from intelligence.contract import Incident
 from intelligence.contract import RecordKind, ReviewState, SourceGeography
-from intelligence.models.enums import ExtractionMethod, ResolutionState, SpanValidation
+from intelligence.geography import source_locations
+from intelligence.models.enums import ExtractionMethod
+from intelligence.models.enums import MentionRole, MentionType, ResolutionState, SpanValidation
 from intelligence.spans import revalidate
 from intelligence.structured import MODEL, PROVIDER
 from intelligence.structured import process_record as process_structured
@@ -23,6 +23,7 @@ from intelligence.tests.record_fixtures import (
 )
 
 GEOGRAPHY_PATHS = ["location.raw_text", "location.district", "location.state"]
+LOCATION_PATHS = ["location.raw_text", "location.district"]
 
 
 def geography_of(incident: Incident) -> dict[str, str]:
@@ -44,7 +45,22 @@ def test_a_price_line_keeps_the_place_name_and_the_place_identifier_apart():
     assert facts_of(incident)["data.district_id"] == "21"
     assert facts_of(incident)["data.market_id"] == "125"
     assert facts_of(incident)["data.market"] == "Anna nagar"
-    assert incident.locations == []
+    assert [
+        (item.text, item.location_type, item.district) for item in incident.locations
+    ] == [
+        ("Anna nagar Uzhavar Santhai, Madurai", MentionType.UNKNOWN, None),
+        ("Madurai", MentionType.DISTRICT, "Madurai"),
+    ]
+    assert (incident.entities, incident.relationships) == ([], [])
+
+
+def test_the_place_a_record_wrote_as_free_text_keeps_its_kind_unstated():
+    incident = process_structured(market_price())
+    free_text = incident.locations[0]
+
+    assert free_text.location_type is MentionType.UNKNOWN
+    assert "never said what kind of place it is" in (free_text.notes or "")
+    assert incident.locations[1].location_type is MentionType.DISTRICT
 
 
 def test_nothing_is_renamed_and_no_value_is_quietly_changed():
@@ -65,6 +81,51 @@ def test_a_forecast_is_still_read_with_no_model_and_keeps_its_geography():
     assert incident.validation.state is ReviewState.ACCEPTED
     assert set(geography_of(incident)) == set(GEOGRAPHY_PATHS)
     assert facts_of(incident)["data.station_id"] == "MDU"
+    assert [item.location_id for item in incident.locations] == ["loc-1", "loc-2"]
+    assert [item.district for item in incident.locations] == [None, "Madurai"]
+
+
+def test_a_declared_place_is_left_for_GIS_without_a_canonical_value_or_a_score():
+    incident = process_structured(weather_forecast())
+
+    for item in incident.locations:
+        assert (item.method, item.review) == (
+            ExtractionMethod.SOURCE_METADATA,
+            ReviewState.ACCEPTED,
+        )
+        assert item.role is MentionRole.EVENT_LOCATION
+        assert item.resolution_state is ResolutionState.PENDING_GIS
+        assert item.normalized_name is None
+        assert item.confidence is None
+        assert (item.canonical_location_id, item.latitude, item.longitude) == (None, None, None)
+        assert "only GIS" in (item.notes or "") or "never said what kind" in (item.notes or "")
+
+
+def test_a_location_cites_the_same_field_evidence_as_the_geography_entry_behind_it():
+    incident = process_structured(market_price())
+    context = build_context(market_price())
+    held = {item.field: item.text for item in context.geography}
+
+    for index, entry in enumerate(incident.source_geography, start=1):
+        aligned = [item for item in incident.locations if item.location_id == f"loc-{index}"]
+        if entry.field not in LOCATION_PATHS:
+            assert aligned == []
+            continue
+        location = aligned[0]
+        assert location.text == held[entry.field]
+        assert location.evidence_ids == entry.evidence_ids
+        evidence = incident.resolve_evidence(location.evidence_ids)
+        assert [item.field for item in evidence] == [entry.field]
+    assert [item.field for item in incident.source_geography] == GEOGRAPHY_PATHS
+    assert Incident.model_validate(incident.to_storage_document()) == incident
+
+
+def test_only_the_slots_a_location_can_hold_become_locations():
+    state = [item for item in process_structured(market_price()).source_geography
+             if item.field == "location.state"]
+
+    assert [item.field for item in state] == ["location.state"]
+    assert source_locations(state) == []
 
 
 def test_a_narrative_record_carries_its_source_geography_beside_pending_locations():
@@ -76,6 +137,9 @@ def test_a_narrative_record_carries_its_source_geography_beside_pending_location
     for location in incident.locations:
         assert location.resolution_state is ResolutionState.PENDING_GIS
         assert (location.canonical_location_id, location.latitude) == (None, None)
+    assert [(item.text, item.method) for item in incident.locations] == [
+        ("மதுரை", ExtractionMethod.LLM)
+    ]
 
 
 def test_the_record_s_own_geography_is_never_sent_to_the_model():
@@ -90,10 +154,13 @@ def test_an_identifier_with_no_place_named_stays_a_bare_identifier():
     incident = process_structured(market_price(district=None))
 
     assert [item.field for item in incident.source_geography] == ["location.state"]
+    assert incident.locations == []
     assert facts_of(incident)["data.district_id"] == "21"
     assert "Madurai" not in json.dumps(incident.to_storage_document(), ensure_ascii=False)
 
-    assert process_structured(dict(market_price(), location={})).source_geography == []
+    bare = process_structured(dict(market_price(), location={}))
+    assert bare.source_geography == [] and bare.locations == []
+    assert [item.evidence_id for item in bare.evidence if item.field.startswith("location.")] == []
 
 
 def test_the_boundary_holds_no_canonical_side_and_no_model_may_fill_it():

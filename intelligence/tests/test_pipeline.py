@@ -1,5 +1,3 @@
-"""The semantic chain: a CommonRecord in, one LLM call, an Incident that only says what the record does."""
-
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -43,8 +41,10 @@ from intelligence.tests.record_fixtures import (
     base_record,
     crop_distress_report,
     events_listing,
+    keyword_bait_article,
     market_price,
     mixed_language_article,
+    orange_alert,
     weather_forecast,
     weather_warning,
     waterlogging,
@@ -64,7 +64,6 @@ def synth(content: str, *, title: str = "District report", language: str = "en",
 
 
 def run(payload: Any, record: Optional[dict] = None):
-    """The semantic chain only: routing is the orchestrator's decision, not the LLM's."""
     subject = record if record is not None else waterlogging()
     return extract_incident(subject, provider=Scripted(payload=payload))
 
@@ -323,13 +322,16 @@ def test_a_price_line_grounds_on_its_own_numbers_and_stays_a_contextual_record()
     assert found.description == "55.0"
     assert found.record_kind is RecordKind.CONTEXT
     assert found.context_type is ContextType.MARKET_PRICE
-    assert found.category is IncidentCategory.AGRICULTURE
+    assert found.category is IncidentCategory.UNRESOLVED
+    assert found.claim("category").review is ReviewState.REVIEW_REQUIRED
+    assert any(item.code is IssueCode.UNSUPPORTED_CLAIM and item.field == "category"
+               for item in found.validation.issues)
     assert found.severity is SeverityLevel.UNRESOLVED
     assert found.incident_type is EventType.UNRESOLVED
     assert found.event_status is EventStatus.UNKNOWN
     assert found.priority is None
     assert found.locations == [] and found.entities == []
-    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
     cited = found.evidence_by_id()[found.claim("description").evidence_ids[0]]
     assert (cited.field, cited.quote) == ("data.min_price", "55.0")
 
@@ -364,7 +366,6 @@ FRAUD_TITLE = "Investment fraud probe"
 
 
 def test_a_classification_is_accepted_from_the_event_it_describes_not_its_token():
-    """The Melur case: nothing in the text says fraud, police or investigation in English."""
     record = synth(FRAUD, title=FRAUD_TITLE, language="en")
     found = run({
         "title": {"value": FRAUD_TITLE, "field": "title"},
@@ -421,7 +422,6 @@ def test_the_prompt_reads_an_event_from_the_body_instead_of_a_token_from_the_hea
 
 
 def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised():
-    """One completion has a size. The overflow is dropped, and the drop is said out loud."""
     record = synth(FRAUD, title=FRAUD_TITLE, language="en")
     found = run({
         "title": {"value": FRAUD_TITLE, "field": "title"},
@@ -444,7 +444,6 @@ def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised
 
 
 def test_a_tamil_incident_is_classified_from_its_own_words_and_keeps_a_short_description():
-    """Nothing here says crop, agriculture or flood in English, and the description is a restatement."""
     record = crop_distress_report()
     c = record["data"]["content"]
     found = run({
@@ -586,7 +585,6 @@ CYCLONE_DAMAGE = (
 
 
 def test_weather_text_that_reports_the_damage_is_an_incident_even_if_named_a_forecast():
-    """A forecast is what a record promises; text that states damage already happened is an event."""
     record = synth(CYCLONE_DAMAGE, title="புயலில் மரம், வீடு சேதம்", language="ta")
     found = run({
         "record_kind": "forecast",
@@ -645,7 +643,6 @@ CASUALTY_TAMIL = (
 
 
 def test_a_tamil_police_probe_gets_its_department_and_its_status_from_the_sentence():
-    """Nothing in this record says police or investigation in English, and harm is never stated."""
     record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
     found = run({
         "record_kind": "incident",
@@ -934,7 +931,6 @@ def test_an_account_read_from_the_body_cites_the_body_and_never_the_headline():
 
 
 def test_an_incident_nobody_could_describe_is_reported_instead_of_accepted():
-    """A genuine event still owes an account: silence on description is said, not swallowed."""
     record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
     event = {
         "record_kind": "incident",
@@ -1042,7 +1038,6 @@ def test_the_prompt_decides_kind_status_normalisation_and_confidence_by_its_own_
 
 
 def test_the_rules_the_model_is_given_are_the_same_for_every_source():
-    """No per-source branch: only the record's own fields and metadata ever change."""
     def rules_for(record: dict) -> str:
         system = extraction_request(build_context(record)).system
         return system.split("Rules:\n")[1].split("Tokens per enumerated field")[0]
@@ -1210,7 +1205,6 @@ def test_quoted_field_values_with_no_evidenced_event_are_read_as_a_contextual_re
 
 
 def test_one_classification_the_evidence_could_not_support_leaves_an_incident_an_incident():
-    """Rule 8: the kind is settled by the event, not by how every field after it read."""
     record = waterlogging()
     content = record["data"]["content"]
     account = water_answer()
@@ -1255,7 +1249,6 @@ def test_one_classification_the_evidence_could_not_support_leaves_an_incident_an
 
 
 def test_an_incident_without_its_clock_or_its_urgency_says_why_both_stay_null():
-    """A null the dashboard reads is a finding the pipeline owns, not a silent gap."""
     record = waterlogging()
     answer = {
         key: value
@@ -1304,9 +1297,6 @@ def probe_record() -> dict[str, Any]:
 
 
 def probe_answer() -> dict[str, Any]:
-    """The Melur economic-offences case as one live answer read it: the fraud, the case registered
-    and the wing still investigating are all in the body, yet the answer filed the record as an
-    administrative notice and kept the money as a value."""
     return {
         "record_kind": "context",
         "context_type": "administrative_notice",
@@ -1325,7 +1315,6 @@ def probe_answer() -> dict[str, Any]:
 
 
 def test_a_happening_the_answer_labelled_context_is_still_read_as_an_incident():
-    """Stage 2.8 ordering: an evidenced occurrence outranks quoted field values and a wrong label."""
     found = run(probe_answer(), probe_record())
 
     assert found.record_kind is RecordKind.INCIDENT
@@ -1397,8 +1386,6 @@ def test_a_price_line_and_a_forecast_keep_their_kinds_when_their_prose_is_summar
             "description": {"value": "Tomato sold at Rs 55 a kg in Anna nagar.",
                             "field": "data.commodity", "quote": "Tomato", "char_start": 0,
                             "confidence": 0.6},
-            "category": {"value": "agriculture", "field": "data.commodity", "quote": "Tomato",
-                         "char_start": 0, "confidence": 0.7},
             "context_facts": [{"field": "data.min_price", "value": "55.0", "quote": "55.0",
                                "char_start": 0, "confidence": 0.9}],
         },
@@ -1477,7 +1464,6 @@ CAPTURE_STAMP = RETRIEVED_AT.split(".")[0]
 
 
 def stamp_answer(*, stamp: str) -> tuple[dict, dict]:
-    """One waterlogging account whose body carries a timestamp, so the stamp is quotable prose."""
     body = (
         f"The portal stamped this page {stamp}. Water stood on three roads after heavy rain "
         "and officials were still monitoring the situation."
@@ -1595,12 +1581,10 @@ TANKER_SPAN = "12 டேங்கர் லாரிகள்"
 
 
 def shortage_record(**fields: Any) -> dict:
-    """A district water-shortage body: the subject word recurs, the actor is named once."""
     return synth(SHORTAGE_TAMIL, title="குடிநீர் இல்லாத செல்லூர்", language="ta", **fields)
 
 
 def shortage_answer() -> dict[str, Any]:
-    """A clean reading of such a body: every classification field cites the clause that carries it."""
     body = SHORTAGE_TAMIL
     return {
         "record_kind": "incident",
@@ -1617,7 +1601,6 @@ def shortage_answer() -> dict[str, Any]:
 
 
 def repeated_word(payload: dict[str, Any]) -> dict[str, Any]:
-    """The same answer with both classification fields pointed at the word the article repeats."""
     for name, token in (("category", "water"), ("department", "water_resources")):
         payload[name] = {"value": token, "field": CONTENT, "quote": WATER_WORD, "confidence": 0.8}
     return payload
@@ -1764,9 +1747,29 @@ def test_an_answer_that_omits_the_clock_leaves_it_unresolved_though_the_record_d
 
     assert found.event_time is None
     assert found.event_time_precision is TimePrecision.UNKNOWN
+    assert found.provenance.declared_event_time.isoformat() == "2026-10-02T17:45:00"
+    assert found.provenance.declared_event_time_precision is TimePrecision.UNKNOWN
     said = " ".join(found.generation.warnings)
     assert "event_time stays unresolved" in said
     assert "the record's clock" not in said
+
+
+def test_a_declaration_written_as_a_day_is_kept_as_a_day_when_the_answer_gave_no_clock():
+    record = shortage_record(event_time="2026-10-02")
+    found = run(shortage_answer(), record)
+
+    assert found.event_time is None
+    assert found.provenance.declared_event_time.isoformat() == "2026-10-02T00:00:00"
+    assert found.provenance.declared_event_time_precision is TimePrecision.DAY
+
+
+def test_a_record_that_printed_no_time_is_not_given_one_by_its_provenance():
+    record = shortage_record(event_time=None)
+    found = run(shortage_answer(), record)
+
+    assert found.event_time is None
+    assert found.provenance.declared_event_time is None
+    assert found.provenance.declared_event_time_precision is None
 
 
 def test_the_prompt_holds_the_stage_2_10_rules_for_the_span_that_carries_each_answer():
@@ -1779,3 +1782,78 @@ def test_the_prompt_holds_the_stage_2_10_rules_for_the_span_that_carries_each_an
     assert "an offset that is nearly right is refused as flatly as one that is far wrong" in rules
     assert "a translated or glossed value is not a copy even when its quote is verbatim" in rules
     assert "never quote the page's date stamp to dress that" in rules
+
+
+OUTAGE_WINDOW = "காலை 10:00 மணி முதல் மதியம் 2:00 மணி வரை"
+DENGUE_TREATMENT = "டெங்கு சிகிச்சை"
+
+
+def test_a_band_the_record_printed_about_itself_is_kept_as_a_declaration_not_a_severity():
+    record = orange_alert()
+    body = record["data"]["content"]
+    found = run({"record_kind": "incident", "description": quote(body, OUTAGE_WINDOW)}, record)
+
+    assert "மின்தடை" not in body
+    assert found.provenance.declared_severity == "Orange Alert"
+    assert found.provenance.declared_status == "UPDATED"
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.event_status is EventStatus.UNKNOWN
+    assert found.priority is None
+    assert found.title == record["title"]
+    assert found.claim("title").method is ExtractionMethod.SOURCE_METADATA
+    assert found.claim("title").review is ReviewState.ACCEPTED
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert any(
+        issue.code is IssueCode.PROVIDER_WARNING and issue.field == "incident_type"
+        for issue in found.validation.issues
+    )
+
+
+def test_disaster_words_alone_hold_a_meeting_report_for_a_person_instead_of_a_case():
+    record = keyword_bait_article()
+    body = record["data"]["content"]
+    found = run(
+        {
+            "record_kind": "incident",
+            "incident_type": quote(body, DENGUE_TREATMENT) | {"value": "disease_outbreak"},
+            "severity": quote(body, DENGUE_TREATMENT) | {"value": "high"},
+        },
+        record,
+    )
+
+    assert found.description is None
+    assert found.claim("description") is None
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert found.review_required is True
+    assert any(
+        issue.code is IssueCode.PROVIDER_WARNING and issue.field == "description"
+        for issue in found.validation.issues
+    )
+    assert found.title == record["title"]
+
+
+TSUNAMI_QUESTION = (
+    "A residents' association in Madurai has asked whether a tsunami could reach the district. "
+    "Officials said no warning has been issued and no sea surge was recorded anywhere nearby."
+)
+
+
+def test_a_hypothetical_disaster_question_is_held_rather_than_read_as_a_happening():
+    record = synth(TSUNAMI_QUESTION, title="Tsunami question raised in Madurai")
+    found = run(
+        {
+            "record_kind": "incident",
+            "description": quote(TSUNAMI_QUESTION, "no warning has been issued"),
+            "incident_type": quote(TSUNAMI_QUESTION, "tsunami") | {"value": "tsunami"},
+        },
+        record,
+    )
+
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert any(
+        issue.code is IssueCode.INVALID_VALUE and issue.field == "incident_type"
+        for issue in found.validation.issues
+    )
+    assert found.description == "no warning has been issued"

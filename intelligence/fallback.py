@@ -1,31 +1,3 @@
-"""The ordered model chain: who else is asked when the configured model cannot answer, and what each
-refusal means.
-
-One model is the configuration the project has always had, and it stays the default: with no chain
-named, this module hands back exactly that one candidate and behaves exactly as a single provider
-does. A chain is only ever a list of *configured* candidates - each one states a provider, a model
-and the environment variable holding its credential - because a fallback to a model nobody verified
-is a second way to fail, and a fallback to another model behind the same exhausted allowance is a
-request that cannot succeed.
-
-What decides whether the next candidate is asked is the kind of refusal, read here and nowhere else:
-
-``quota`` / ``rate``   the endpoint refused on its allowance or its window. Every candidate sharing
-                        that endpoint and credential is closed for the run: the refusal was addressed
-                        to the account, not to the model. A candidate on another account may still
-                        answer, and if none can, the record is deferred for a later run.
-``auth``               the credential was refused. Nothing about the next record will change that, and
-                        every model behind that credential is unreachable for the same reason.
-``model``              this endpoint will not serve this model. The endpoint is fine; the next
-                        candidate is asked, and this one is not asked again this run.
-``unreachable``        the connection failed or timed out. A later run may find it up, so records the
-                        chain could not place are deferred, not failed.
-``output`` / ``shape`` the model answered and what it answered with cannot be read. Worth another
-                        model's turn on this record: nothing is repaired, and the failure is kept.
-``record``             the record itself could not be read. Another model would fail on it the same
-                        way, so the chain stops and the orchestrator's own diagnosis stands.
-"""
-
 from __future__ import annotations
 
 import json
@@ -59,14 +31,10 @@ from intelligence.llm import (
 )
 from intelligence.records import MappingError
 
-#: A JSON file naming the candidates, in the order they are asked. Unset means one candidate: the
-#: ``INTELLIGENCE_LLM_*`` configuration exactly as it stands.
 ENV_CHAIN_FILE = ENV_PREFIX + "CHAIN_FILE"
 
-#: One record walks the whole chain, so a long chain is a long wait rather than a better answer.
 MAX_CANDIDATES = 4
 
-#: The keys one candidate may state. Anything else in the file is a mistake, not an unknown default.
 CANDIDATE_KEYS = (
     "provider",
     "model",
@@ -79,25 +47,14 @@ CANDIDATE_KEYS = (
     "max_tokens",
     "reasoning_effort",
 )
-#: Carried over from the ``INTELLIGENCE_LLM_*`` configuration unless the candidate states its own.
 INHERITED_KEYS = tuple(key for key in CANDIDATE_KEYS if key not in ("provider", "model", "api_key_env"))
 NUMBER_KEYS = ("timeout_seconds", "max_wait_seconds", "temperature")
 INTEGER_KEYS = ("max_retries", "max_tokens")
 
-#: How a refusal that ended the asking is described, strongest first. A spent allowance outranks a
-#: busy window because nothing that helps a window helps an exhausted account, and a refused
-#: credential is named before either: no later run reads anything until it is fixed.
 STOP_KINDS = ("quota", "auth", "rate", "unreachable", "model")
 
 
 class ChainExhaustedError(LLMError):
-    """No candidate is left that this run could ask, so what was not read is left for a later one.
-
-    ``kind`` names the refusal that ended the asking: a spent allowance, a busy window, an endpoint
-    that is down, a credential refused or a model nobody serves. None of them is a statement about
-    the record, which is why the records after it are deferred rather than failed.
-    """
-
     def __init__(self, message: str, *, kind: str, attempts: Sequence[str] = ()) -> None:
         super().__init__(message)
         self.kind = kind
@@ -105,19 +62,12 @@ class ChainExhaustedError(LLMError):
 
 
 class ChainFailedError(TransportError):
-    """Every candidate had its turn at this record and none produced an answer that could be read.
-
-    The candidates are still worth asking - the refusal was about this record, not about the account -
-    so the run continues and this record is reported as a failure naming each attempt.
-    """
-
     def __init__(self, message: str, *, attempts: Sequence[str] = ()) -> None:
         super().__init__(message)
         self.attempts = tuple(attempts)
 
 
 def classify(error: BaseException) -> str:
-    """Which of the documented refusals this is. Order matters: each type is more specific than the last."""
     if isinstance(error, QuotaExhaustedError):
         return "quota"
     if isinstance(error, RateLimitedError):
@@ -149,13 +99,10 @@ def _origin(config: LLMConfig) -> str:
 
 
 class Candidate:
-    """One configured model, its own turn at a record, and the reason it stopped taking turns."""
-
     def __init__(self, config: LLMConfig, *, key_source: str = ENV_API_KEY) -> None:
         self.config = config
         self.key_source = key_source
         self.provider: Optional[LLMProvider] = None
-        #: Set when this candidate must not be asked again this run, with the reason it was set.
         self.closed: Optional[str] = None
         self.closed_kind = ""
 
@@ -169,16 +116,9 @@ class Candidate:
 
     @property
     def scope(self) -> str:
-        """The account this candidate shares its limits with: one endpoint, one credential.
-
-        Two models behind one key are one allowance, which is what a provider's own refusal says when
-        it names the project rather than the model. Nothing here assumes two candidates on different
-        endpoints are independent until one of them has refused.
-        """
         return f"{_origin(self.config)}|{self.key_source}"
 
     def build(self, *, transport: Optional[Transport] = None) -> LLMProvider:
-        """The provider object, made once. Configuration that cannot produce one is refused by name."""
         if self.provider is None:
             provider_class = PROVIDERS.get(self.config.provider)
             if provider_class is None:
@@ -204,23 +144,13 @@ class Candidate:
 
 @dataclass(frozen=True)
 class Answered:
-    """What a record came back with, and which candidate the turn was worth crediting."""
-
     result: Any
     label: str
     identity: tuple[str, str]
-    #: Every candidate that was skipped or refused before this one, in order, with the reason.
     attempts: tuple[str, ...] = ()
 
 
 class Chain:
-    """The candidates one run may ask, in order, and what each of them has already refused.
-
-    State is per run: a scope that refused on its allowance stays closed for every later record, so a
-    busy endpoint costs one refusal rather than one per record. It is a run's state, not a durable
-    one - the next run asks again, which is the whole point of deferring instead of failing.
-    """
-
     def __init__(
         self,
         candidates: Sequence[Candidate],
@@ -231,7 +161,6 @@ class Chain:
         if not candidates:
             raise ProviderNotConfigured("no candidate to ask: the model chain is empty")
         self.candidates = list(candidates)
-        #: Candidates the configuration named but this run could not verify, so they were dropped.
         self.problems = list(problems)
         self.transport = transport
         self.answered_by: dict[str, int] = {}
@@ -241,7 +170,6 @@ class Chain:
 
     @classmethod
     def single(cls, provider: LLMProvider) -> "Chain":
-        """One provider, already built: what a caller that passes ``provider=`` means."""
         config = getattr(provider, "config", None)
         if isinstance(config, LLMConfig) and config.model:
             candidate = Candidate(config)
@@ -272,12 +200,6 @@ class Chain:
             ]
 
     def scopes_note(self) -> str:
-        """Each account the chain was configured against and what it has refused so far.
-
-        Names the endpoint and the variable holding the credential, never the credential: two models
-        at one endpoint under one variable are one allowance, and that is what a report has to show
-        for a reader to see why a second model was not asked.
-        """
         with self._lock:
             rows = []
             for candidate in self.candidates:
@@ -294,11 +216,6 @@ class Chain:
             return "; ".join(rows)
 
     def read(self, ask: Callable[[LLMProvider], Any]) -> Answered:
-        """Ask each candidate in turn until one produces an answer. One send per candidate, at most.
-
-        ``ask`` is the whole record read - provider call, grounding and contract assembly - because
-        whether a candidate succeeded is decided by the validated result, not by the HTTP status.
-        """
         attempts: list[str] = []
         last: Optional[BaseException] = None
         for candidate in self.candidates:
@@ -309,9 +226,8 @@ class Chain:
             try:
                 outcome = ask(candidate.build(transport=self.transport))
             except (MappingError, ValidationError) as error:
-                #: This record's own read, whoever was asked. Another model fails the same way.
                 raise error
-            except Exception as error:  # noqa: BLE001 - every provider failure is classified, none repaired
+            except Exception as error:
                 kind = classify(error)
                 attempts.append(f"{candidate.label}: {kind}: {_short(error)}")
                 last = error
@@ -344,7 +260,6 @@ class Chain:
         )
 
     def _block(self, candidate: Candidate) -> Optional[str]:
-        """Why this candidate is not asked, from what an earlier record's refusal said."""
         with self._lock:
             if candidate.closed is not None:
                 return candidate.closed
@@ -353,12 +268,9 @@ class Chain:
         return None
 
     def _note(self, candidate: Candidate, kind: str, error: BaseException) -> None:
-        """What a refusal means for the rest of the run. Only refusals about the endpoint stick."""
         reason = f"{kind}: {_short(error)}"
         with self._lock:
             if kind in ("quota", "rate", "auth", "unreachable"):
-                #: A limit, a credential and a dead socket all belong to the endpoint, not to the
-                #: model: every candidate sharing that endpoint and key is refused for this run.
                 self._closed_scopes.add(candidate.scope)
                 self._stop_kinds.add(kind)
             if kind in ("auth", "model"):
@@ -366,7 +278,6 @@ class Chain:
                 self._stop_kinds.add(kind)
 
     def _stop_kind(self) -> str:
-        """The refusal to name in the report, strongest first."""
         with self._lock:
             kinds = set(self._stop_kinds)
         for kind in STOP_KINDS:
@@ -378,29 +289,21 @@ class Chain:
 def _model_of(provider: LLMProvider) -> str:
     try:
         return str(provider.model or "")
-    except Exception:  # noqa: BLE001 - a double that cannot name its model names nothing
+    except Exception:
         return ""
 
 
 def _short(error: BaseException) -> str:
-    """One line of what the provider actually said, with no request and therefore no credential."""
     return " ".join(str(error).split())[:300]
 
 
 def _tail(attempts: Sequence[str]) -> str:
-    """Every turn the chain took, kept in the message that reports it, so the reason for a fallback
-    survives into the checkpoint instead of living only in the run that made it."""
     if not attempts:
         return ""
     return " - turns: " + "; ".join(attempt[:220] for attempt in attempts)[:900]
 
 
 def env_source(environ: Optional[Mapping[str, str]] = None) -> Mapping[str, str]:
-    """The environment the chain is read from: the file first, then the real variables.
-
-    An explicit ``environ`` is used as-is and never touches ``.env``, the same rule ``LLMConfig``
-    follows, so a test cannot inherit a live key.
-    """
     if environ is not None:
         return dict(environ)
     load_dotenv_file()
@@ -408,7 +311,6 @@ def env_source(environ: Optional[Mapping[str, str]] = None) -> Mapping[str, str]
 
 
 def _entries(path: str) -> list[Any]:
-    """The candidates a chain file names, or the configuration error that stops the run."""
     try:
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
@@ -438,12 +340,6 @@ def _entries(path: str) -> list[Any]:
 def _verify(
     entry: Any, number: int, source: Mapping[str, str], base: LLMConfig
 ) -> tuple[Optional[Candidate], str]:
-    """One entry as a candidate, or the reason this run will not ask it.
-
-    A candidate states what makes it a different reader - provider, model, endpoint, credential - and
-    inherits the rest of ``INTELLIGENCE_LLM_*``, so one budget and one timeout govern the whole chain
-    unless an entry says otherwise.
-    """
     where = f"candidate {number}"
     if not isinstance(entry, Mapping):
         return None, f"{where} is {type(entry).__name__}, expected an object naming a provider and a model"
@@ -492,8 +388,6 @@ def _verify(
     key_source = str(entry.get("api_key_env") or ENV_API_KEY)
     api_key = (source.get(key_source) or "").strip() or None
     if provider != base.provider and not str(entry.get("base_url") or "").strip():
-        #: A candidate on another service is reached at that service's own address. Inheriting the
-        #: configured endpoint would send the fallback to the machine that has just refused it.
         fields["base_url"] = None
     config = replace(base, **fields)
     if PROVIDERS[provider].requires_api_key and not api_key:
@@ -507,11 +401,6 @@ def _verify(
 def chain_named(
     environ: Optional[Mapping[str, str]] = None, chain_path: Optional[str] = None
 ) -> bool:
-    """Whether a chain file was stated, without reading it.
-
-    A run that was never pointed at one keeps the single reader it always had, so a chain file that
-    cannot be read cannot abort a batch whose records need no reading at all.
-    """
     if (chain_path or "").strip():
         return True
     return bool((env_source(environ).get(ENV_CHAIN_FILE) or "").strip())
@@ -523,11 +412,6 @@ def chain_configs(
     environ: Optional[Mapping[str, str]] = None,
     chain_path: Optional[str] = None,
 ) -> tuple[list[Candidate], list[str]]:
-    """The candidates this configuration names, in the order they are asked, plus what was dropped.
-
-    Called before a run decides what it still has to read: it names no endpoint and asks no question,
-    so a run that reuses everything it selected never authenticates a model.
-    """
     source = env_source(environ)
     settings = base or LLMConfig.from_env(None if environ is None else dict(environ))
     path = (chain_path or source.get(ENV_CHAIN_FILE) or "").strip()
@@ -543,7 +427,6 @@ def chain_configs(
             continue
         candidates.append(candidate)
     if not candidates:
-        #: A chain that asks nothing is a configuration failure, not a run that reads without a model.
         raise ProviderNotConfigured(
             f"{ENV_CHAIN_FILE}={path} leaves no candidate to ask: {'; '.join(problems)}"
         )
@@ -557,7 +440,6 @@ def build_chain(
     chain_path: Optional[str] = None,
     transport: Optional[Transport] = None,
 ) -> Chain:
-    """The chain a run asks: the file's candidates, or the one model ``INTELLIGENCE_LLM_*`` names."""
     candidates, problems = chain_configs(base, environ=environ, chain_path=chain_path)
     return Chain(candidates, problems=problems, transport=transport)
 

@@ -1,5 +1,3 @@
-"""Evidence is the traceability primitive: it validates, and it cannot lie."""
-
 from __future__ import annotations
 
 import hashlib
@@ -42,7 +40,6 @@ def test_field_text_hash_matches_sha256_of_original_field():
 
 
 def test_quote_length_must_match_declared_offsets():
-    """A hand-written span - the way an LLM would fake one - is rejected."""
     with pytest.raises(ValidationError, match="quote length must equal"):
         Evidence(
             evidence_id="ev-bad",
@@ -53,7 +50,7 @@ def test_quote_length_must_match_declared_offsets():
             method=ExtractionMethod.RULE,
             quote="மதுரையில்",
             char_start=100,
-            char_end=104,  # deliberately wrong
+            char_end=104,
         )
 
 
@@ -153,7 +150,6 @@ def test_confidence_is_constrained_to_the_unit_interval():
 
 
 def test_confidence_rejects_strings_and_booleans():
-    """Coercing "0.9" or true into a probability hides bad upstream output."""
     base = {
         "evidence_id": "ev-1",
         "record_id": RECORD_ID,

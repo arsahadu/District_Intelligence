@@ -1,5 +1,3 @@
-"""The only place in Intelligence that knows how a CommonRecord is spelled."""
-
 from __future__ import annotations
 
 import json
@@ -7,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
+from intelligence.models.enums import TimePrecision
 from intelligence.spans import compute_field_hash
 
 TITLE_PATH = "title"
@@ -26,21 +25,19 @@ _MISSING = object()
 
 
 class MappingError(ValueError):
-    """Base for the record seam's failures."""
+    ...
 
 
 class RecordShapeError(MappingError):
-    """The object is not record-shaped: a caller or configuration mistake."""
+    ...
 
 
 class UnreadableRecord(MappingError):
-    """Well-shaped, but holding no text this module is allowed to read."""
+    ...
 
 
 @runtime_checkable
 class CommonRecordLike(Protocol):
-    """The structural contract `read_record` relies on. Never imported from ingestion."""
-
     record_id: str
     source_id: str
     source_type: str
@@ -58,8 +55,6 @@ class CommonRecordLike(Protocol):
 
 @dataclass(frozen=True)
 class RecordInput:
-    """One record read structurally: text kept verbatim, scalars kept as text."""
-
     record_id: str
     source_id: str
     source_type: str
@@ -68,6 +63,7 @@ class RecordInput:
     source_url: Optional[str] = None
     raw_reference: Optional[str] = None
     event_time: Optional[datetime] = None
+    event_time_precision: Optional[TimePrecision] = None
     severity: Optional[str] = None
     status: Optional[str] = None
     district: Optional[str] = None
@@ -109,11 +105,13 @@ class RecordInput:
             "notes": list(self.notes),
             "unused_data_keys": list(self.unused_data_keys),
         }
+        # the key appears only for a bare date, so a clock-time stamp keeps the input_hash it had before
+        if self.event_time_precision is not None:
+            payload["event_time_precision"] = self.event_time_precision.value
         return payload
 
 
 def input_hash(record: RecordInput) -> str:
-    """One hash over everything the mapper read, so a re-run can prove it read the same input."""
     return compute_field_hash(record.canonical())
 
 
@@ -123,7 +121,6 @@ def read_record(
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
 ) -> RecordInput:
-    """Read a CommonRecord-shaped object; only the title and declared text keys become body text."""
     if isinstance(obj, RecordInput):
         return obj
 
@@ -213,6 +210,7 @@ def read_record(
         source_url=optionals["source_url"],
         raw_reference=optionals["raw_reference"],
         event_time=event_time,
+        event_time_precision=declared_precision(event_time_value),
         severity=optionals["severity"],
         status=optionals["status"],
         district=district,
@@ -274,6 +272,20 @@ def _moment(value: Any, path: str, obj: Any) -> datetime:
     raise RecordShapeError(
         f"{_describe(obj)} field {path!r} must be a datetime, got {type(value).__name__}"
     )
+
+
+def declared_precision(value: Any) -> Optional[TimePrecision]:
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return TimePrecision.DAY
+    if isinstance(value, str):
+        try:
+            date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+        return TimePrecision.DAY
+    return None
 
 
 def _is_scalar(value: Any) -> bool:

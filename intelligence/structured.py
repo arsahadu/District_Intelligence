@@ -1,5 +1,3 @@
-"""Structured records are copied from the fields they hold. No model is asked."""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -17,8 +15,8 @@ from intelligence.contract import (
     SCHEMA_VERSION,
     Validation,
 )
-from intelligence.geography import source_geography
-from intelligence.models.enums import ExtractionMethod, Modality
+from intelligence.geography import source_geography, source_locations
+from intelligence.models.enums import ExtractionMethod, Modality, TimePrecision
 from intelligence.models.evidence import Evidence
 from intelligence.records import CONTENT_PATH
 from intelligence.spans import SourceField
@@ -26,22 +24,33 @@ from intelligence.spans import SourceField
 DATA_PREFIX = "data."
 TITLE_PATH = "title"
 
-#: Stated on every structured result so no reader takes this for a model's answer.
 PROVIDER = "intelligence.structured"
 MODEL = "none"
-MAPPING_VERSION = "structured-1"
+MAPPING_VERSION = "structured-3"
 NO_MODEL = "no language model was called: every value here was copied from the record's own fields"
+NO_EVENT_FIELDS = (
+    "incident_type, category, department, severity, priority and event_status each answer a "
+    "question about a happening - which event, whose job, how much harm, how soon to act, whether "
+    "it is still going - and a record filed as a forecast or as context states no happening, so "
+    "these five hold the contract's absence values by design and an accepted reading of them is "
+    "not a failed one: what the record means is its context_type and the field values it carries "
+    "as context_facts"
+)
+
+EVENT_TIME_NOTE = "copied from the record's own event_time"
+DATE_ONLY_NOTE = (
+    f"{EVENT_TIME_NOTE}, which the record wrote as a date carrying no clock time: the value is "
+    "that day and event_time_precision says so, so the midnight is the day's stamp and never a "
+    "moment the record stated"
+)
 
 VALIDATOR_NAME = "intelligence.structured"
 
-#: What the feed's own ``record_type`` says the record is.
 KIND_BY_RECORD_TYPE: dict[str, tuple[RecordKind, ContextType]] = {
     "forecast": (RecordKind.FORECAST, ContextType.WEATHER_FORECAST),
     "market_price": (RecordKind.CONTEXT, ContextType.MARKET_PRICE),
 }
 
-#: For a structured feed whose record_type this table has no name for. A weather page states what
-#: the weather is likely to do; nothing else may be assumed, so an unknown shape is just context.
 KIND_BY_SOURCE_TYPE: dict[str, tuple[RecordKind, ContextType]] = {
     "weather": (RecordKind.FORECAST, ContextType.WEATHER_FORECAST),
 }
@@ -61,16 +70,10 @@ def process_record(
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
 ) -> Incident:
-    """One structured CommonRecord, read with no provider and no prompt."""
     return process_context(build_context(record, text_keys=text_keys, extra_keys=extra_keys))
 
 
 def process_context(context: RecordContext) -> Incident:
-    """Every value the record carries becomes a fact pointing at the field that holds it.
-
-    Nothing outside those fields is filled in, and the record's own geography is handed to the GIS
-    boundary beside them, under the same paths and the same words.
-    """
     record = context.record
     evidence: list[Evidence] = []
     claims: list[Claim] = []
@@ -101,7 +104,11 @@ def process_context(context: RecordContext) -> Incident:
                 value=record.event_time.isoformat(),
                 method=ExtractionMethod.SOURCE_METADATA,
                 review=ReviewState.ACCEPTED,
-                notes="copied from the record's own event_time",
+                notes=(
+                    DATE_ONLY_NOTE
+                    if record.event_time_precision is TimePrecision.DAY
+                    else EVENT_TIME_NOTE
+                ),
             )
         )
 
@@ -127,6 +134,10 @@ def process_context(context: RecordContext) -> Incident:
     geography, geography_evidence = source_geography(context.geography)
     evidence.extend(geography_evidence)
 
+    warnings = [NO_MODEL]
+    if record_kind in (RecordKind.FORECAST, RecordKind.CONTEXT):
+        warnings.append(NO_EVENT_FIELDS)
+
     return Incident(
         schema_version=SCHEMA_VERSION,
         incident_id=f"INC-{record.record_id}",
@@ -135,7 +146,9 @@ def process_context(context: RecordContext) -> Incident:
         context_type=context_type,
         title=title.text if title is not None else None,
         event_time=record.event_time,
+        event_time_precision=record.event_time_precision or TimePrecision.UNKNOWN,
         context_facts=facts,
+        locations=source_locations(geography),
         source_geography=geography,
         evidence=evidence,
         claims=claims,
@@ -150,6 +163,6 @@ def process_context(context: RecordContext) -> Incident:
             prompt_version=MAPPING_VERSION,
             input_hash=context.context_hash(),
             generated_at=datetime.now(),
-            warnings=[NO_MODEL],
+            warnings=list(warnings),
         ),
     )

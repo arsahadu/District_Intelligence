@@ -1,5 +1,3 @@
-"""Shared primitives for Intelligence contracts."""
-
 from __future__ import annotations
 
 import math
@@ -12,7 +10,6 @@ EVIDENCE_REFERENCE_FIELD = "evidence_ids"
 
 
 def _reject_non_numeric(value: Any) -> Any:
-    """Block coercion before pydantic quietly turns "0.9" into 0.9."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(
             "must be a real number in [0.0, 1.0], "
@@ -22,7 +19,6 @@ def _reject_non_numeric(value: Any) -> Any:
 
 
 def _validate_unit_interval(value: Any) -> float:
-    """Accept only finite numbers in [0, 1]."""
     number = float(value)
     if not math.isfinite(number):
         raise ValueError("must be finite, not NaN or infinity")
@@ -43,8 +39,6 @@ OptionalConfidence = Confidence | None
 
 
 class StrictModel(BaseModel):
-    """Base for every Intelligence contract."""
-
     model_config = ConfigDict(
         extra="forbid",
         validate_assignment=True,
@@ -54,7 +48,6 @@ class StrictModel(BaseModel):
 
 
 def collect_evidence_references(obj: Any, *, acc: set[str] | None = None) -> set[str]:
-    """Walk nested contracts and return every referenced evidence id."""
     if acc is None:
         acc = set()
     if isinstance(obj, dict):
@@ -77,7 +70,6 @@ def collect_evidence_references(obj: Any, *, acc: set[str] | None = None) -> set
 
 
 def unique_ids(items: Any, id_field: str) -> list[str]:
-    """Return duplicate id values in ``items``; empty list means all unique."""
     seen: list[str] = []
     duplicates: list[str] = []
     for item in items:

@@ -1,5 +1,3 @@
-"""The bulk engine: batches, the resumable store, and what a run does when the provider is out of quota."""
-
 from __future__ import annotations
 
 import inspect
@@ -36,6 +34,7 @@ from intelligence.llm import (
     RateLimitedError,
     TransportError,
 )
+from intelligence.models.enums import TimePrecision
 from intelligence.pipeline import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_LIMIT,
@@ -66,7 +65,6 @@ BASE = "http://backend.test"
 PRICE_ID = market_price()["record_id"]
 FORECAST_ID = weather_forecast()["record_id"]
 
-#: Every field a saved line carries, so a reader can trust it without the store.
 LINE_KEYS = (
     "record_id", "state", "mode", "prompt_version", "schema_version", "input_hash",
     "provider", "model", "source_type", "record_type", "error", "incident", "saved_at",
@@ -75,7 +73,6 @@ LINE_KEYS = (
 
 
 def narrative(count: int, *, prefix: str = "N") -> list[dict[str, Any]]:
-    """Waterlogging reports under fresh ids: one body, so one scripted answer fits all of them."""
     return [dict(waterlogging(), record_id=f"{prefix}-{index}") for index in range(count)]
 
 
@@ -100,8 +97,6 @@ def run(records: list[dict[str, Any]], *, store: Optional[Checkpoint] = None, **
 
 @dataclass
 class Counting(LLMProvider):
-    """Answers every narrative record and keeps the id of each one it was asked about."""
-
     asks: list[str] = field(default_factory=list)
     payload: Any = None
     name: str = "counting"
@@ -123,8 +118,6 @@ class Counting(LLMProvider):
 
 @dataclass
 class OutOfQuota(LLMProvider):
-    """Answers ``answers`` records, then refuses on its allowance like a spent account."""
-
     answers: int = 0
     asks: list[str] = field(default_factory=list)
     name: str = "out-of-quota"
@@ -145,12 +138,6 @@ class OutOfQuota(LLMProvider):
 
 @dataclass
 class BusyWindow(LLMProvider):
-    """Answers ``answers`` records, then says this window is full, as an exhausted token bucket does.
-
-    The message is the one a rate-limited endpoint answers with, already carrying the sends and the
-    waiting the provider layer spent on this record's own behalf.
-    """
-
     answers: int = 0
     asks: list[str] = field(default_factory=list)
     name: str = "busy-window"
@@ -174,8 +161,6 @@ class BusyWindow(LLMProvider):
 
 @dataclass
 class AlwaysFails(LLMProvider):
-    """An ordinary provider failure: this record's read went wrong, not the account's allowance."""
-
     asks: list[str] = field(default_factory=list)
     name: str = "broken"
 
@@ -190,8 +175,6 @@ class AlwaysFails(LLMProvider):
 
 @dataclass
 class Mixed(LLMProvider):
-    """One provider that treats each narrative differently, so a single run shows every outcome."""
-
     review: tuple[str, ...] = ()
     refused: tuple[str, ...] = ()
     broken: tuple[str, ...] = ()
@@ -217,7 +200,6 @@ class Mixed(LLMProvider):
 
 
 def stop_at(record_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Interrupt the run on one record, every other read happening as it really does."""
     real = pipeline.process_record
 
     def process(record, **kwargs):
@@ -537,7 +519,6 @@ def test_a_busy_window_defers_the_records_it_did_not_read(tmp_path):
 
     summary = run([*narrative(5), market_price()], provider=provider, store=store, batch_size=6)
 
-    #: One record was asked about patiently; the rest were never sent, and the copy was still read.
     assert provider.asks == ["N-0"]
     assert summary.stop_kind == "rate" and "provider rate limited" in (summary.stop_reason or "")
     assert (len(summary.deferred), summary.failures, len(summary.structured)) == (5, [], 1)
@@ -619,7 +600,6 @@ def test_a_busy_window_under_concurrency_defers_only_what_the_run_never_sent(tmp
     saved = {item["record_id"]: item for item in lines(store)}
     read = {key for key, item in saved.items() if item["state"] == COMPLETED}
     waiting = {key for key, item in saved.items() if item["state"] == DEFERRED}
-    #: What was already in flight is kept as the answer it really produced, never called cancelled.
     assert read <= set(provider.asks) and read | waiting == set(saved)
     assert all("rate limited" in str(item["error"]) for item in saved.values() if item["state"] == DEFERRED)
 
@@ -752,7 +732,6 @@ def saved_manifest(store: Checkpoint) -> dict[str, Any]:
 
 
 def rewrite_manifest(store: Checkpoint, **changes: Any) -> dict[str, Any]:
-    """Put the manifest on disk in a state no run of this store could have written it in."""
     meta = saved_manifest(store)
     for key, value in changes.items():
         if value is DROP:
@@ -764,7 +743,6 @@ def rewrite_manifest(store: Checkpoint, **changes: Any) -> dict[str, Any]:
 
 
 def saved(directory) -> Checkpoint:
-    """A consistent pair holding one completed structured line, written by a real run."""
     store = Checkpoint(directory)
     run(prices(1), store=store, environ={})
     return store
@@ -893,8 +871,6 @@ def test_a_crash_between_the_two_replacements_leaves_the_newer_log_readable(tmp_
     assert [item.record_id for item in resumed.outcomes] == ["A-2"]
     assert saved_manifest(Checkpoint(directory))["records"] == 3
 
-    #: The run wrote a fresh pair, but it still read two results nothing had vouched for, and the
-    #: report has to say that after the write rather than only before it.
     assert recovered.incomplete and "interrupted between the two writes" in recovered.incomplete
     print_report(resumed)
     assert "Saved progress was interrupted" in capsys.readouterr().out
@@ -914,6 +890,158 @@ def test_a_run_that_wrote_after_an_absent_manifest_still_says_the_log_was_unvouc
     out = capsys.readouterr().out
     assert "Saved progress was interrupted" in out and "nothing vouches" in out
     assert saved_manifest(Checkpoint(directory))["records"] == 2
+
+
+def test_a_reused_context_reading_keeps_the_day_it_stated_and_the_places_it_named(tmp_path):
+    directory = tmp_path / "run"
+    forecast = weather_forecast(event_time="2026-10-03")
+    price = market_price()
+
+    first = run([forecast, price], store=Checkpoint(directory), environ={})
+    again = run([forecast, price], store=Checkpoint(directory).load(), environ={})
+
+    assert first.reused == [] and len(first.outcomes) == 2
+    assert sorted(item.record_id for item in again.reused) == sorted([FORECAST_ID, PRICE_ID])
+    assert again.outcomes == []
+
+    by_id = {item.record_id: item.incident for item in again.reused}
+    assert by_id[FORECAST_ID].event_time_precision is TimePrecision.DAY
+    assert by_id[PRICE_ID].event_time_precision is TimePrecision.UNKNOWN
+    for incident in by_id.values():
+        assert [item.resolution_state.value for item in incident.locations] == [
+            "pending_gis",
+            "pending_gis",
+        ]
+        assert incident.model_dump() == Incident.model_validate(
+            incident.to_storage_document()
+        ).model_dump()
+
+    stored = {item["record_id"]: item["incident"] for item in lines(Checkpoint(directory))}
+    assert stored[FORECAST_ID]["event_time_precision"] == "day"
+    assert [item["text"] for item in stored[FORECAST_ID]["locations"]] == ["Madurai", "Madurai"]
+    assert [item["text"] for item in stored[PRICE_ID]["locations"]] == [
+        "Anna nagar Uzhavar Santhai, Madurai",
+        "Madurai",
+    ]
+
+
+def test_reuse_returns_the_whole_context_payload_not_only_its_kind(tmp_path):
+    directory = tmp_path / "run"
+    forecast = weather_forecast(event_time="2026-10-03")
+    price = market_price()
+
+    first = run([forecast, price], store=Checkpoint(directory), environ={})
+    again = run([forecast, price], store=Checkpoint(directory).load(), environ={})
+
+    fresh = {item.record_id: item.incident for item in first.outcomes}
+    kept = {item.record_id: item.incident for item in again.reused}
+    assert sorted(fresh) == sorted(kept)
+
+    for record_id, incident in fresh.items():
+        restored = kept[record_id]
+        assert restored.model_dump() == incident.model_dump()
+        assert restored.record_kind is incident.record_kind
+        assert restored.context_type is incident.context_type
+        assert [item.field for item in restored.context_facts] == [
+            item.field for item in incident.context_facts
+        ]
+        assert [item.field for item in restored.source_geography] == [
+            item.field for item in incident.source_geography
+        ]
+        assert [item.evidence_id for item in restored.evidence] == [
+            item.evidence_id for item in incident.evidence
+        ]
+        assert restored.provenance.model_dump() == incident.provenance.model_dump()
+
+    stored = {item["record_id"]: item["incident"] for item in lines(Checkpoint(directory))}
+    assert stored[PRICE_ID]["record_kind"] == "context"
+    assert [item["field"] for item in stored[PRICE_ID]["context_facts"]]
+    assert [item["value"] for item in stored[FORECAST_ID]["context_facts"]]
+    assert stored[PRICE_ID]["source_geography"] and stored[PRICE_ID]["evidence"]
+    assert stored[FORECAST_ID]["provenance"]["source_url"]
+    eligible = {
+        item.incident.incident_id: item.incident.record_kind.value for item in again.postable
+    }
+    assert eligible == {
+        f"INC-{PRICE_ID}": "context",
+        f"INC-{FORECAST_ID}": "forecast",
+    }
+
+
+def test_a_context_reading_from_an_older_mapping_version_is_read_again_for_free(
+    tmp_path, monkeypatch
+):
+    directory = tmp_path / "run"
+    price = market_price()
+    first = run([price], store=Checkpoint(directory), environ={})
+    original = first.outcomes[0].incident
+
+    monkeypatch.setattr(pipeline, "MAPPING_VERSION", "structured-1")
+    second = Checkpoint(directory).load()
+    again = run([price], store=second, environ={})
+
+    assert again.reused == [] and len(again.outcomes) == 1
+    assert "structured-1" in second.invalidated[PRICE_ID]
+
+    reading = again.outcomes[0].incident
+    assert reading.record_kind is original.record_kind
+    assert reading.context_type is original.context_type
+    assert [item.field for item in reading.context_facts] == [
+        item.field for item in original.context_facts
+    ]
+    assert [item.value for item in reading.context_facts] == [
+        item.value for item in original.context_facts
+    ]
+    assert [item.evidence_id for item in reading.evidence] == [
+        item.evidence_id for item in original.evidence
+    ]
+    assert reading.generation.prompt_version == MAPPING_VERSION
+
+
+def test_a_price_line_stored_before_its_values_were_kept_is_read_again_for_free(tmp_path):
+    directory = tmp_path / "run"
+    price = market_price()
+    first = run([price], store=Checkpoint(directory), environ={}, provider=NeverCalled())
+
+    document = first.outcomes[0].incident.to_storage_document()
+    for key in ("declared_event_time", "declared_event_time_precision", "fields_without_value"):
+        del document["provenance"][key]
+    thin = Incident.model_validate(document)
+    assert thin.provenance.declared_event_time is None
+
+    written = Checkpoint(directory)
+    written.save(
+        record_id=PRICE_ID,
+        state=COMPLETED,
+        mode=Mode.STRUCTURED.value,
+        prompt_version="structured-2",
+        input_hash=fingerprint(price),
+        incident=document,
+    )
+    written.flush()
+
+    resumed = Checkpoint(directory).load()
+    assert resumed.get(PRICE_ID).prompt_version == "structured-2"
+    again = run([price], store=resumed, environ={}, provider=NeverCalled())
+
+    assert again.reused == [] and len(again.outcomes) == 1
+    assert "structured-2" in resumed.invalidated[PRICE_ID]
+
+    reading = again.outcomes[0].incident
+    assert reading.generation.prompt_version == MAPPING_VERSION
+    assert (reading.record_kind, reading.context_type) == (thin.record_kind, thin.context_type)
+    assert [item.field for item in reading.context_facts] == [
+        item.field for item in thin.context_facts
+    ]
+    assert [item.value for item in reading.context_facts] == [
+        item.value for item in thin.context_facts
+    ]
+    assert reading.provenance.declared_event_time == thin.event_time
+    assert reading.provenance.declared_event_time_precision is TimePrecision.UNKNOWN
+    assert reading.provenance.fields_without_value == []
+    assert {item["record_id"]: item["prompt_version"] for item in lines(written)} == {
+        PRICE_ID: MAPPING_VERSION
+    }
 
 
 def test_the_run_names_the_model_it_would_ask_and_stays_silent_when_none_is(tmp_path, monkeypatch):
@@ -946,9 +1074,6 @@ def test_a_reading_is_not_reused_as_another_models_answer(tmp_path):
 
 
 def test_two_alias_providers_are_named_by_what_the_run_was_configured_with(tmp_path):
-    """``vllm`` and ``ollama`` share one provider class: naming the reader by that class would call
-    two different endpoints one reader, and would make one run name itself two different ways."""
-
     def never(*args):
         raise AssertionError("naming a provider sends no request")
 
@@ -1095,7 +1220,6 @@ def test_the_summary_counts_everything_a_bulk_run_did(tmp_path, capsys):
         ("Deferred (never sent)", 1),
     ):
         assert f"{label}: {value}" in out
-    #: The three totals a reader could otherwise confuse are stated as equations, not as rows.
     assert "5 fetched = 5 selected (every record the API returned)" in out
     assert "5 selected = 0 reused + 4 attempted + 1 never sent" in out
     assert (
@@ -1150,7 +1274,6 @@ def test_no_record_is_counted_twice_and_every_selected_record_is_counted(tmp_pat
         "deferred (refused)": 1,
     }
     assert first.unread[0].record_id == "N-4"
-    #: A context reading that needs a person is counted once, as the reading that needs a person.
     assert first.review_required[0].contextual and first.counts()["Accepted context"] == 1
 
     resumed = run(

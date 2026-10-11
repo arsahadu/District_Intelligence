@@ -1,5 +1,3 @@
-"""HTTP client for posting validated Incidents to the platform API."""
-
 from __future__ import annotations
 
 import json
@@ -12,12 +10,11 @@ from intelligence.contract import Incident
 
 DEFAULT_TIMEOUT_SECONDS = 15.0
 
-# (url, UTF-8 request body, timeout_seconds) -> (status, response body)
 PostTransport = Callable[[str, bytes, float], tuple[int, str]]
 
 
 class IncidentAPIError(RuntimeError):
-    """The API could not create an Incident or return a valid response."""
+    ...
 
 
 @dataclass(frozen=True)
@@ -48,7 +45,6 @@ def post_incident(
     transport: Optional[PostTransport] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> PostResult:
-    """Post one validated Incident, distinguishing creation from an existing id."""
     url = base_url.rstrip("/") + "/incidents"
     body = json.dumps(incident.to_storage_document(), ensure_ascii=False).encode("utf-8")
     post = transport or _http_post

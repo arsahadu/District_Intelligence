@@ -1,13 +1,9 @@
-"""Controlled vocabularies for Intelligence contracts."""
-
 from __future__ import annotations
 
 from enum import Enum
 
 
 class ExtractionMethod(str, Enum):
-    """How a value came to exist. Separates source facts from inferences."""
-
     SOURCE_METADATA = "source_metadata"
     REGEX = "regex"
     RULE = "rule"
@@ -19,8 +15,6 @@ class ExtractionMethod(str, Enum):
 
 
 class SpanValidation(str, Enum):
-    """Whether an evidence span has been re-checked against the source text."""
-
     UNVALIDATED = "unvalidated"
     VALIDATED = "validated"
     MISMATCH = "mismatch"
@@ -28,8 +22,6 @@ class SpanValidation(str, Enum):
 
 
 class Modality(str, Enum):
-    """What the source record actually carried. Keeps OCR out of the core path."""
-
     TEXT = "text"
     IMAGE = "image"
     PDF = "pdf"
@@ -71,8 +63,6 @@ class MentionType(str, Enum):
 
 
 class MentionRole(str, Enum):
-    """What a place name is doing in the sentence."""
-
     EVENT_LOCATION = "event_location"
     EVENT_CONTAINER = "event_container"
     INSTITUTION_NAME = "institution_name"
@@ -83,18 +73,14 @@ class MentionRole(str, Enum):
 
 
 class ResolutionState(str, Enum):
-    """GIS hand-off state. Intelligence only ever produces the first three."""
-
     NOT_ATTEMPTED = "not_attempted"
     PENDING_GIS = "pending_gis"
     AMBIGUOUS = "ambiguous"
-    RESOLVED = "resolved"  # set by GIS, not by Intelligence
-    REJECTED = "rejected"  # set by GIS, not by Intelligence
+    RESOLVED = "resolved"
+    REJECTED = "rejected"
 
 
 class EventType(str, Enum):
-    """Language-independent incident taxonomy. Extend via code review only."""
-
     CEREMONIAL_OR_AWARD_EVENT = "ceremonial_or_award_event"
     ANNOUNCEMENT_ONLY = "announcement_only"
     PERSONNEL_TRANSFER = "personnel_transfer"
@@ -178,8 +164,6 @@ class EventType(str, Enum):
 
 
 class Department(str, Enum):
-    """Tamil Nadu district administration departments, as hint targets."""
-
     COLLECTORATE = "collectorate"
     REVENUE = "revenue"
     RURAL_DEVELOPMENT_PANCHAYAT_RAJ = "rural_development_panchayat_raj"
@@ -216,8 +200,6 @@ class Department(str, Enum):
 
 
 class ActorRole(str, Enum):
-    """Semantic role an actor plays. Deliberately free of verdicts."""
-
     REPORTED_BY = "reported_by"
     RESPONDING_AUTHORITY = "responding_authority"
     DECISION_MAKER = "decision_maker"

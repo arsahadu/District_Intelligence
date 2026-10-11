@@ -1,5 +1,3 @@
-"""Shared test doubles: source text, evidence factories, and the scripted provider answers."""
-
 from __future__ import annotations
 
 import json
@@ -19,7 +17,6 @@ SOURCE_ID = "dinamalar"
 SOURCE_TYPE = "news"
 SOURCE_URL = "https://www.dinamalar.com/district/291"
 
-#: Mirrors the real corpus: publish boilerplate, then Tamil body text.
 CONTENT_TA = (
     "UPDATED : அக் 02, 2026 12:00 AM ADDED : அக் 01, 2026 09:46 PM "
     "அவர் லேண்ட் நிறுவன ஒப்பந்தத்தை ரத்து செய்யக்கோரி துாய்மைப் பணியாளர்கள் "
@@ -27,7 +24,6 @@ CONTENT_TA = (
     "தொழிலாளர் நல வாரிய ஊழியர்கள் ஆர்ப்பாட்டத்தில் ஈடுபட்டனர்."
 )
 
-#: A Kumbakonam incident reported through the Madurai bench of the High Court.
 BENCH_CONTENT_TA = (
     "கும்பகோணத்தில் அரசின் மதுபான விடுதியை காலி செய்ய மறுத்ததால் விடுதி "
     "உரிமையாளர் மீது வழக்கு தொடரப்பட்டது; உயர்நீதிமன்ற மதுரைக் கிளை "
@@ -46,7 +42,6 @@ def span_evidence(
     record_id: str = RECORD_ID,
     **overrides,
 ) -> Evidence:
-    """Build evidence with offsets computed from the real text."""
     start = source_text.index(quote)
     payload = {
         "evidence_id": evidence_id,
@@ -70,8 +65,6 @@ def span_evidence(
 
 @dataclass
 class Scripted(LLMProvider):
-    """Answers with exactly what the test wrote. No determinism is hiding behind it."""
-
     payload: Any
     name: str = "scripted"
     model_id: str = "gpt-oss-120b"
@@ -92,7 +85,6 @@ class Scripted(LLMProvider):
 
 
 def quote(content: str, text: str, occurrence: int = 0) -> dict[str, Any]:
-    """A real span: the offset of the nth copy of the text, taken from the field itself."""
     position = -1
     for _ in range(occurrence + 1):
         position = content.index(text, position + 1)
@@ -106,8 +98,6 @@ def quote(content: str, text: str, occurrence: int = 0) -> dict[str, Any]:
 
 
 class NeverCalled(LLMProvider):
-    """A provider that fails the test the moment anything asks it a question."""
-
     @property
     def model(self) -> str:
         raise AssertionError("a structured record never needs a model")
@@ -150,7 +140,6 @@ def water_answer() -> dict[str, Any]:
 
 
 def responder(*responses: tuple[int, str]) -> Any:
-    """A transport that answers each read with the next status/body and remembers the URLs."""
     calls: list[str] = []
     queue = list(responses)
 
@@ -159,7 +148,7 @@ def responder(*responses: tuple[int, str]) -> Any:
         status, body = queue.pop(0) if len(queue) > 1 else queue[0]
         return status, body
 
-    transport.calls = calls  # type: ignore[attr-defined]
+    transport.calls = calls
     return transport
 
 

@@ -1,5 +1,3 @@
-"""Provider abstraction. Intelligence asks a model for structured output; it does not choose which one."""
-
 from __future__ import annotations
 
 import email.utils
@@ -29,34 +27,21 @@ ENV_TEMPERATURE = ENV_PREFIX + "TEMPERATURE"
 ENV_MAX_TOKENS = ENV_PREFIX + "MAX_TOKENS"
 ENV_REASONING_EFFORT = ENV_PREFIX + "REASONING_EFFORT"
 
-#: What a reasoning endpoint will spend its completion budget on before the JSON starts.
 REASONING_EFFORTS = ("none", "default", "low", "medium", "high")
 
-#: The values an OpenAI-style ``reasoning_effort`` is given. ``none`` and ``default`` are not among
-#: them: the first asks for no thinking at all and the other asks for the model's own choice, and a
-#: chat endpoint that honours those reads the unified ``reasoning`` object, which is where they are
-#: said. Sending ``reasoning_effort=none`` would be a value the endpoint has no vocabulary for.
 EFFORT_VALUES = ("low", "medium", "high")
 
-#: How long one request may ever spend waiting on a provider's say-so before it is given up on.
-#: A busy window is worth waiting on; a wait of hours is a reason to stop and resume later.
 DEFAULT_MAX_WAIT_SECONDS = 60.0
 
-#: The step between sends when a provider refused without saying how long to wait.
 BACKOFF_STEP_SECONDS = 0.2
 
-#: A schema-constrained answer that ran out of budget is a sizing decision, not a model failure.
 TRUNCATION_HINT = (
     "the answer ran out of completion budget before the JSON finished, so raise "
     f"{ENV_MAX_TOKENS} or set {ENV_REASONING_EFFORT}=low to spend less of it on reasoning"
 )
 
-#: The package-local settings file. Intelligence reads it and never writes it.
-# The repository root is not the right location for this project: the config lives next to the
-# package code, and it must be found even when the process starts from a different working dir.
 DOTENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
-#: Endpoint names, so a deployment reads as a deployment rather than as a vendor SDK.
 ALIAS_BASE_URLS = {
     "openai_compatible": "https://api.openai.com/v1",
     "groq": "https://api.groq.com",
@@ -65,72 +50,38 @@ ALIAS_BASE_URLS = {
     "ollama": "http://127.0.0.1:11434/v1",
 }
 
-#: The variable each provider's own documentation names for its credential, for a deployment that uses
-#: that spelling instead of ``INTELLIGENCE_LLM_API_KEY``. The pipeline's own variable is asked first, so
-#: a configuration that already sets it keeps working, and a chain entry's ``api_key_env`` still wins.
 ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
-VENDOR_KEY_VARS = {"gemini": ENV_GEMINI_API_KEY}
+ENV_GROQ_API_KEY = "GROQ_API_KEY"
+VENDOR_KEY_VARS = {"gemini": ENV_GEMINI_API_KEY, "groq": ENV_GROQ_API_KEY}
 _RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class LLMError(RuntimeError):
-    """Base for every provider failure. Callers catch this, not a vendor exception."""
+    ...
 
 
 class ProviderNotConfigured(LLMError):
-    """No provider could be built from the environment. Never answered with a stub."""
+    ...
 
 
 class TransportError(LLMError):
-    """The endpoint could not be reached or answered with what the protocol expects."""
+    ...
 
 
 class RateLimitedError(TransportError):
-    """The endpoint said this window is busy, not that the record cannot be read.
-
-    It is raised only after the bounded waiting and sends ``next_wait`` allowed, so a caller that sees
-    one knows another send now would cost a request for an answer the provider already refused. The
-    scheduler defers such a record rather than failing it, and a later run reads it.
-    """
-
-
+    ...
 class QuotaExhaustedError(TransportError):
-    """The endpoint said the account's allowance is spent. Another request would only spend another retry.
-
-    Nothing here infers when it might reset: the scheduler stops asking this provider and defers what
-    it did not read, so a later run can take them.
-    """
-
-
+    ...
 class StructuredOutputError(LLMError):
-    """The model answered, but not with JSON this contract can read."""
+    ...
 
 
 class ModelUnavailableError(TransportError):
-    """The endpoint said it will not serve this model. Another model may; this one will not.
-
-    This is a statement about the deployment, so the same candidate is asked for no further record
-    in the run, and the chain moves to the next one.
-    """
-
-
+    ...
 class ProviderAuthError(TransportError):
-    """The endpoint refused the credential before it read anything. Never sent again.
-
-    A key that was refused this minute will be refused the next, so this ends the run with a
-    configuration failure rather than a deferred record.
-    """
-
-
+    ...
 class EndpointUnreachableError(TransportError):
-    """Nothing answered: the connection was refused, the host could not be found, or it timed out.
-
-    Unlike a refused credential this may fix itself, so a record the chain could not place because an
-    endpoint was down is deferred for a later run rather than failed.
-    """
-
-
-#: Codes that mean the allowance itself is gone, not merely this moment's request rate.
+    ...
 QUOTA_CODES = frozenset(
     {
         "insufficient_quota",
@@ -145,25 +96,16 @@ QUOTA_CODES = frozenset(
     }
 )
 
-#: Codes that mean a window is full and the same request may be worth sending again.
 RATE_LIMIT_CODES = frozenset(
     {"rate_limit_exceeded", "requests_limit_exceeded", "requests_exceeded", "model_rate_limited"}
 )
 
-#: Statuses an endpoint uses to refuse on limits. A 402 is an account-level refusal.
 LIMIT_STATUSES = frozenset({402, 429})
 
-#: A refusal on a limit that named neither an allowance nor a window: worth one more send, no more.
 LIMIT_UNCLASSIFIED = "unknown"
 
 
 def _named(holder: Mapping[str, Any]) -> Optional[str]:
-    """The name a refusal gave itself, from whichever of its fields states one.
-
-    An endpoint may spell its refusal a code, a type, a status word or the ``reason`` of a detail
-    block, and a detail reason is the most specific of those, so it is read before a status word that
-    covers every limit the account has. An HTTP status repeated as a number is not a name at all.
-    """
     for key in ("code", "type"):
         value = holder.get(key)
         if isinstance(value, str) and value.strip():
@@ -180,7 +122,6 @@ def _named(holder: Mapping[str, Any]) -> Optional[str]:
 
 
 def _error_detail(body: Any) -> tuple[Optional[str], str]:
-    """``(code, message)`` from an error body, however the endpoint wrapped it."""
     if isinstance(body, str):
         try:
             body = json.loads(body)
@@ -197,15 +138,6 @@ def _error_detail(body: Any) -> tuple[Optional[str], str]:
 
 
 def limit_state(status: Optional[int], body: Any) -> Optional[str]:
-    """``"quota"``, ``"rate"``, ``"unknown"`` for a refusal on limits, or None for anything else.
-
-    ``unknown`` is what an endpoint that refused with a bare ``Too Many Requests`` returns: a limit
-    was hit, but nothing in the response says whether the allowance is gone or the window is merely
-    busy. It is never read as an exhausted allowance, because treating every refusal that way would
-    defer work the provider would have answered a moment later.
-
-    Only what the response itself says: a code, or a message that names a quota or a rate limit.
-    """
     if status not in LIMIT_STATUSES:
         return None
     code, message = _error_detail(body)
@@ -219,7 +151,6 @@ def limit_state(status: Optional[int], body: Any) -> Optional[str]:
     return "quota" if status == 402 else LIMIT_UNCLASSIFIED
 
 
-#: Statuses that mean the credential, not the record, was the problem.
 AUTH_STATUSES = frozenset({401, 403})
 AUTH_CODES = frozenset(
     {
@@ -233,7 +164,6 @@ AUTH_CODES = frozenset(
     }
 )
 
-#: Statuses at which an endpoint says it does not carry the model it was asked for.
 MODEL_REFUSAL_STATUSES = frozenset({400, 404, 410, 422})
 MODEL_UNAVAILABLE_CODES = frozenset(
     {
@@ -245,7 +175,6 @@ MODEL_UNAVAILABLE_CODES = frozenset(
         "invalid_model",
     }
 )
-#: Only read at 404/410, where a whole phrase about the model being absent is the endpoint's own words.
 MODEL_UNAVAILABLE_PHRASES = (
     "not found",
     "does not exist",
@@ -260,7 +189,6 @@ MODEL_UNAVAILABLE_PHRASES = (
 
 
 def auth_refusal(status: Optional[int], body: Any) -> bool:
-    """True when the refusal was about the credential. Only what the response itself says."""
     if status in AUTH_STATUSES:
         return True
     code, _ = _error_detail(body)
@@ -268,11 +196,6 @@ def auth_refusal(status: Optional[int], body: Any) -> bool:
 
 
 def model_unavailable(status: Optional[int], body: Any) -> bool:
-    """True when the refusal named the model as the thing the endpoint will not serve.
-
-    Phrases are only read at 404 and 410: a 400 whose body happens to say "model" next to "not
-    found" for some other reason must not end a candidate's run.
-    """
     if status not in MODEL_REFUSAL_STATUSES:
         return False
     code, message = _error_detail(body)
@@ -285,12 +208,6 @@ def model_unavailable(status: Optional[int], body: Any) -> bool:
 
 
 def failure_kind(status: Optional[int], body: Any) -> Optional[str]:
-    """What an endpoint's refusal was about: ``quota``, ``rate``, ``auth``, ``model`` or ``limit``.
-
-    ``limit`` is a refusal on a limit that explained nothing further, and ``None`` is a failure that
-    stated none of these - a server error, or a body that said nothing recognisable. Order matters:
-    ``Rate limit reached for model X`` names a model and means a window.
-    """
     limit = limit_state(status, body)
     if limit == "quota":
         return "quota"
@@ -306,7 +223,6 @@ def failure_kind(status: Optional[int], body: Any) -> Optional[str]:
 
 
 def refusal_error(url: str, status: Optional[int], body: Any, *, prefix: str = "answered") -> TransportError:
-    """The typed exception for a refusal, naming the status and the body that stated it."""
     detail = f"{url} {prefix} {status}: {str(body)[:300]}"
     kind = failure_kind(status, body)
     if kind == "auth":
@@ -318,17 +234,10 @@ def refusal_error(url: str, status: Optional[int], body: Any, *, prefix: str = "
     return TransportError(detail)
 
 
-#: The fields a chat endpoint may carry a model's thinking in instead of its answer.
 REASONING_FIELDS = ("reasoning", "reasoning_content", "thinking")
 
 
 def answer_diagnosis(provider: str, content: Any, message: Any) -> str:
-    """Why there was no answer to read, in the words the response itself supports - or "" if there was.
-
-    A model that spends the completion on thinking and leaves the message empty, and a model whose
-    answer was cut off mid-object, both reach a parser as nothing to read. They are different
-    failures, and the sentence that names them has to come from the response, not from a guess.
-    """
     if isinstance(message, Mapping):
         carried = [(name, message.get(name)) for name in REASONING_FIELDS]
     else:
@@ -352,7 +261,6 @@ def answer_diagnosis(provider: str, content: Any, message: Any) -> str:
 
 
 def _token_count(usage: Mapping[str, Any], *keys: str) -> Optional[int]:
-    """One whole number from a usage block, from whichever key this endpoint happened to use."""
     for holder in (usage, usage.get("completion_tokens_details"), usage.get("output_tokens_details")):
         if not isinstance(holder, Mapping):
             continue
@@ -364,12 +272,6 @@ def _token_count(usage: Mapping[str, Any], *keys: str) -> Optional[int]:
 
 
 def budget_note(usage: Mapping[str, Any], *, limit: int, effort: Optional[str]) -> str:
-    """Where a cut-off completion went, from the numbers the response itself carried.
-
-    A truncation says only that the JSON did not finish. The endpoint's own token counts say whether
-    the thinking did it or the answer did, and that is the difference between raising the budget and
-    asking for less thinking - so the difference is stated rather than left to a guess.
-    """
     spent = _token_count(
         usage, "reasoning_tokens", "thinking_tokens", "total_thought_tokens", "thought_tokens"
     )
@@ -412,7 +314,6 @@ def budget_note(usage: Mapping[str, Any], *, limit: int, effort: Optional[str]) 
     return "; ".join(said) + ". "
 
 
-#: The fields and headers an endpoint states a required wait in, as the provider's own SDK reads them.
 GUIDANCE_FIELDS = (
     ("retry_after", 1.0),
     ("retry_after_seconds", 1.0),
@@ -427,11 +328,8 @@ GUIDANCE_HEADERS = (
     ("x-ratelimit-reset-requests", 1.0),
 )
 
-#: A duration written next to a number: ``47.5s``, ``2m``, ``1h``, ``30 days``.
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*([a-z]*)$", re.I)
-#: One piece of a duration a provider wrote in parts: ``1m30s``, ``2h 5m``.
 _DURATION_PART = re.compile(r"\s*(\d+(?:\.\d+)?)\s*([a-z]+)", re.I)
-#: The wait a refusal asks for in prose rather than a field: "try again in 30s", "will reset after 2m".
 _GUIDANCE_MESSAGE = re.compile(
     r"(?:try again|come back|retry|wait|resets?|available)\D{0,12}?(?:in|after)\s*"
     r"(\d+(?:\.\d+)?)\s*(ms|msec|millisec\w*|sec\w*|s|min\w*|m|hour\w*|hr\w*|h|day\w*|d)",
@@ -456,7 +354,6 @@ _UNIT_SECONDS = (
 
 
 def _unit_seconds(raw: str) -> Optional[float]:
-    """A unit written beside a number, as seconds. Longest spellings first, so ``ms`` is not ``m``."""
     text = raw.casefold()
     for spelling, seconds in _UNIT_SECONDS:
         if text.startswith(spelling):
@@ -465,7 +362,6 @@ def _unit_seconds(raw: str) -> Optional[float]:
 
 
 def _compound_seconds(text: str) -> Optional[float]:
-    """A wait a provider wrote in parts, as seconds. None if any character was not a part."""
     total, position = 0.0, 0
     while position < len(text):
         match = _DURATION_PART.match(text, position)
@@ -480,7 +376,6 @@ def _compound_seconds(text: str) -> Optional[float]:
 
 
 def _stated_seconds(raw: Any) -> Optional[float]:
-    """Seconds from what a provider wrote: a number, ``47.5s``, ``1m30s``, or an HTTP date."""
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
@@ -501,7 +396,6 @@ def _stated_seconds(raw: Any) -> Optional[float]:
 
 
 def _guidance_in(body: Any) -> Optional[float]:
-    """The wait an error body stated, in a field or in the prose of its message."""
     for candidate in _mappings(body):
         for key, scale in GUIDANCE_FIELDS:
             stated = _stated_seconds(candidate.get(key))
@@ -516,7 +410,6 @@ def _guidance_in(body: Any) -> Optional[float]:
 
 
 def _mappings(body: Any) -> list[Mapping[str, Any]]:
-    """The error body, whatever wrapper it put its own fields inside, and any detail blocks beside them."""
     if isinstance(body, str):
         try:
             body = json.loads(body)
@@ -535,12 +428,6 @@ def _mappings(body: Any) -> list[Mapping[str, Any]]:
 
 
 def retry_guidance(body: Any = None, headers: Any = None) -> Optional[float]:
-    """How long the provider itself asked for, or None when it said nothing.
-
-    Read only from what the refusal carried: a stated duration field, a message that names an
-    interval, or a response header the SDK handed us alongside the error. Never inferred from the
-    status code, and never guessed at an interval the provider did not state.
-    """
     stated = _guidance_in(body)
     if stated is not None:
         return stated
@@ -563,16 +450,6 @@ def next_wait(
     max_retries: int,
     max_wait_seconds: float,
 ) -> Optional[float]:
-    """Seconds to wait before sending this request again, or None when it must not be sent again.
-
-    An exhausted allowance is never sent again. A busy window is, and it waits what the provider
-    asked for when the whole remaining budget covers that; a wait of less than the stated interval
-    would ask again exactly when the provider said not to, so an over-long ask stops the send and
-    says so instead. When a busy window stated no interval, the budget is spread over the sends
-    still permitted, which is the most waiting the configuration allows and no more. A refusal that
-    explained nothing gets one further send after a short step, and a failure that was not a limit
-    at all keeps the short growing step it always had.
-    """
     if kind == "quota":
         return None
     remaining = max_retries - attempt
@@ -593,7 +470,6 @@ def next_wait(
 def patience_note(
     guidance: Optional[float], *, waited: float, max_wait_seconds: float, sends: int
 ) -> str:
-    """Why nothing further was sent, in the numbers the provider and the configuration used."""
     if guidance is not None and guidance > max_wait_seconds:
         return (
             f" - it asked for {guidance:g}s, which is more than the {max_wait_seconds:g}s "
@@ -605,7 +481,6 @@ def patience_note(
 
 
 def load_dotenv_file(path: Optional[str] = None) -> bool:
-    """Put the local ``.env`` into ``os.environ``, leaving any real variable (even empty) alone."""
     candidate = path or DOTENV_PATH
     if not os.path.isabs(candidate):
         candidate = os.path.abspath(os.path.join(os.path.dirname(__file__), candidate))
@@ -625,8 +500,6 @@ def load_dotenv_file(path: Optional[str] = None) -> bool:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    """Where to ask, what to ask and how hard to try. The key is never rendered."""
-
     provider: str = "openai_compatible"
     model: Optional[str] = None
     base_url: Optional[str] = None
@@ -641,7 +514,6 @@ class LLMConfig:
 
     @classmethod
     def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "LLMConfig":
-        """Read the environment. An explicit ``environ`` is used as-is, with no file loading."""
         if environ is not None:
             source: Mapping[str, str] = dict(environ)
         else:
@@ -674,7 +546,6 @@ class LLMConfig:
         return ALIAS_BASE_URLS.get(self.provider, ALIAS_BASE_URLS["openai_compatible"])
 
     def summary(self) -> dict[str, Any]:
-        """Safe to log or embed in a fixture: no key, no endpoint secrets."""
         return {
             "provider": self.provider,
             "model": self.model,
@@ -708,7 +579,6 @@ def _int(raw: Optional[str], default: int, name: str) -> int:
 
 
 def _effort(raw: Optional[str]) -> Optional[str]:
-    """Reasoning budget is a deployment choice, so an unusable name is refused at read time."""
     if raw is None:
         return None
     effort = raw.strip().lower()
@@ -721,8 +591,6 @@ def _effort(raw: Optional[str]) -> Optional[str]:
 
 @dataclass(frozen=True)
 class LLMRequest:
-    """One turn of one call: what to tell the model and what shape to answer in."""
-
     system: str
     user: str
     json_schema: Optional[dict[str, Any]] = None
@@ -736,8 +604,6 @@ class LLMRequest:
 
 @dataclass(frozen=True)
 class LLMResponse:
-    """What came back, before any contract read it."""
-
     provider: str
     model: str
     text: Optional[str] = None
@@ -751,35 +617,26 @@ class LLMResponse:
 
 @dataclass(frozen=True)
 class StructuredOutput:
-    """A parsed payload plus the response it came from."""
-
     payload: dict[str, Any]
     response: LLMResponse
 
 
-#: (url, headers, payload, timeout) -> (status, body)
 Transport = Callable[[str, Mapping[str, str], Mapping[str, Any], float], tuple[int, str]]
 
 
 class LLMProvider(ABC):
-    """The whole coupling between Intelligence and any model."""
-
     name: str = "llm"
-    #: Whether this provider cannot authenticate at all without a key. A chain asks this before it
-    #: asks the endpoint, so a candidate with no credential is reported as a configuration problem.
     requires_api_key: bool = False
-    #: Whether a transport handed to the constructor is the one that sends. An SDK-backed provider's
-    #: sends go through its own client, so a chain told that one cannot be answered from outside.
     accepts_transport: bool = False
 
     @property
     @abstractmethod
     def model(self) -> str:
-        """Which model this provider is configured to ask."""
+        ...
 
     @abstractmethod
     def complete(self, request: LLMRequest) -> LLMResponse:
-        """Send one request and return it untouched."""
+        ...
 
     def generate_text(self, request: LLMRequest) -> str:
         response = self.complete(request)
@@ -790,7 +647,6 @@ class LLMProvider(ABC):
         return response.text
 
     def generate_structured(self, request: LLMRequest) -> StructuredOutput:
-        """Ask for JSON and parse it. A model that prose-wraps the answer fails here, loudly."""
         response = self.complete(request)
         payload = response.data
         if payload is None:
@@ -803,7 +659,6 @@ class LLMProvider(ABC):
 
 
 def parse_json_object(text: Optional[str], *, provider: str = "provider") -> dict[str, Any]:
-    """Read exactly one JSON object out of what a model said."""
     if text is None:
         raise StructuredOutputError(f"{provider} returned nothing to parse")
     candidate = text.strip()
@@ -817,7 +672,6 @@ def parse_json_object(text: Optional[str], *, provider: str = "provider") -> dic
             f"{provider} returned no JSON object anywhere in its answer: {candidate[:200]!r}"
         )
     if end <= start:
-        #: A brace opened and never closed: the answer was still being written when it stopped.
         raise StructuredOutputError(
             f"{provider} opened a JSON object and never closed it - the answer stopped after "
             f"{len(candidate)} characters, so it was cut off rather than refused: {TRUNCATION_HINT}"
@@ -862,11 +716,6 @@ _STRICT_DROPPED_KEYS = frozenset(
 
 
 def strict_json_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """Reshape a Pydantic schema into what JSON-Schema strict mode demands.
-
-    Every object closes itself, every property is required, absence is said as null, and references are
-    inlined so the answer shape is stated once, in full.
-    """
     root = dict(schema)
     defs = dict(root.pop("$defs", None) or {})
     return _strict_node(root, defs, ())
@@ -906,9 +755,6 @@ def _strict_node(node: Any, defs: dict[str, Any], trail: tuple[str, ...]) -> Any
     return shaped
 
 
-#: What a Gemini schema reads. A Pydantic schema states more than this - the definitions its
-#: references point at, the defaults its fields fall back to, the labels a validator gave them - and
-#: sending those as though the endpoint knew them is how a request is refused before it is read.
 GEMINI_SCHEMA_DROPPED = frozenset(
     {
         "$defs",
@@ -923,15 +769,6 @@ GEMINI_SCHEMA_DROPPED = frozenset(
 
 
 def gemini_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """Reshape a Pydantic schema into the subset this endpoint reads, asking nothing of the answer that
-    the contract does not ask anyway.
-
-    References are inlined because there is no ``$defs`` to point at, and a field that is optional
-    because one branch of its ``anyOf`` is null is said as a ``type`` array holding ``"null"``, which is
-    how this endpoint writes optional. A shape that cannot be carried across - a self-referencing
-    definition, a choice between two objects - is refused here rather than sent in a form the endpoint
-    would silently answer differently for.
-    """
     root = dict(schema)
     defs = dict(root.pop("$defs", None) or {})
     return _gemini_node(root, defs, ())
@@ -956,7 +793,6 @@ def _gemini_node(node: Any, defs: dict[str, Any], trail: tuple[str, ...]) -> Any
         if key in ("$ref",) or key in GEMINI_SCHEMA_DROPPED:
             continue
         if key == "properties":
-            #: Its keys are the answer's own field names, not schema keywords: a record has a title.
             shaped["properties"] = {
                 name: _gemini_node(subschema, defs, trail)
                 for name, subschema in dict(value).items()
@@ -985,7 +821,6 @@ def _gemini_node(node: Any, defs: dict[str, Any], trail: tuple[str, ...]) -> Any
 
 
 def _schema_name(schema: Mapping[str, Any]) -> str:
-    """A stable label for the endpoint: the schema's own title, cleaned to the allowed alphabet."""
     label = str(schema.get("title") or "response")
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", label).strip("_")
     return (cleaned or "response")[:64]
@@ -1000,8 +835,6 @@ def _require_model(config: LLMConfig) -> None:
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    """One chat endpoint, one JSON contract: serves GPT-OSS 120B, Qwen 27B and equivalents."""
-
     name = "openai_compatible"
     accepts_transport = True
 
@@ -1041,17 +874,9 @@ class OpenAICompatibleProvider(LLMProvider):
         except urllib.error.HTTPError as error:
             return error.code, error.read().decode("utf-8", "replace")
         except (urllib.error.URLError, OSError) as error:
-            #: A timeout is an OSError here too, and it is what this looks like from the outside.
             raise EndpointUnreachableError(f"{url} could not be reached: {error}") from error
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Send, then send again only as often and as long as the limit policy allows.
-
-        The endpoint's own wait is honoured when its error body states one; a header-only wait is not
-        visible here, because a transport hands back the status and the body alone. A refusal that
-        named the credential or the model ends the sends at once: neither is a condition a further
-        send of the same request could change.
-        """
         url = self._endpoint()
         attempts = max(1, self.config.max_retries + 1)
         last_status, last_body, last_kind, last_guidance = 0, "", None, None
@@ -1166,8 +991,6 @@ class OpenAICompatibleProvider(LLMProvider):
         )
 
 
-#: The least thinking this endpoint will be asked for. It has no word for ``none``, so a configuration
-#: that asks for none is answered with the floor the endpoint offers rather than a value it would refuse.
 GEMINI_MINIMAL_THINKING = "minimal"
 
 
@@ -1189,12 +1012,6 @@ def _step_text(step: Any) -> Optional[str]:
 
 
 def gemini_answer(body: Mapping[str, Any]) -> tuple[Optional[str], str]:
-    """The answer text and the words naming where it was found, or None beside what was searched.
-
-    ``output_text`` is what the endpoint offers as the finished answer. Where a response carries only
-    ``steps``, the last one holding text is the answer rather than an earlier turn, and a response with
-    neither says which of them was looked for instead of arriving as an empty string that parses to nothing.
-    """
     text = body.get("output_text")
     if isinstance(text, str) and text.strip():
         return text, "output_text"
@@ -1209,14 +1026,6 @@ def gemini_answer(body: Mapping[str, Any]) -> tuple[Optional[str], str]:
 
 
 class GeminiProvider(OpenAICompatibleProvider):
-    """Gemini's interactions endpoint: Google's own request dialect, this layer's send policy.
-
-    Carried over from the OpenAI-compatible provider: the transport, the bounded waiting, the wait a
-    refusal asked for, and which refusals end the sending. Replaced: the header the credential travels
-    in, the names of the token budget and the thinking level, where the answer sits in the response, and
-    the schema subset it is sent in.
-    """
-
     name = "gemini"
     requires_api_key = True
 
@@ -1299,13 +1108,11 @@ class GeminiProvider(OpenAICompatibleProvider):
 
 
 def _groq_base_url(config: LLMConfig) -> str:
-    """Origin only: the SDK adds /openai/v1/chat/completions, so an OpenAI-style base URL asks twice."""
     parts = urlsplit(config.resolved_base_url())
     return f"{parts.scheme}://{parts.netloc}"
 
 
 def _groq_failure(error: BaseException) -> str:
-    """Type, HTTP status and message from the SDK. Never the request, whose headers hold the key."""
     status = getattr(error, "status_code", None)
     body = getattr(error, "body", None)
     detail = str(error)[:300]
@@ -1325,8 +1132,6 @@ def _groq_failure(error: BaseException) -> str:
 
 
 class GroqProvider(LLMProvider):
-    """Groq through the official SDK, behind the same request and response shapes."""
-
     name = "groq"
     requires_api_key = True
 
@@ -1341,8 +1146,8 @@ class GroqProvider(LLMProvider):
         if client is None:
             if not config.api_key:
                 raise ProviderNotConfigured(
-                    f"{ENV_API_KEY} is not set, so groq cannot authenticate. Export it or put it "
-                    "in the local .env, or pass an LLMConfig with a key."
+                    f"neither {ENV_GROQ_API_KEY} nor {ENV_API_KEY} holds a credential, so groq "
+                    "cannot be asked. A chain file names the variable, never a key."
                 )
             from groq import Groq
 
@@ -1350,8 +1155,6 @@ class GroqProvider(LLMProvider):
                 api_key=config.api_key,
                 base_url=_groq_base_url(config),
                 timeout=config.timeout_seconds,
-                # This layer decides how often and how long to send again, so the SDK must not add
-                # sends of its own on top of them.
                 max_retries=0,
             )
         self.config = config
@@ -1363,11 +1166,6 @@ class GroqProvider(LLMProvider):
         return str(self.config.model)
 
     def _send(self, kwargs: dict[str, Any]) -> Any:
-        """Ask once, then again only as often and as long as the limit policy allows.
-
-        Groq states its waits in ``retry-after`` and ``x-ratelimit-reset-*`` headers, which the SDK
-        hands back on the exception it raises, so they are read here along with the error body.
-        """
         from groq import GroqError
 
         attempt, sent, waited = 0, 0, 0.0
@@ -1420,11 +1218,6 @@ class GroqProvider(LLMProvider):
         waited: float,
         sent: int,
     ) -> TransportError:
-        """How this send ends: what the provider said, plus what this run already spent waiting.
-
-        Which error it becomes is what the chain acts on: a refused credential or an unserved model
-        ends this candidate, a busy window or a dead endpoint is a reason to read the record later.
-        """
         reason = _groq_failure(error)
         status = getattr(error, "status_code", None)
         spent = (f" (after {sent} send(s))" if sent > 1 else "") + patience_note(
@@ -1520,7 +1313,6 @@ def build_provider(
     environ: Optional[Mapping[str, str]] = None,
     transport: Optional[Transport] = None,
 ) -> LLMProvider:
-    """Make the provider the environment names. Refuses to guess a model."""
     settings = LLMConfig.from_env(environ) if config is None else config
     provider_class = PROVIDERS.get(settings.provider)
     if provider_class is None:

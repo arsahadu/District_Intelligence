@@ -1,12 +1,3 @@
-"""The six Madurai news records the live batch read with spans it could not ground, replayed offline.
-
-Each body below is a sanitized article of the same shape as the real one, holding the phrases the real
-ones repeat and the places the real ones named twice. Each answer is scripted or served by an injected
-transport, so no request leaves this process. What is asserted is the offset arithmetic, the grounding,
-the routing and the honest uncertainty - not what the correct classification of a real article would
-be, which is not this file's to decide.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -90,7 +81,6 @@ HILL_BODY = (
     "தொல்லியல் துறை சார்பில் பாதுகாப்பு அளவிடப்பட்டது."
 )
 
-#: The phrases the live articles kept repeating, counted in the bodies that stand in for them.
 REPEATED = {
     UTSAV_ID: {"நடந்தது": 3, "மதுரை": 3, "அனுஷத்தின் அனுகிரகம்": 2},
     CASE_ID: {"மதுரை": 2},
@@ -131,7 +121,6 @@ BODY = {record_id: record["data"]["content"] for record_id, record in SIX.items(
 
 
 def utsav_answer() -> dict[str, Any]:
-    """The live reading: a headline copied, everything else pointed at a word the article says again."""
     body = BODY[UTSAV_ID]
     return {
         "record_kind": "incident",
@@ -167,7 +156,6 @@ def case_answer() -> dict[str, Any]:
 
 
 def dead_answer() -> dict[str, Any]:
-    """The live reading of the lorry crash: the record's own headline, handed back with no field named."""
     body = BODY[DEAD_ID]
     return {
         "record_kind": "incident",
@@ -178,7 +166,6 @@ def dead_answer() -> dict[str, Any]:
 
 
 def inspect_answer() -> dict[str, Any]:
-    """The collector inspection, its headline rewritten in English and still named no field."""
     body = BODY[INSPECT_ID]
     return {
         "record_kind": "incident",
@@ -190,7 +177,6 @@ def inspect_answer() -> dict[str, Any]:
 
 
 def walk_answer() -> dict[str, Any]:
-    """Two colonies named twice, one street named twice, and an actor the article never called this."""
     body = BODY[WALK_ID]
     return {
         "record_kind": "incident",
@@ -213,7 +199,6 @@ def walk_answer() -> dict[str, Any]:
 
 
 def hill_answer() -> dict[str, Any]:
-    """The festival protest: every classification pointed at the same repeated act-phrase."""
     body = BODY[HILL_ID]
     return {
         "record_kind": "incident",
@@ -243,7 +228,6 @@ ANSWERS = {
     HILL_ID: hill_answer,
 }
 
-#: The grounding codes each live reading recorded, field by field.
 LIVE_FAILURES: dict[str, set[tuple[str, str]]] = {
     UTSAV_ID: {("event_status", "ambiguous_quote"), ("locations[loc-1]", "ambiguous_quote"),
                ("entities[ent-1]", "ambiguous_quote")},
@@ -284,7 +268,6 @@ def grounding(found) -> set[tuple[str, str]]:
 
 
 def replayed(found, record: dict[str, Any]) -> None:
-    """Every accepted claim that cites a span cites one the field still reproduces."""
     sources = {item.field: item.text for item in build_context(record).fields}
     index = found.evidence_by_id()
     for claim in found.claims:
@@ -505,12 +488,17 @@ def test_a_title_the_model_rewrote_is_dropped_and_the_record_s_own_characters_st
     replayed(found, record)
 
 
-def test_a_title_the_model_never_answered_is_left_as_the_abstention_it_was():
-    found = read({"description": quote(BODY[DEAD_ID], "பலியானார்")}, SIX[DEAD_ID])
+def test_a_title_the_model_never_answered_is_still_the_records_own_headline():
+    record = SIX[DEAD_ID]
+    found = read({"description": quote(BODY[DEAD_ID], "பலியானார்")}, record)
+    claim = found.claim("title")
 
-    assert found.title is None
-    assert found.claim("title") is None
+    assert found.title == DEAD_TITLE
+    assert claim.method is ExtractionMethod.SOURCE_METADATA
+    assert claim.review is ReviewState.ACCEPTED
+    assert found.claim("description").method is ExtractionMethod.LLM
     assert "title" not in found.unaccepted_fields()
+    replayed(found, record)
 
 
 def test_a_span_free_answer_survives_the_provider_it_would_have_been_sent_to():
@@ -536,8 +524,6 @@ def test_the_prompt_states_the_offset_unit_and_that_a_protest_is_not_an_ending()
 
 @dataclass
 class AskNothing(LLMProvider):
-    """Names itself as the reader an earlier run used, and fails the test if anything asks it."""
-
     name: str = "scripted"
     model_id: str = "gpt-oss-120b"
 
@@ -622,8 +608,6 @@ def test_a_review_required_reading_keeps_that_state_when_a_later_run_returns_it(
 
 
 def test_the_six_records_read_one_at_a_time_into_one_fresh_directory(tmp_path):
-    """What the manual validation does with these ids: one `--record-id` run each, one new state
-    directory, every reading kept, and the next run of the same id returning it without asking."""
     directory = tmp_path / "fresh"
 
     for record_id in sorted(SIX):
