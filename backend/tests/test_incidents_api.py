@@ -197,6 +197,113 @@ def test_duplicate_incident_id_returns_conflict_without_overwriting():
     assert second.json()["detail"] == f"Incident {incident.incident_id!r} already exists"
 
 
+def make_forecast_payload():
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "incident_id": f"FORECAST-API-{uuid.uuid4().hex}",
+        "record_kind": "forecast",
+        "context_type": "weather_forecast",
+        "title": "Madurai weather forecast",
+        "description": "Scattered showers are expected later in the day.",
+        "incident_type": "unresolved",
+        "category": "unresolved",
+        "department": "unresolved",
+        "severity": "info",
+        "priority": None,
+        "event_status": "unknown",
+        "event_time": "2026-10-11T06:00:00+00:00",
+        "event_time_precision": "day",
+        "context_facts": [
+            {"field": "forecast_date", "value": "2026-10-11"},
+            {"field": "station_id", "value": "MDU-01"},
+            {"field": "sky_description", "value": "cloudy with light rain"},
+            {"field": "temperature_min_c", "value": "23"},
+            {"field": "temperature_max_c", "value": "31"},
+        ],
+        "provenance": {
+            "record_id": "WEATHER-MDU-11-Oct",
+            "source_id": "imd",
+            "source_type": "weather",
+            "source_url": "https://example.test/weather/WEATHER-MDU-11-Oct",
+            "retrieved_at": "2026-10-11T08:00:00+00:00",
+            "declared_event_time": "2026-10-11T06:00:00+00:00",
+            "declared_event_time_precision": "day",
+            "fields_without_value": ["temperature_max_c", "sky_description"],
+        },
+        "claims": [],
+        "evidence": [],
+        "validation": {"state": "accepted", "issues": [], "validator": "intelligence.intelligence"},
+    }
+    return payload
+
+
+def make_market_context_payload():
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "incident_id": f"CONTEXT-API-{uuid.uuid4().hex}",
+        "record_kind": "context",
+        "context_type": "market_price",
+        "title": "Orange market prices",
+        "description": "Market reference for orange prices in Madurai.",
+        "incident_type": "unresolved",
+        "category": "unresolved",
+        "department": "unresolved",
+        "severity": "info",
+        "priority": None,
+        "event_status": "unknown",
+        "event_time": "2026-10-11T10:30:00+00:00",
+        "event_time_precision": "day",
+        "context_facts": [
+            {"field": "commodity", "value": "orange"},
+            {"field": "market", "value": "Madurai"},
+            {"field": "unit", "value": "kg"},
+            {"field": "minimum_price", "value": "120"},
+            {"field": "maximum_price", "value": "140"},
+            {"field": "quantity", "value": "500"},
+        ],
+        "provenance": {
+            "record_id": "AGRI-MDU-ANAIYUR-ORANGE-2026-10-11",
+            "source_id": "agri-market",
+            "source_type": "agriculture",
+            "source_url": "https://example.test/agri/AGRI-MDU-ANAIYUR-ORANGE-2026-10-11",
+            "retrieved_at": "2026-10-11T10:45:00+00:00",
+            "declared_event_time": "2026-10-11T10:30:00+00:00",
+            "declared_event_time_precision": "minute",
+            "fields_without_value": ["unit"],
+        },
+        "claims": [],
+        "evidence": [],
+        "validation": {"state": "accepted", "issues": [], "validator": "intelligence.intelligence"},
+    }
+    return payload
+
+
+def test_forecast_and_market_context_documents_round_trip_with_extended_provenance():
+    forecast = make_forecast_payload()
+    created = client.post("/incidents", json=forecast)
+    assert created.status_code == 201, created.text
+    assert created.json() == forecast
+
+    fetched = client.get(f"/incidents/{forecast['incident_id']}")
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["provenance"] == forecast["provenance"]
+    assert fetched.json()["context_facts"] == forecast["context_facts"]
+    assert fetched.json()["record_kind"] == "forecast"
+    assert fetched.json()["context_type"] == "weather_forecast"
+
+    market = make_market_context_payload()
+    created_context = client.post("/incidents", json=market)
+    assert created_context.status_code == 201, created_context.text
+    assert created_context.json() == market
+
+    fetched_context = client.get(f"/incidents/{market['incident_id']}")
+    assert fetched_context.status_code == 200, fetched_context.text
+    assert fetched_context.json()["provenance"] == market["provenance"]
+    assert fetched_context.json()["context_facts"] == market["context_facts"]
+    assert fetched_context.json()["record_kind"] == "context"
+    assert fetched_context.json()["context_type"] == "market_price"
+
+
 def test_invalid_or_unsupported_incident_contract_is_rejected():
     incident = make_incident()
     invalid = incident.to_storage_document()
@@ -208,6 +315,10 @@ def test_invalid_or_unsupported_incident_contract_is_rejected():
     response = client.post("/incidents", json=unsupported)
     assert response.status_code == 422
     assert "Unsupported Incident schema_version" in response.text
+
+    missing_provenance = make_forecast_payload()
+    missing_provenance.pop("provenance")
+    assert client.post("/incidents", json=missing_provenance).status_code == 422
 
 
 def test_incident_filters_use_contract_values_and_calendar_dates():

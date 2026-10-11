@@ -15,7 +15,9 @@ import {
   getSourceLabel,
   incidentLocation,
   isAgricultureIncident,
+  isForecastRecord,
   isHighPriority,
+  isIncidentRecord,
   isNewsIncident,
   isWeatherIncident,
   matchesSearch,
@@ -89,25 +91,26 @@ function IncidentRow({ incident, onSelect, index }) {
 }
 
 function Overview({ incidents, onSelect, onNavigate }) {
-  const highPriority = incidents.filter(isHighPriority).length
-  const needsReview = incidents.filter(requiresReview).length
-  const sources = new Set(incidents.flatMap((incident) => [
+  const incidentRecords = incidents.filter(isIncidentRecord)
+  const highPriority = incidentRecords.filter(isHighPriority).length
+  const needsReview = incidentRecords.filter(requiresReview).length
+  const sources = new Set(incidentRecords.flatMap((incident) => [
     incident.provenance?.source_id,
     ...(incident.evidence || []).map((item) => item.source_id),
   ]).filter(Boolean))
-  const attentionRecords = sortByAttention(incidents.filter((incident) =>
+  const attentionRecords = sortByAttention(incidentRecords.filter((incident) =>
     isHighPriority(incident) || requiresReview(incident)))
   const attention = attentionRecords.slice(0, 6)
-  const recent = [...incidents]
+  const recent = [...incidentRecords]
     .sort((a, b) => (Date.parse(b.event_time || '') || 0) - (Date.parse(a.event_time || '') || 0))
     .slice(0, 5)
 
-  const categories = Object.entries(incidents.reduce((totals, incident) => {
+  const categories = Object.entries(incidentRecords.reduce((totals, incident) => {
     const category = incident.category || 'unresolved'
     totals[category] = (totals[category] || 0) + 1
     return totals
   }, {})).sort((a, b) => b[1] - a[1])
-  const statuses = Object.entries(incidents.reduce((totals, incident) => {
+  const statuses = Object.entries(incidentRecords.reduce((totals, incident) => {
     const status = incident.event_status || 'unknown'
     totals[status] = (totals[status] || 0) + 1
     return totals
@@ -116,7 +119,7 @@ function Overview({ incidents, onSelect, onNavigate }) {
   return (
     <>
       <div className="summary-grid">
-        <SummaryCard label="Total incidents" value={incidents.length} note="Incident records" />
+        <SummaryCard label="Total incidents" value={incidentRecords.length} note="Incident records" />
         <SummaryCard label="High / critical" value={highPriority} note="Priority or severity" tone="red" />
         <SummaryCard label="Review required" value={needsReview} note="Validation or claim state" tone="amber" />
         <SummaryCard label="Reporting sources" value={sources.size} note="Cited by these incidents" tone="green" />
@@ -183,14 +186,14 @@ function Overview({ incidents, onSelect, onNavigate }) {
             <div><span className="eyebrow">CURRENT REGISTER</span><h2>District activity</h2></div>
           </div>
           <p className="activity-summary">
-            {incidents.length} incident {incidents.length === 1 ? 'record' : 'records'} across {categories.length} reported {categories.length === 1 ? 'category' : 'categories'}.
+            {incidentRecords.length} incident {incidentRecords.length === 1 ? 'record' : 'records'} across {categories.length} reported {categories.length === 1 ? 'category' : 'categories'}.
           </p>
           <h3>By category</h3>
           <div className="breakdown-list">
             {categories.map(([category, amount]) => (
               <div className="breakdown-row" key={category}>
                 <span>{category.replaceAll('_', ' ')}</span>
-                <span className="breakdown-track"><span style={{ width: `${incidents.length ? (amount / incidents.length) * 100 : 0}%` }} /></span>
+                <span className="breakdown-track"><span style={{ width: `${incidentRecords.length ? (amount / incidentRecords.length) * 100 : 0}%` }} /></span>
                 <strong>{amount}</strong>
               </div>
             ))}
@@ -222,19 +225,21 @@ function NewsView({ incidents, onSelect }) {
 }
 
 function WeatherView({ incidents, onSelect }) {
-  const weather = sortByAttention(incidents.filter(isWeatherIncident))
+  const weather = sortByAttention(incidents.filter(
+    (incident) => isWeatherIncident(incident) || isForecastRecord(incident),
+  ))
   if (!weather.length) {
     return (
-      <EmptyState title="No weather-related incidents recorded">
-        No weather alerts are present in the incident feed. This dashboard does not provide a live forecast.
+      <EmptyState title="No weather-related forecasts recorded">
+        No weather forecasts or alerts are present in the intelligence feed.
       </EmptyState>
     )
   }
   return (
     <>
       <div className="information-note information-warning">
-        <strong>Incident records only</strong>
-        <p>These alerts reflect stored intelligence records and source evidence; they are not a live weather forecast.</p>
+        <strong>Forecast and context records</strong>
+        <p>These records describe forecast conditions or weather context, not confirmed weather incidents.</p>
       </div>
       <IncidentTable incidents={weather} total={weather.length} onSelect={onSelect} />
     </>
@@ -242,9 +247,11 @@ function WeatherView({ incidents, onSelect }) {
 }
 
 function AgricultureView({ incidents, onSelect }) {
-  const agriculture = incidents.filter(isAgricultureIncident)
+  const agriculture = incidents.filter(
+    (incident) => isAgricultureIncident(incident) || incident.record_kind === 'context',
+  )
   const marketObservations = agriculture.filter((incident) =>
-    incident.provenance?.record_type?.toLowerCase().includes('market'))
+    incident.context_type === 'market_price' || incident.provenance?.record_type?.toLowerCase().includes('market'))
 
   return (
     <>
