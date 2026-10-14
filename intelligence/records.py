@@ -16,6 +16,7 @@ STATE_PATH = "location.state"
 RAW_TEXT_PATH = "location.raw_text"
 RETRIEVED_AT_PATH = "retrieved_at"
 EVENT_TIME_PATH = "event_time"
+DOCUMENT_PATH = "document"
 
 IDENTITY_PATHS = ("record_id", "source_id", "source_type", "record_type")
 OPTIONAL_PATHS = ("source_url", "raw_reference", "severity", "status")
@@ -74,6 +75,7 @@ class RecordInput:
     scalars: tuple[tuple[str, str], ...] = ()
     notes: tuple[str, ...] = ()
     unused_data_keys: tuple[str, ...] = ()
+    document: Optional[dict[str, Any]] = None
 
     @property
     def title(self) -> Optional[str]:
@@ -108,6 +110,8 @@ class RecordInput:
         # the key appears only for a bare date, so a clock-time stamp keeps the input_hash it had before
         if self.event_time_precision is not None:
             payload["event_time_precision"] = self.event_time_precision.value
+        if self.document is not None:
+            payload["document"] = self.document
         return payload
 
 
@@ -221,7 +225,22 @@ def read_record(
         scalars=tuple(scalars),
         notes=tuple(notes),
         unused_data_keys=tuple(k for k in unused if k != "language"),
+        document=_document(obj),
     )
+
+
+def _document(obj: Any) -> Optional[dict[str, Any]]:
+    value = _resolve(obj, DOCUMENT_PATH)
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise RecordShapeError(
+            f"{_describe(obj)} document must be a mapping, got {type(value).__name__}"
+        )
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except (TypeError, ValueError) as error:
+        raise RecordShapeError(f"{_describe(obj)} document is not plain JSON: {error}") from error
 
 
 def _location_text(location: Any, name: str) -> Optional[str]:

@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 from intelligence.contract import Provenance
-from intelligence.models.enums import TimePrecision
+from intelligence.documents import Document, Page
+from intelligence.models.enums import Modality, TimePrecision
 from intelligence.records import CONTENT_PATH, DISTRICT_PATH, RAW_TEXT_PATH, STATE_PATH
-from intelligence.records import RecordInput, input_hash, read_record
+from intelligence.records import RecordInput, RecordShapeError, input_hash, read_record
 from intelligence.spans import SourceField, compute_field_hash
 
 FIELD_HEADING = "field"
@@ -59,8 +60,13 @@ class RecordContext:
 
     without_value: tuple[str, ...] = ()
 
+    document: Optional[Document] = None
+
     def field(self, path: str) -> Optional[SourceField]:
         return next((item for item in self.fields if item.field == path), None)
+
+    def reading(self, path: str) -> Optional[Page]:
+        return None if self.document is None else self.document.page(path)
 
     def text_of(self, path: str) -> Optional[str]:
         found = self.field(path)
@@ -88,6 +94,7 @@ class RecordContext:
             source_url=record.source_url,
             raw_reference=record.raw_reference,
             retrieved_at=record.retrieved_at,
+            modality=Modality.TEXT if self.document is None else self.document.modality,
             language_hint=record.language_hint,
             district_hint=record.district,
             state_hint=record.state,
@@ -145,9 +152,17 @@ def build_context(
         value = getattr(record, attribute, None)
         if value:
             slots.append(SourceField(field=path, text=value, **identity))
+    document = None if record.document is None else Document.from_block(record.document)
+    for page in () if document is None else document.pages:
+        held = next((item for item in fields if item.field == page.field), None)
+        if held is not None and any(item.char_end > len(held.text) for item in page.uncertain):
+            raise RecordShapeError(
+                f"{page.field} marks an uncertain range past the end of its own text"
+            )
     return RecordContext(
         record=record,
         fields=fields,
         geography=tuple(slots),
         without_value=data_paths_without_value(obj),
+        document=document,
     )

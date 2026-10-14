@@ -113,6 +113,7 @@ class IssueCode(str, Enum):
     MISSING_PROVENANCE = "missing_provenance"
     AMBIGUOUS_QUOTE = "ambiguous_quote"
     PROVIDER_WARNING = "provider_warning"
+    UNCERTAIN_RECOGNITION = "uncertain_recognition"
 
 
 class Provenance(StrictModel):

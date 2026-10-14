@@ -235,7 +235,7 @@ LIVE_FAILURES: dict[str, set[tuple[str, str]]] = {
     DEAD_ID: {("title", "unknown_field"), ("title", "unsupported_claim")},
     INSPECT_ID: {("title", "unknown_field"), ("title", "unsupported_claim")},
     WALK_ID: {("locations[loc-1]", "ambiguous_quote"), ("locations[loc-2]", "ambiguous_quote"),
-              ("entities[ent-1]", "span_mismatch")},
+              ("entities[ent-1]", "unsupported_claim")},
     HILL_ID: {("incident_type", "ambiguous_quote"), ("category", "ambiguous_quote"),
               ("locations[loc-1]", "ambiguous_quote"), ("entities[ent-1]", "ambiguous_quote")},
 }
@@ -426,12 +426,13 @@ def test_a_quote_the_article_inflected_differently_is_refused_and_never_rewritte
     body = BODY[WALK_ID]
     found = read(walk_answer(), SIX[WALK_ID])
     issue = next(item for item in found.validation.issues
-                 if item.code is IssueCode.SPAN_MISMATCH)
+                 if item.code is IssueCode.UNSUPPORTED_CLAIM)
     entity = found.entities[0]
 
     assert issue.field == "entities[ent-1]"
     assert "ஒன்றிய அதிகாரிகள்" in issue.detail
     assert "is not verbatim in data.content" in issue.detail
+    assert "verbatim in no field this record carries" in issue.detail
     assert "ஒன்றிய அதிகாரிகள்" not in body
     assert "அதிகாரிகளிடம்" in body
     assert entity.review is not ReviewState.ACCEPTED

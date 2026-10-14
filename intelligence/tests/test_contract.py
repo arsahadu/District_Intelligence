@@ -190,14 +190,14 @@ def test_a_record_that_states_no_happening_holds_every_event_field_open():
                 record_kind=RecordKind.CONTEXT,
                 context_type=ContextType.MARKET_PRICE,
                 claims=[claim(name, token)],
-                **{name: value},
+                **{"severity": SeverityLevel.UNRESOLVED, name: value},
             )
         with pytest.raises(ValidationError, match="an event field is filled"):
             incident(
                 record_kind=RecordKind.FORECAST,
                 context_type=ContextType.WEATHER_FORECAST,
                 claims=[claim(name, token)],
-                **{name: value},
+                **{"severity": SeverityLevel.UNRESOLVED, name: value},
             )
 
     quiet = incident(

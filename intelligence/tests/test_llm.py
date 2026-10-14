@@ -399,12 +399,13 @@ def test_the_answer_shape_a_provider_is_asked_for_survives_a_cleanup_pass():
     assert schema["$defs"]["ContextFactDraft"]["description"].startswith(
         "One value the record carries."
     )
-    assert PROMPT_DIGEST == "00c1a6b51e8467a7", (
+    assert PROMPT_DIGEST == "6e2f43b839df9fca", (
         "the reuse key moved: it hashes the prompt text and the answer shape together, and the shape "
         "is generated from the draft models' docstrings, so trimming one of those rewrites what a "
         "provider is asked to answer and strands every semantic reading already in a checkpoint - "
-        "stage-2.17 compacted the rules and grouped the repeated answer shapes, and the readings taken "
-        "under stage-2.14 will be re-asked of the billed provider"
+        "stage-2.29 rewrote rules 1, 3 and 5 to forbid a quote stitched across two fields and to read "
+        "severity and priority from the whole article, and the readings taken under stage-2.22 will be "
+        "re-asked of the billed provider"
     )
 
 

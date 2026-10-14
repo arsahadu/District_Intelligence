@@ -112,4 +112,4 @@ __all__ = [
     "structured",
     "validate_extraction",
 ]
-__version__ = "0.16.0"
+__version__ = "0.26.0"

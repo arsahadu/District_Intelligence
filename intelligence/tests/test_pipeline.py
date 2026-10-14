@@ -110,7 +110,7 @@ def test_a_quote_the_record_does_not_contain_is_dropped_not_repaired():
     found = run(payload)
     assert found.severity is SeverityLevel.UNRESOLVED
     assert found.validation.state is ReviewState.REVIEW_REQUIRED
-    assert any(issue.code is IssueCode.SPAN_MISMATCH for issue in found.validation.issues)
+    assert any(issue.code is IssueCode.UNSUPPORTED_CLAIM for issue in found.validation.issues)
     assert all(evidence.quote != "எல்லோரும் இறந்தனர்" for evidence in found.evidence)
 
 
@@ -181,15 +181,19 @@ def test_a_title_may_be_grounded_by_repeating_the_record_s_own():
     assert found.claim("title").review is ReviewState.ACCEPTED
 
 
-def test_the_record_s_own_timestamp_is_accepted_without_a_span():
-    payload = {"event_time": {"value": "2026-10-03T08:30:00", "precision": "minute"}}
-    found = run(payload)
-    assert found.event_time is not None
-    assert found.event_time_precision is TimePrecision.MINUTE
+def test_a_news_record_s_own_stamp_is_its_publication_time_and_never_the_event_time():
+    record = waterlogging()
+    payload = {"event_time": {"value": record["event_time"], "precision": "minute"}}
+    found = run(payload, record)
+    assert found.event_time is None
+    assert found.event_time_precision is TimePrecision.UNKNOWN
+    assert found.provenance.declared_event_time is not None
+    assert found.provenance.declared_event_time.isoformat() == record["event_time"]
     claim = found.claim("event_time")
-    assert claim.method is ExtractionMethod.SOURCE_METADATA
+    assert claim.method is ExtractionMethod.LLM
     assert claim.evidence_ids == []
-    assert claim.review is ReviewState.ACCEPTED
+    assert claim.review is ReviewState.UNRESOLVED
+    assert "when the page was published" in (claim.notes or "")
 
 
 def test_a_stamp_the_record_never_declared_still_needs_a_quote():
@@ -432,7 +436,7 @@ def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised
     }, record)
 
     assert len(found.locations) == MAX_ANSWER_ITEMS
-    assert [item.text for item in found.locations][:2] == ["place 0", "place 1"]
+    assert [item.normalized_name for item in found.locations][:2] == ["place 0", "place 1"]
     assert found.locations[0].review is ReviewState.ACCEPTED
     issue = next(item for item in found.validation.issues
                  if item.code is IssueCode.PROVIDER_WARNING and item.field == "locations")
@@ -481,7 +485,7 @@ def test_a_tamil_incident_is_classified_from_its_own_words_and_keeps_a_short_des
     assert [item.text for item in found.entities] == ["விவசாயிகள்"]
 
 
-def test_a_body_quote_named_as_the_title_is_refused_and_points_at_the_field_that_carries_it():
+def test_a_body_quote_named_as_the_title_is_anchored_in_the_field_that_carries_it():
     record = crop_distress_report()
     found = run({
         "title": {"value": record["title"], "field": "title"},
@@ -489,13 +493,16 @@ def test_a_body_quote_named_as_the_title_is_refused_and_points_at_the_field_that
                         "quote": "வெள்ளத்தில் பயிர் சேதமடைந்தது"},
     }, record)
 
-    assert found.description is None
-    assert found.claim("description").review is ReviewState.UNRESOLVED
-    issue = next(item for item in found.validation.issues
-                 if item.code is IssueCode.SPAN_MISMATCH)
-    assert "is not verbatim in title" in issue.detail
-    assert "it is verbatim in data.content" in issue.detail
-    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert found.description == "Flood water destroyed the crop."
+    claim = found.claim("description")
+    assert claim.review is ReviewState.ACCEPTED
+    cited = found.evidence_by_id()[claim.evidence_ids[0]]
+    assert (cited.field, cited.char_start, cited.quote) == (
+        CONTENT, record["data"]["content"].index("வெள்ளத்தில் பயிர் சேதமடைந்தது"),
+        "வெள்ளத்தில் பயிர் சேதமடைந்தது")
+    assert any("verbatim only in" in warning for warning in found.generation.warnings)
+    assert found.validation.issues == []
+    assert found.validation.state is ReviewState.ACCEPTED
 
 
 def test_a_mixed_tamil_and_english_record_separates_the_people_from_the_places():
@@ -681,7 +688,8 @@ def test_a_tamil_police_probe_gets_its_department_and_its_status_from_the_senten
     assert index[found.claim("department").evidence_ids[0]].quote == "லொக்கேட்டர் போலீசார்"
     assert index[found.claim("event_status").evidence_ids[0]].quote == "விசாரித்து வருகின்றனர்"
     assert found.claim("category").evidence_ids == found.claim("incident_type").evidence_ids
-    assert found.locations[0].text == "Karpaneri"
+    assert (found.locations[0].text, found.locations[0].normalized_name) == (
+        "கார்ப்பநேரி கிராமத்தின்", "Karpaneri")
     assert index[found.locations[0].evidence_ids[0]].quote == "கார்ப்பநேரி கிராமத்தின்"
 
 
@@ -739,7 +747,8 @@ def test_a_normalised_place_survives_only_when_the_quote_stays_the_source_s_word
                 record)
     assert clean.locations[0].review is ReviewState.ACCEPTED
     cited = clean.evidence_by_id()[clean.locations[0].evidence_ids[0]]
-    assert (clean.locations[0].text, cited.quote) == ("Karpaneri", "கார்ப்பநேரி கிராமத்தின்")
+    assert (clean.locations[0].text, clean.locations[0].normalized_name, cited.quote) == (
+        "கார்ப்பநேரி கிராமத்தின்", "Karpaneri", "கார்ப்பநேரி கிராமத்தின்")
 
     invented = run(body | {"locations": [{"text": "Karpaneri", "normalized_name": "Karpaneri",
                                           "location_type": "village", "role": "event_location",
@@ -748,7 +757,7 @@ def test_a_normalised_place_survives_only_when_the_quote_stays_the_source_s_word
     assert invented.locations[0].review is ReviewState.UNRESOLVED
     assert invented.locations[0].evidence_ids == []
     issue = next(item for item in invented.validation.issues
-                 if item.code is IssueCode.SPAN_MISMATCH)
+                 if item.code is IssueCode.UNSUPPORTED_CLAIM)
     assert "locations[loc-1]" in issue.describe()
     assert all("Karpaneri" not in str(item.quote) for item in invented.evidence)
 
@@ -802,7 +811,7 @@ def test_a_severity_nobody_quoted_for_stays_unresolved_however_likely_it_seems()
     invented = run(body | {"severity": {"value": "critical", "field": CONTENT,
                                         "quote": "ஐந்து பேர் இறந்தனர்"}}, record)
     assert invented.severity is SeverityLevel.UNRESOLVED
-    assert any(item.code is IssueCode.SPAN_MISMATCH and item.field == "severity"
+    assert any(item.code is IssueCode.UNSUPPORTED_CLAIM and item.field == "severity"
                for item in invented.validation.issues)
 
 
@@ -949,7 +958,7 @@ def test_an_incident_nobody_could_describe_is_reported_instead_of_accepted():
                                            "quote": "குழாயை மர்ம மனிதர்கள்"}}, record)
     assert refused.description is None
     grounding = [item for item in refused.validation.issues if item.field == "description"]
-    assert [item.code for item in grounding] == [IssueCode.SPAN_MISMATCH]
+    assert [item.code for item in grounding] == [IssueCode.UNSUPPORTED_CLAIM]
 
 
 def test_an_incident_whose_text_never_said_whether_it_goes_on_is_marked_unknown_loudly():
@@ -1231,7 +1240,7 @@ def test_one_classification_the_evidence_could_not_support_leaves_an_incident_an
     mismatch = next(
         item for item in refused.validation.issues if item.field == "incident_type"
     )
-    assert mismatch.code is IssueCode.SPAN_MISMATCH
+    assert mismatch.code is IssueCode.UNSUPPORTED_CLAIM
     assert refused.validation.state is ReviewState.REVIEW_REQUIRED
 
     omitted = run(
@@ -1546,10 +1555,7 @@ def test_a_priority_the_ladder_does_not_carry_is_refused_rather_than_rounded_to_
     found = run(payload)
 
     assert found.priority is None
-    claim = found.claim("priority")
-    assert claim.review is ReviewState.REVIEW_REQUIRED
-    assert claim.evidence_ids == []
-    assert "taxonomy" in (claim.notes or "")
+    assert found.claim("priority") is None
     assert any(
         item.field == "priority" and item.code is IssueCode.INVALID_VALUE
         for item in found.validation.issues
@@ -1703,8 +1709,26 @@ def test_a_context_fact_written_in_the_field_s_own_characters_is_copied():
     assert not any(item.code is IssueCode.UNSUPPORTED_CLAIM for item in found.validation.issues)
 
 
-def test_the_record_s_own_declared_stamp_is_kept_and_said_to_be_the_record_s_clock():
+def test_a_news_stamp_offered_as_the_event_time_stays_unresolved_without_demoting_the_reading():
     record = shortage_record(event_time="2026-10-02T17:45:00")
+    payload = shortage_answer()
+    payload["event_time"] = {"value": "2026-10-02T17:45:00", "precision": "minute",
+                             "confidence": 0.8}
+    found = run(payload, record)
+
+    assert found.event_time is None
+    assert found.provenance.declared_event_time.isoformat() == "2026-10-02T17:45:00"
+    assert found.claim("event_time").review is ReviewState.UNRESOLVED
+    assert found.validation.issues == []
+    assert found.validation.state is ReviewState.ACCEPTED
+    said = " ".join(found.generation.warnings)
+    assert "which is its publication time" in said
+    assert "no span and no stamp" not in said
+    assert "the record's clock" not in said
+
+
+def test_a_record_whose_stamp_is_not_a_publication_time_keeps_it_as_the_record_s_clock():
+    record = shortage_record(event_time="2026-10-02T17:45:00", source_type="agriculture")
     payload = shortage_answer()
     payload["event_time"] = {"value": "2026-10-02T17:45:00", "precision": "minute",
                              "confidence": 0.8}

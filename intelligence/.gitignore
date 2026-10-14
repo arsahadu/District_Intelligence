@@ -5,3 +5,10 @@ __pycache__/
 
 # Bulk-run progress: results.jsonl and checkpoint.json land here when --state-dir is used.
 runs/
+/tests/state-agri-manual-test/
+/tests/state-agri-verify-stage230/
+/tests/state-imd-manual-test/
+/tests/state-imd-verify-stage230/
+/tests/state-news-verify-stage230/
+/tests/state-paravai-manual-test/
+/tests/state-paravai-post-test/
