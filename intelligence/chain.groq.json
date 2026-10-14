@@ -1,0 +1,10 @@
+{
+  "candidates": [
+    {
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b",
+      "base_url": "https://api.groq.com",
+      "api_key_env": "GROQ_API_KEY"
+    }
+  ]
+}

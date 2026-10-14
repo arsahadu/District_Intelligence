@@ -1,5 +1,3 @@
-"""Evidence: the traceability primitive every extracted fact points at."""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -14,8 +12,6 @@ _HEX64 = r"^[0-9a-f]{64}$"
 
 
 class Evidence(StrictModel):
-    """A verbatim quote pinned to a character range in one CommonRecord field."""
-
     evidence_id: str
     record_id: str
     source_id: str
@@ -81,7 +77,6 @@ class Evidence(StrictModel):
 
     @property
     def is_source_fact(self) -> bool:
-        """True when this was copied from the record rather than inferred."""
         return self.method is ExtractionMethod.SOURCE_METADATA
 
     @property

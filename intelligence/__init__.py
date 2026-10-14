@@ -1,22 +1,12 @@
-"""Collector District Intelligence - AI / Intelligence module.
-
-Stage 1 of the LLM-first redesign: ``pipeline.process_record`` turns a CommonRecord into the
-stable ``contract.Incident`` through one provider-neutral LLM call and deterministic evidence
-checking. ``python -m intelligence.pipeline`` drives that boundary over the records the platform
-API serves and reports the batch. Everything under ``models``, ``config``, ``extraction`` and
-``mapping`` is the deterministic chain from the earlier stages. It still runs and is still reused
-(spans, record reading, enums, evidence); it is frozen for new semantic rules and is replaced
-stage by stage as the LLM path takes over classification, severity, status and department.
-
-Intelligence stays inside this package: nothing here imports ingestion, backend or frontend.
-"""
-
 from __future__ import annotations
 
 from typing import Any
 
+from intelligence.context import RecordContext, build_context
 from intelligence.contract import (
     Claim,
+    ContextFact,
+    ContextType,
     Entity,
     EntityType,
     EventStatus,
@@ -29,14 +19,17 @@ from intelligence.contract import (
     Location,
     PriorityLevel,
     Provenance,
+    RecordKind,
     Relationship,
     ReviewState,
     SCHEMA_VERSION,
+    SourceGeography,
     Validation,
 )
-from intelligence.context import RecordContext, build_context
+from intelligence.geography import source_geography
 from intelligence.intelligence import extract_incident, extraction_request, validate_extraction
 from intelligence.llm import (
+    GeminiProvider,
     GroqProvider,
     LLMConfig,
     LLMError,
@@ -50,71 +43,73 @@ from intelligence.llm import (
     build_provider,
     load_dotenv_file,
 )
+from intelligence.router import Mode, route
+from intelligence.structured import process_record as process_structured
+
+
 def __getattr__(name: str) -> Any:
-    """``process_record`` is resolved lazily: importing it here would make
-    ``python -m intelligence.pipeline`` re-import the module it is about to run and warn about it."""
     if name == "process_record":
         from intelligence.pipeline import process_record
 
         return process_record
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 __all__ = [
-    "pipeline",
-    "intelligence",
-    "llm",
-    "context",
-    "contract",
-    "models",
-    "config",
-    "extraction",
-    "mapping",
     "Claim",
+    "ContextFact",
+    "ContextType",
     "Entity",
     "EntityType",
     "EventStatus",
     "Evidence",
     "Generation",
+    "GeminiProvider",
+    "GroqProvider",
     "Incident",
     "IncidentCategory",
     "Issue",
     "IssueCode",
-    "Location",
-    "PriorityLevel",
-    "Provenance",
-    "RecordContext",
-    "Relationship",
-    "ReviewState",
-    "SCHEMA_VERSION",
-    "Validation",
-    "GroqProvider",
     "LLMConfig",
     "LLMError",
     "LLMProvider",
     "LLMRequest",
     "LLMResponse",
+    "Location",
+    "Mode",
     "OpenAICompatibleProvider",
+    "PriorityLevel",
+    "Provenance",
     "ProviderNotConfigured",
+    "RecordContext",
+    "RecordKind",
+    "Relationship",
+    "ReviewState",
+    "SCHEMA_VERSION",
+    "SourceGeography",
     "StructuredOutputError",
     "TransportError",
+    "Validation",
     "build_context",
     "build_provider",
+    "context",
+    "contract",
     "extract_incident",
     "extraction_request",
+    "geography",
+    "intelligence",
+    "llm",
     "load_dotenv_file",
+    "models",
+    "pipeline",
     "process_record",
+    "process_structured",
+    "records",
+    "router",
+    "route",
+    "source_geography",
+    "spans",
+    "structured",
     "validate_extraction",
 ]
-__version__ = "0.8.0"
-
-#: Stage 1 of the LLM-first redesign: foundation and output contract, no features yet.
-INTELLIGENCE_STAGE = 1
-
-#: Later stages replace these deterministic seams with LLM calls over the same contract.
-LEGACY_DETERMINISTIC_SEAMS = (
-    "intelligence.mapping.assembly",
-    "intelligence.mapping.enrichment",
-    "intelligence.mapping.classifier",
-    "intelligence.mapping.operations",
-    "intelligence.mapping.deduplication",
-)
+__version__ = "0.26.0"

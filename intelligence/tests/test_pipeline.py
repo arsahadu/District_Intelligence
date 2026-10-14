@@ -1,81 +1,54 @@
-"""Stage 1 pipeline: a CommonRecord in, one LLM call, an Incident that only says what the record does."""
-
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
 from typing import Any, Optional
 
 import pytest
 
 from intelligence.context import build_context
 from intelligence.contract import (
+    ContextType,
     Department,
     EventStatus,
     IncidentCategory,
     IssueCode,
+    PriorityLevel,
+    RecordKind,
     ReviewState,
 )
 from intelligence.intelligence import (
+    DEFAULT_LLM_CONFIDENCE,
     MAX_ANSWER_ITEMS,
     ExtractionDraft,
     InvalidExtraction,
+    extract_incident,
     extraction_request,
 )
-from intelligence.llm import (
-    LLMProvider,
-    LLMRequest,
-    LLMResponse,
-    ProviderNotConfigured,
-    StructuredOutputError,
-)
+from intelligence.llm import ProviderNotConfigured, StructuredOutputError
 from intelligence.models.enums import EventType, ExtractionMethod, SeverityLevel, TimePrecision
 from intelligence.pipeline import process_record
+from intelligence.tests.builders import (
+    CONTENT,
+    OFFICIALS,
+    RAIN,
+    STILL_WATCHING,
+    Scripted,
+    quote,
+    water_answer,
+)
 from intelligence.tests.record_fixtures import (
+    CYCLONE_WARNING_TEXT,
+    RETRIEVED_AT,
     base_record,
+    crop_distress_report,
+    events_listing,
+    keyword_bait_article,
     market_price,
+    mixed_language_article,
+    orange_alert,
     weather_forecast,
+    weather_warning,
     waterlogging,
 )
-
-CONTENT = "data.content"
-
-
-@dataclass
-class Scripted(LLMProvider):
-    """Answers with exactly what the test wrote. No determinism is hiding behind it."""
-
-    payload: Any
-    name: str = "scripted"
-    model_id: str = "gpt-oss-120b"
-
-    @property
-    def model(self) -> str:
-        return self.model_id
-
-    def complete(self, request: LLMRequest) -> LLMResponse:
-        body = json.dumps(self.payload) if not isinstance(self.payload, str) else self.payload
-        return LLMResponse(
-            provider=self.name,
-            model=self.model_id,
-            text=body,
-            data=None if isinstance(self.payload, str) else self.payload,
-            latency_ms=12.5,
-        )
-
-
-def quote(content: str, text: str, occurrence: int = 0) -> dict[str, Any]:
-    """A real span: the offset of the nth copy of the text, taken from the field itself."""
-    position = -1
-    for _ in range(occurrence + 1):
-        position = content.index(text, position + 1)
-    return {
-        "value": text,
-        "field": CONTENT,
-        "quote": text,
-        "char_start": position,
-        "confidence": 0.85,
-    }
 
 
 def synth(content: str, *, title: str = "District report", language: str = "en", **fields) -> dict:
@@ -90,42 +63,9 @@ def synth(content: str, *, title: str = "District report", language: str = "en",
     return payload
 
 
-RAIN = "நேற்று மாலை பெய்த கனமழையால் சில பகுதிகளில் சாலைகளில் தண்ணீர் தேங்கியது"
-STILL_WATCHING = "கண்காணித்து வருகின்றனர்"
-OFFICIALS = "அதிகாரிகள்"
-
-
-def water_answer() -> dict[str, Any]:
-    content = waterlogging()["data"]["content"]
-    title = waterlogging()["title"]
-    return {
-        "title": {"value": title, "field": "title", "quote": title, "char_start": 0,
-                  "confidence": 0.9},
-        "description": quote(content, RAIN),
-        "incident_type": {"value": "urban_waterlogging", "field": CONTENT,
-                          "quote": "தண்ணீர் தேங்கியது",
-                          "char_start": content.index("தண்ணீர் தேங்கியது"), "confidence": 0.8},
-        "severity": {"value": "moderate", "field": CONTENT, "quote": "கனமழையால்",
-                     "char_start": content.index("கனமழையால்"), "confidence": 0.7},
-        "event_status": {"value": "ongoing", "field": CONTENT, "quote": STILL_WATCHING,
-                         "char_start": content.index(STILL_WATCHING), "confidence": 0.9},
-        "event_time": {"value": "2026-10-03T08:30:00", "precision": "minute", "confidence": 0.8},
-        "locations": [{"text": "மதுரை", "normalized_name": "Madurai", "location_type": "district",
-                       "role": "event_container", "district": "Madurai",
-                       "field": CONTENT, "quote": "மதுரை மாவட்டத்தில்",
-                       "char_start": content.index("மதுரை மாவட்டத்தில்"), "confidence": 0.85}],
-        "entities": [{"text": OFFICIALS, "entity_type": "government_official",
-                      "role": "responding_authority", "field": CONTENT, "quote": OFFICIALS,
-                      "char_start": content.index(OFFICIALS), "confidence": 0.8}],
-        "relationships": [{"kind": "responds_to", "subject": OFFICIALS, "object": "Madurai",
-                           "field": CONTENT, "quote": STILL_WATCHING,
-                           "char_start": content.index(STILL_WATCHING), "confidence": 0.7}],
-    }
-
-
 def run(payload: Any, record: Optional[dict] = None):
     subject = record if record is not None else waterlogging()
-    return process_record(subject, provider=Scripted(payload=payload))
+    return extract_incident(subject, provider=Scripted(payload=payload))
 
 
 def test_a_grounded_answer_becomes_an_incident_that_keeps_its_source():
@@ -133,6 +73,8 @@ def test_a_grounded_answer_becomes_an_incident_that_keeps_its_source():
     assert found.incident_id == "INC-NEWS-MDU-WLR-0001"
     assert found.validation.state is ReviewState.ACCEPTED
     assert found.review_required is False
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.context_type is None
     assert found.severity is SeverityLevel.MODERATE
     assert found.event_status.value == "ongoing"
     assert found.incident_type is EventType.URBAN_WATERLOGGING
@@ -168,7 +110,7 @@ def test_a_quote_the_record_does_not_contain_is_dropped_not_repaired():
     found = run(payload)
     assert found.severity is SeverityLevel.UNRESOLVED
     assert found.validation.state is ReviewState.REVIEW_REQUIRED
-    assert any(issue.code is IssueCode.SPAN_MISMATCH for issue in found.validation.issues)
+    assert any(issue.code is IssueCode.UNSUPPORTED_CLAIM for issue in found.validation.issues)
     assert all(evidence.quote != "எல்லோரும் இறந்தனர்" for evidence in found.evidence)
 
 
@@ -239,15 +181,19 @@ def test_a_title_may_be_grounded_by_repeating_the_record_s_own():
     assert found.claim("title").review is ReviewState.ACCEPTED
 
 
-def test_the_record_s_own_timestamp_is_accepted_without_a_span():
-    payload = {"event_time": {"value": "2026-10-03T08:30:00", "precision": "minute"}}
-    found = run(payload)
-    assert found.event_time is not None
-    assert found.event_time_precision is TimePrecision.MINUTE
+def test_a_news_record_s_own_stamp_is_its_publication_time_and_never_the_event_time():
+    record = waterlogging()
+    payload = {"event_time": {"value": record["event_time"], "precision": "minute"}}
+    found = run(payload, record)
+    assert found.event_time is None
+    assert found.event_time_precision is TimePrecision.UNKNOWN
+    assert found.provenance.declared_event_time is not None
+    assert found.provenance.declared_event_time.isoformat() == record["event_time"]
     claim = found.claim("event_time")
-    assert claim.method is ExtractionMethod.SOURCE_METADATA
+    assert claim.method is ExtractionMethod.LLM
     assert claim.evidence_ids == []
-    assert claim.review is ReviewState.ACCEPTED
+    assert claim.review is ReviewState.UNRESOLVED
+    assert "when the page was published" in (claim.notes or "")
 
 
 def test_a_stamp_the_record_never_declared_still_needs_a_quote():
@@ -288,7 +234,13 @@ def test_an_empty_answer_is_an_unresolved_incident_not_a_fabricated_one():
     found = run({})
     assert found.is_empty is True
     assert found.validation.state is ReviewState.UNRESOLVED
-    assert found.claims == [] and found.evidence == []
+    assert found.claims == []
+    assert all(item.method is ExtractionMethod.SOURCE_METADATA for item in found.evidence)
+    assert [item.field for item in found.source_geography] == [
+        "location.raw_text",
+        "location.district",
+        "location.state",
+    ]
     assert found.title is None and found.severity is SeverityLevel.UNRESOLVED
     assert found.provenance.record_id == "NEWS-MDU-WLR-0001"
 
@@ -362,6 +314,8 @@ def test_every_source_offers_the_fields_it_actually_carries():
 def test_a_price_line_grounds_on_its_own_numbers_and_stays_a_contextual_record():
     record = market_price(min_price=55.0, max_price=60.0)
     payload = {
+        "record_kind": "context",
+        "context_type": "market_price",
         "title": {"value": record["title"], "field": "title"},
         "description": {"value": "55.0", "field": "data.min_price", "quote": "55.0",
                         "char_start": 0},
@@ -370,11 +324,18 @@ def test_a_price_line_grounds_on_its_own_numbers_and_stays_a_contextual_record()
     }
     found = run(payload, record)
     assert found.description == "55.0"
-    assert found.category is IncidentCategory.AGRICULTURE
+    assert found.record_kind is RecordKind.CONTEXT
+    assert found.context_type is ContextType.MARKET_PRICE
+    assert found.category is IncidentCategory.UNRESOLVED
+    assert found.claim("category").review is ReviewState.REVIEW_REQUIRED
+    assert any(item.code is IssueCode.UNSUPPORTED_CLAIM and item.field == "category"
+               for item in found.validation.issues)
     assert found.severity is SeverityLevel.UNRESOLVED
     assert found.incident_type is EventType.UNRESOLVED
+    assert found.event_status is EventStatus.UNKNOWN
     assert found.priority is None
-    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.locations == [] and found.entities == []
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
     cited = found.evidence_by_id()[found.claim("description").evidence_ids[0]]
     assert (cited.field, cited.quote) == ("data.min_price", "55.0")
 
@@ -409,7 +370,6 @@ FRAUD_TITLE = "Investment fraud probe"
 
 
 def test_a_classification_is_accepted_from_the_event_it_describes_not_its_token():
-    """The Melur case: nothing in the text says fraud, police or investigation in English."""
     record = synth(FRAUD, title=FRAUD_TITLE, language="en")
     found = run({
         "title": {"value": FRAUD_TITLE, "field": "title"},
@@ -461,11 +421,11 @@ def test_the_prompt_reads_an_event_from_the_body_instead_of_a_token_from_the_hea
     assert "Navigation links, related-story listings and date stamps describe no event" in rules
     assert "stay null unless the record" not in rules
     assert "do not read furniture as an event" in rules
+    assert "says when the page was written, never when something happened" in rules
     assert "does not exist here unless it is printed" in rules
 
 
 def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised():
-    """One completion has a size. The overflow is dropped, and the drop is said out loud."""
     record = synth(FRAUD, title=FRAUD_TITLE, language="en")
     found = run({
         "title": {"value": FRAUD_TITLE, "field": "title"},
@@ -476,7 +436,7 @@ def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised
     }, record)
 
     assert len(found.locations) == MAX_ANSWER_ITEMS
-    assert [item.text for item in found.locations][:2] == ["place 0", "place 1"]
+    assert [item.normalized_name for item in found.locations][:2] == ["place 0", "place 1"]
     assert found.locations[0].review is ReviewState.ACCEPTED
     issue = next(item for item in found.validation.issues
                  if item.code is IssueCode.PROVIDER_WARNING and item.field == "locations")
@@ -485,3 +445,1439 @@ def test_an_answer_that_names_too_much_is_cut_to_the_ceiling_the_prompt_promised
 
     rules = extraction_request(build_context(record)).system.split("Rules:\n")[1]
     assert f"never more than {MAX_ANSWER_ITEMS} in any list" in rules
+
+
+def test_a_tamil_incident_is_classified_from_its_own_words_and_keeps_a_short_description():
+    record = crop_distress_report()
+    c = record["data"]["content"]
+    found = run({
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "Flooding destroyed the crop in Virangi; farmers sat in protest.",
+                        "field": CONTENT, "quote": "வெள்ளத்தில் பயிர் சேதமடைந்தது",
+                        "char_start": c.index("வெள்ளத்தில் பயிர் சேதமடைந்தது"), "confidence": 0.8},
+        "incident_type": quote(c, "பயிர் சேதமடைந்தது") | {"value": "crop_damage"},
+        "category": quote(c, "விவசாயிகள்") | {"value": "agriculture"},
+        "department": quote(c, "நட்ட ஈடு") | {"value": "agriculture"},
+        "severity": quote(c, "வெள்ளத்தில்") | {"value": "moderate"},
+        "priority": quote(c, "மறியலில்") | {"value": "high"},
+        "event_status": quote(c, "மறியலில்") | {"value": "ongoing"},
+        "locations": [quote(c, "விராங்கி") | {"text": "விராங்கி", "location_type": "village",
+                                             "role": "event_location"}],
+        "entities": [quote(c, "விவசாயிகள்") | {"text": "விவசாயிகள்",
+                                               "entity_type": "community_group",
+                                               "role": "affected_party"}],
+    }, record)
+
+    assert found.incident_type is EventType.CROP_DAMAGE
+    assert found.category is IncidentCategory.AGRICULTURE
+    assert found.department is Department.AGRICULTURE
+    assert found.severity is SeverityLevel.MODERATE
+    assert found.priority is not None and found.priority.value == "high"
+    assert found.event_status is EventStatus.ONGOING
+    assert found.description.startswith("Flooding destroyed")
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+
+    index = found.evidence_by_id()
+    cited = index[found.claim("description").evidence_ids[0]]
+    assert (cited.field, cited.quote) == (CONTENT, "வெள்ளத்தில் பயிர் சேதமடைந்தது")
+    assert [item.text for item in found.locations] == ["விராங்கி"]
+    assert [item.text for item in found.entities] == ["விவசாயிகள்"]
+
+
+def test_a_body_quote_named_as_the_title_is_anchored_in_the_field_that_carries_it():
+    record = crop_distress_report()
+    found = run({
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "Flood water destroyed the crop.", "field": "title",
+                        "quote": "வெள்ளத்தில் பயிர் சேதமடைந்தது"},
+    }, record)
+
+    assert found.description == "Flood water destroyed the crop."
+    claim = found.claim("description")
+    assert claim.review is ReviewState.ACCEPTED
+    cited = found.evidence_by_id()[claim.evidence_ids[0]]
+    assert (cited.field, cited.char_start, cited.quote) == (
+        CONTENT, record["data"]["content"].index("வெள்ளத்தில் பயிர் சேதமடைந்தது"),
+        "வெள்ளத்தில் பயிர் சேதமடைந்தது")
+    assert any("verbatim only in" in warning for warning in found.generation.warnings)
+    assert found.validation.issues == []
+    assert found.validation.state is ReviewState.ACCEPTED
+
+
+def test_a_mixed_tamil_and_english_record_separates_the_people_from_the_places():
+    record = mixed_language_article()
+    content = record["data"]["content"]
+    found = run({
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "A ten hour power cut closed tailor shops in two Madurai areas.",
+                        "field": CONTENT, "quote": "power outage தொடர்ந்தது",
+                        "char_start": content.index("power outage தொடர்ந்தது")},
+        "incident_type": quote(content, "மின்தடை") | {"value": "power_supply_disruption"},
+        "severity": quote(content, "தையல் கடைகள் மூடப்பட்டன") | {"value": "low"},
+        "event_status": quote(content, "வியாபாரிகள் தெரிவித்தனர்") | {"value": "reported"},
+        "locations": [
+            quote(content, "K.K. Nagar") | {"text": "K.K. Nagar", "normalized_name": "K.K. Nagar",
+                                            "location_type": "locality", "role": "event_location"},
+            quote(content, "அண்ணா நகர்") | {"text": "அண்ணா நகர்", "normalized_name": "Anna Nagar",
+                                            "location_type": "locality", "role": "event_location"},
+        ],
+        "entities": [quote(content, "வியாபாரிகள்") | {"text": "வியாபாரிகள்",
+                                                      "entity_type": "community_group",
+                                                      "role": "affected_party"}],
+        "relationships": [quote(content, "வியாபாரிகள் தெரிவித்தனர்")
+                          | {"kind": "involves", "subject": "வியாபாரிகள்", "object": "K.K. Nagar"}],
+    }, record)
+
+    assert found.incident_type is EventType.POWER_SUPPLY_DISRUPTION
+    assert found.severity is SeverityLevel.LOW
+    assert [item.text for item in found.locations] == ["K.K. Nagar", "அண்ணா நகர்"]
+    assert [item.text for item in found.entities] == ["வியாபாரிகள்"]
+    assert found.relationships[0].from_ref == found.entities[0].entity_id
+    assert found.relationships[0].to_ref == found.locations[0].location_id
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+
+
+def test_the_same_span_cannot_be_a_place_in_one_list_and_a_party_in_the_other():
+    record = mixed_language_article()
+    content = record["data"]["content"]
+    span = {"field": CONTENT, "quote": "K.K. Nagar", "char_start": content.index("K.K. Nagar")}
+    found = run({
+        "incident_type": quote(content, "power outage") | {"value": "power_supply_disruption"},
+        "locations": [span | {"text": "K.K. Nagar", "location_type": "locality",
+                              "role": "event_location"}],
+        "entities": [span | {"text": "K.K. Nagar", "entity_type": "organization",
+                             "role": "action_subject"}],
+    }, record)
+
+    issue = next(item for item in found.validation.issues
+                 if item.code is IssueCode.PROVIDER_WARNING)
+    assert "locations[loc-1]" in issue.detail and "entities[ent-1]" in issue.detail
+    assert "cannot be both" in issue.detail
+    assert found.incident_type is EventType.POWER_SUPPLY_DISRUPTION
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_a_forecast_that_reports_no_event_stays_context_and_carries_no_classification():
+    record = weather_forecast()
+    forecast = record["data"]["forecast"]
+    found = run({
+        "record_kind": "forecast",
+        "context_type": "weather_forecast",
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "Cloud with light rain expected over the district.",
+                        "field": "data.forecast", "quote": "light rain over Madurai district",
+                        "char_start": forecast.index("light rain over Madurai district")},
+    }, record)
+
+    assert found.description == "Cloud with light rain expected over the district."
+    assert found.claim("description").value == found.description
+    assert found.record_kind is RecordKind.FORECAST
+    assert found.context_type is ContextType.WEATHER_FORECAST
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.category is IncidentCategory.UNRESOLVED
+    assert found.department is Department.UNRESOLVED
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.event_status is EventStatus.UNKNOWN
+    assert found.validation.state is ReviewState.ACCEPTED
+    cited = found.evidence_by_id()[found.claim("description").evidence_ids[0]]
+    assert (cited.field, cited.quote) == ("data.forecast", "light rain over Madurai district")
+
+
+CYCLONE_DAMAGE = (
+    "புயலால் மதுரை மாவட்டத்தில் பதினொரு மரங்கள் சாய்ந்தன; நான்கு வீடுகளின் கூரைகள் "
+    "பறந்தன. மின்சார கம்பம் விழுந்து நான்கு மணி நேரம் மின்தடை ஏற்பட்டது."
+)
+
+
+def test_weather_text_that_reports_the_damage_is_an_incident_even_if_named_a_forecast():
+    record = synth(CYCLONE_DAMAGE, title="புயலில் மரம், வீடு சேதம்", language="ta")
+    found = run({
+        "record_kind": "forecast",
+        "context_type": "weather_forecast",
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "A cyclone toppled eleven trees and tore four roofs off in the district.",
+                        "field": CONTENT, "quote": "புயலால் மதுரை மாவட்டத்தில் பதினொரு மரங்கள் சாய்ந்தன",
+                        "char_start": CYCLONE_DAMAGE.index("புயலால் மதுரை மாவட்டத்தில் பதினொரு மரங்கள் சாய்ந்தன")},
+        "incident_type": quote(CYCLONE_DAMAGE, "நான்கு வீடுகளின் கூரைகள் பறந்தன")
+                         | {"value": "cyclone_storm_damage"},
+        "severity": quote(CYCLONE_DAMAGE, "பதினொரு மரங்கள் சாய்ந்தன") | {"value": "high"},
+    }, record)
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.context_type is None
+    assert found.incident_type is EventType.CYCLONE_STORM_DAMAGE
+    assert found.severity is SeverityLevel.HIGH
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert any("the context label is dropped" in w for w in found.generation.warnings)
+
+
+def test_the_prompt_holds_the_stage_2_5_rules_and_names_the_fields_a_quote_may_cite():
+    context = build_context(mixed_language_article())
+    request = extraction_request(context)
+    rules = request.system.split("Rules:\n")[1]
+    assert "An incident says something happened and mattered" in rules
+    assert "A forecast says something may happen" in rules
+    assert "is the concise factual account of that event" in rules
+    assert "A name belongs to one list, decided by the words around it" in rules
+    assert "related, never copied" in rules
+    assert "not proof by itself" in rules
+    assert "Every quote names the field whose text it copies" in rules
+    assert "never cite the title for what the body says" in rules
+    assert "long enough to be found once in that field" in rules
+    assert "An offset counts in Unicode characters of the field you named" in rules
+
+    assert "Every `field` names one of these, exactly as printed above" in request.user
+    for path in context.paths:
+        assert path in request.user
+    assert "data.transcript" not in request.user
+
+
+POLICE_TAMIL = (
+    "மதுரை: கார்ப்பநேரி கிராமத்தின் நீர்ப்பாசனக் குழாயை மர்ம நபர்கள் திருடிச் சென்றனர். "
+    "இதுகுறித்து லொக்கேட்டர் போலீசார் விசாரித்து வருகின்றனர்."
+)
+INVEST_TAMIL = (
+    "மதுரை: மாதம் ரூ.2,000 செலுத்தினால் இரட்டிப்பு பணம் கிடைக்கும் என்று கூறி 150 "
+    "குடும்பங்களிடமிருந்து ரூ.45 லட்சத்தை ஒரு தனியார் நிறுவனம் மோசம் செய்தது. புகாரின் பேரில் "
+    "கண்காணிப்பு குழுவினர் வழக்கு பதிவு செய்து விசாரிக்கின்றனர்."
+)
+CASUALTY_TAMIL = (
+    "மதுரை: கனமழையால் சாய்ந்த மரத்தில் சிக்கி இருவர் உயிரிழந்தனர். வெள்ள நீரில் 300 "
+    "குடும்பங்கள் பாதிக்கப்பட்டுள்ளன."
+)
+
+
+def test_a_tamil_police_probe_gets_its_department_and_its_status_from_the_sentence():
+    record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "Unknown people carried off Karpaneri village's irrigation pipe.",
+                        "field": CONTENT, "quote": "நீர்ப்பாசனக் குழாயை மர்ம நபர்கள் திருடிச் சென்றனர்",
+                        "char_start": POLICE_TAMIL.index(
+                            "நீர்ப்பாசனக் குழாயை மர்ம நபர்கள் திருடிச் சென்றனர்"),
+                        "confidence": 0.75},
+        "incident_type": quote(POLICE_TAMIL, "மர்ம நபர்கள் திருடிச் சென்றனர்")
+                         | {"value": "property_crime"},
+        "category": quote(POLICE_TAMIL, "மர்ம நபர்கள் திருடிச் சென்றனர்")
+                    | {"value": "law_and_order"},
+        "department": quote(POLICE_TAMIL, "லொக்கேட்டர் போலீசார்") | {"value": "police"},
+        "event_status": quote(POLICE_TAMIL, "விசாரித்து வருகின்றனர்")
+                        | {"value": "under_investigation"},
+        "locations": [quote(POLICE_TAMIL, "கார்ப்பநேரி கிராமத்தின்")
+                      | {"text": "Karpaneri", "normalized_name": "Karpaneri",
+                         "location_type": "village", "role": "event_location"}],
+        "entities": [quote(POLICE_TAMIL, "லொக்கேட்டர் போலீசார்")
+                     | {"text": "லொக்கேட்டர் போலீசார்", "entity_type": "government_body",
+                        "role": "responding_authority"}],
+    }, record)
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.department is Department.POLICE
+    assert found.event_status is EventStatus.UNDER_INVESTIGATION
+    assert found.incident_type is EventType.PROPERTY_CRIME
+    assert found.category is IncidentCategory.LAW_AND_ORDER
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.priority is None
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+
+    index = found.evidence_by_id()
+    assert index[found.claim("department").evidence_ids[0]].quote == "லொக்கேட்டர் போலீசார்"
+    assert index[found.claim("event_status").evidence_ids[0]].quote == "விசாரித்து வருகின்றனர்"
+    assert found.claim("category").evidence_ids == found.claim("incident_type").evidence_ids
+    assert (found.locations[0].text, found.locations[0].normalized_name) == (
+        "கார்ப்பநேரி கிராமத்தின்", "Karpaneri")
+    assert index[found.locations[0].evidence_ids[0]].quote == "கார்ப்பநேரி கிராமத்தின்"
+
+
+def test_a_tamil_investment_fraud_is_an_incident_with_an_account_the_body_supports():
+    record = synth(INVEST_TAMIL, title="ரூ.45 லட்சம் முதலீட்டு மோசடி", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "A private firm took Rs 45 lakh from 150 families on a promise "
+                                 "of doubling their money.",
+                        "field": CONTENT, "quote": "ரூ.45 லட்சத்தை ஒரு தனியார் நிறுவனம் மோசம் செய்தது",
+                        "char_start": INVEST_TAMIL.index(
+                            "ரூ.45 லட்சத்தை ஒரு தனியார் நிறுவனம் மோசம் செய்தது")},
+        "incident_type": quote(INVEST_TAMIL, "மோசம் செய்தது")
+                         | {"value": "cyber_or_financial_fraud"},
+        "category": quote(INVEST_TAMIL, "வழக்கு பதிவு செய்து") | {"value": "law_and_order"},
+        "department": quote(INVEST_TAMIL, "கண்காணிப்பு குழுவினர்") | {"value": "police"},
+        "severity": quote(INVEST_TAMIL, "150 குடும்பங்களிடமிருந்து") | {"value": "moderate"},
+        "event_status": quote(INVEST_TAMIL, "விசாரிக்கின்றனர்") | {"value": "under_investigation"},
+        "locations": [quote(INVEST_TAMIL, "மதுரை") | {"text": "மதுரை",
+                                                     "location_type": "district",
+                                                     "role": "event_container"}],
+        "entities": [
+            quote(INVEST_TAMIL, "ஒரு தனியார் நிறுவனம்") | {"text": "ஒரு தனியார் நிறுவனம்",
+                                                          "entity_type": "organization",
+                                                          "role": "action_subject"},
+            quote(INVEST_TAMIL, "கண்காணிப்பு குழுவினர்") | {"text": "கண்காணிப்பு குழுவினர்",
+                                                            "entity_type": "government_body",
+                                                            "role": "responding_authority"},
+        ],
+    }, record)
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.incident_type is EventType.CYBER_OR_FINANCIAL_FRAUD
+    assert found.category is IncidentCategory.LAW_AND_ORDER
+    assert found.event_status is EventStatus.UNDER_INVESTIGATION
+    assert found.description is not None
+    assert found.description.startswith("A private firm took Rs 45 lakh")
+    assert [item.text for item in found.entities] == ["ஒரு தனியார் நிறுவனம்",
+                                                     "கண்காணிப்பு குழுவினர்"]
+    assert found.validation.state is ReviewState.ACCEPTED
+
+
+def test_a_normalised_place_survives_only_when_the_quote_stays_the_source_s_words():
+    record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
+    body = {
+        "record_kind": "incident",
+        "incident_type": quote(POLICE_TAMIL, "திருடிச் சென்றனர்") | {"value": "property_crime"},
+        "description": quote(POLICE_TAMIL, "நீர்ப்பாசனக் குழாயை"),
+    }
+
+    clean = run(body | {"locations": [quote(POLICE_TAMIL, "கார்ப்பநேரி கிராமத்தின்")
+                                      | {"text": "Karpaneri", "normalized_name": "Karpaneri",
+                                         "location_type": "village", "role": "event_location"}]},
+                record)
+    assert clean.locations[0].review is ReviewState.ACCEPTED
+    cited = clean.evidence_by_id()[clean.locations[0].evidence_ids[0]]
+    assert (clean.locations[0].text, clean.locations[0].normalized_name, cited.quote) == (
+        "கார்ப்பநேரி கிராமத்தின்", "Karpaneri", "கார்ப்பநேரி கிராமத்தின்")
+
+    invented = run(body | {"locations": [{"text": "Karpaneri", "normalized_name": "Karpaneri",
+                                          "location_type": "village", "role": "event_location",
+                                          "field": CONTENT, "quote": "கார்ப்பநேரி கிராமத்தில்"}]},
+                   record)
+    assert invented.locations[0].review is ReviewState.UNRESOLVED
+    assert invented.locations[0].evidence_ids == []
+    issue = next(item for item in invented.validation.issues
+                 if item.code is IssueCode.UNSUPPORTED_CLAIM)
+    assert "locations[loc-1]" in issue.describe()
+    assert all("Karpaneri" not in str(item.quote) for item in invented.evidence)
+
+    bare = run(body | {"locations": [{"text": "Karpaneri", "location_type": "village"}]}, record)
+    assert bare.locations[0].review is ReviewState.UNRESOLVED
+    assert any(item.code is IssueCode.UNSUPPORTED_CLAIM and item.field == "locations[loc-1]"
+               for item in bare.validation.issues)
+
+
+def test_each_controlled_token_is_read_from_the_meaning_of_a_tamil_span():
+    record = synth(CASUALTY_TAMIL, title="கனமழையில் இருவர் பலி", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "description": quote(CASUALTY_TAMIL, "கனமழையால் சாய்ந்த மரத்தில்"),
+        "incident_type": quote(CASUALTY_TAMIL, "சாய்ந்த மரத்தில் சிக்கி")
+                         | {"value": "tree_fall"},
+        "category": quote(CASUALTY_TAMIL, "கனமழையால்") | {"value": "disaster"},
+        "department": quote(CASUALTY_TAMIL, "வெள்ள நீரில்")
+                      | {"value": "district_disaster_management"},
+        "severity": quote(CASUALTY_TAMIL, "இருவர் உயிரிழந்தனர்") | {"value": "high"},
+        "event_status": quote(CASUALTY_TAMIL, "பாதிக்கப்பட்டுள்ளன") | {"value": "ongoing"},
+    }, record)
+
+    assert found.incident_type is EventType.TREE_FALL
+    assert found.category is IncidentCategory.DISASTER
+    assert found.department is Department.DISTRICT_DISASTER_MANAGEMENT
+    assert found.validation.state is ReviewState.ACCEPTED
+    index = found.evidence_by_id()
+    for name in ("incident_type", "category", "department", "severity", "event_status"):
+        cited = index[found.claim(name).evidence_ids[0]]
+        assert getattr(found, name).value not in cited.quote
+        assert cited.field == CONTENT
+
+
+def test_a_severity_nobody_quoted_for_stays_unresolved_however_likely_it_seems():
+    record = synth(INVEST_TAMIL, title="ரூ.45 லட்சம் முதலீட்டு மோசடி", language="ta")
+    body = {
+        "record_kind": "incident",
+        "incident_type": quote(INVEST_TAMIL, "மோசம் செய்தது")
+                         | {"value": "cyber_or_financial_fraud"},
+        "description": quote(INVEST_TAMIL, "ரூ.45 லட்சத்தை"),
+    }
+
+    silent = run(body | {"severity": {"value": "critical", "field": CONTENT}}, record)
+    assert silent.severity is SeverityLevel.UNRESOLVED
+    assert silent.claim("severity").review is ReviewState.UNRESOLVED
+    assert any(item.code is IssueCode.UNSUPPORTED_CLAIM and item.field == "severity"
+               for item in silent.validation.issues)
+    assert silent.validation.state is ReviewState.REVIEW_REQUIRED
+
+    invented = run(body | {"severity": {"value": "critical", "field": CONTENT,
+                                        "quote": "ஐந்து பேர் இறந்தனர்"}}, record)
+    assert invented.severity is SeverityLevel.UNRESOLVED
+    assert any(item.code is IssueCode.UNSUPPORTED_CLAIM and item.field == "severity"
+               for item in invented.validation.issues)
+
+
+def test_lives_lost_in_the_text_are_the_evidence_a_band_is_answered_with():
+    record = synth(CASUALTY_TAMIL, title="கனமழையில் இருவர் பலி", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "incident_type": quote(CASUALTY_TAMIL, "சாய்ந்த மரத்தில்") | {"value": "tree_fall"},
+        "description": quote(CASUALTY_TAMIL, "கனமழையால் சாய்ந்த மரத்தில் சிக்கி"),
+        "severity": quote(CASUALTY_TAMIL, "இருவர் உயிரிழந்தனர்") | {"value": "high"},
+        "priority": quote(CASUALTY_TAMIL, "300 குடும்பங்கள் பாதிக்கப்பட்டுள்ளன")
+                    | {"value": "high"},
+    }, record)
+
+    assert found.severity is SeverityLevel.HIGH
+    assert found.priority is PriorityLevel.HIGH
+    cited = found.evidence_by_id()[found.claim("severity").evidence_ids[0]]
+    assert cited.quote == "இருவர் உயிரிழந்தனர்"
+    assert found.claim("priority").evidence_ids != found.claim("severity").evidence_ids
+    assert found.validation.state is ReviewState.ACCEPTED
+
+
+STATUS_CASES = (
+    pytest.param("மதுரை: கடையில் பணம் மோசம்; போலீசார் விசாரித்து வருகின்றனர்",
+                 "விசாரித்து வருகின்றனர்", "property_crime", EventStatus.UNDER_INVESTIGATION,
+                 id="under-investigation"),
+    pytest.param("மதுரை: நான்கு மணி நேர மின்தடை தொடர்கிறது; கடைகள் மூடப்பட்டன",
+                 "மின்தடை தொடர்கிறது", "power_supply_disruption", EventStatus.ONGOING,
+                 id="ongoing"),
+    pytest.param("மதுரை: குப்பை மேட்டுக்கு நகராட்சி நடவடிக்கை எடுத்தது",
+                 "நடவடிக்கை எடுத்தது", "waste_management", EventStatus.ACTION_TAKEN,
+                 id="action-taken"),
+    pytest.param("மதுரை: ஊரின் குடிநீர் பிரச்னைக்கு தீர்வு காணப்பட்டது",
+                 "தீர்வு காணப்பட்டது", "drinking_water_shortage", EventStatus.RESOLVED,
+                 id="resolved"),
+)
+
+
+@pytest.mark.parametrize("content,verb,token,expected", STATUS_CASES)
+def test_the_verb_the_source_uses_now_is_what_the_status_is_answered_from(
+    content, verb, token, expected
+):
+    record = synth(content, title="மதுரை செய்தி", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "incident_type": quote(content, verb) | {"value": token},
+        "description": quote(content, verb),
+        "event_status": quote(content, verb) | {"value": expected.value},
+    }, record)
+
+    assert found.event_status is expected
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.validation.state is ReviewState.ACCEPTED
+
+
+TRANSFER_TAMIL = (
+    "மதுரை: விவசாயக் குழும அலுவலர் ஒருவரை மாநில நிவாரணப் பணிக்கு பணியிடம் மாற்றி "
+    "உத்தரவு பிறப்பிக்கப்பட்டுள்ளது."
+)
+
+
+def test_an_administrative_act_the_record_states_is_an_incident_of_its_own_kind():
+    record = synth(TRANSFER_TAMIL, title="பணியிட மாற்ற உத்தரவு", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "title": {"value": record["title"], "field": "title"},
+        "description": quote(TRANSFER_TAMIL, "பணியிடம் மாற்றி உத்தரவு பிறப்பிக்கப்பட்டுள்ளது"),
+        "incident_type": quote(TRANSFER_TAMIL, "உத்தரவு பிறப்பிக்கப்பட்டுள்ளது")
+                         | {"value": "personnel_transfer"},
+        "category": quote(TRANSFER_TAMIL, "விவசாயக் குழும அலுவலர்") | {"value": "public_service"},
+        "department": quote(TRANSFER_TAMIL, "விவசாயக் குழும அலுவலர்") | {"value": "agriculture"},
+        "event_status": quote(TRANSFER_TAMIL, "உத்தரவு பிறப்பிக்கப்பட்டுள்ளது")
+                        | {"value": "action_taken"},
+        "entities": [quote(TRANSFER_TAMIL, "விவசாயக் குழும அலுவலர்")
+                     | {"text": "விவசாயக் குழும அலுவலர்",
+                        "entity_type": "government_official", "role": "action_subject"}],
+    }, record)
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.incident_type is EventType.PERSONNEL_TRANSFER
+    assert found.category is IncidentCategory.PUBLIC_SERVICE
+    assert found.event_status is EventStatus.ACTION_TAKEN
+    assert found.context_type is None
+    assert found.validation.state is ReviewState.ACCEPTED
+
+
+def test_a_diary_of_programmes_that_have_not_happened_is_context_not_a_hollow_case():
+    record = events_listing()
+    body = record["data"]["content"]
+    found = run({
+        "record_kind": "context",
+        "context_type": "administrative_notice",
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "The temple's annadhanam for the Purattasi Saturdays, at noon.",
+                        "field": CONTENT, "quote": "ஆஞ்சநேயர் கோயில் சார்பில் புரட்டாசி சனி அன்னதானம்",
+                        "char_start": body.index(
+                            "ஆஞ்சநேயர் கோயில் சார்பில் புரட்டாசி சனி அன்னதானம்")},
+    }, record)
+
+    assert found.record_kind is RecordKind.CONTEXT
+    assert found.context_type is ContextType.ADMINISTRATIVE_NOTICE
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.event_status is EventStatus.UNKNOWN
+    assert found.validation.state is ReviewState.ACCEPTED
+
+
+def test_an_account_read_from_the_body_cites_the_body_and_never_the_headline():
+    record = crop_distress_report()
+    body = record["data"]["content"]
+    found = run({
+        "record_kind": "incident",
+        "title": {"value": record["title"], "field": "title"},
+        "description": {"value": "Flood water destroyed the crop in the Virangi area.",
+                        "field": CONTENT, "quote": "வெள்ளத்தில் பயிர் சேதமடைந்தது",
+                        "char_start": body.index("வெள்ளத்தில் பயிர் சேதமடைந்தது")},
+        "incident_type": quote(body, "பயிர் சேதமடைந்தது") | {"value": "crop_damage"},
+    }, record)
+
+    cited = found.evidence_by_id()[found.claim("description").evidence_ids[0]]
+    assert cited.field == CONTENT
+    assert cited.quote not in record["title"]
+    assert body[cited.char_start : cited.char_end] == cited.quote
+    title_claim = found.evidence_by_id()[found.claim("title").evidence_ids[0]]
+    assert title_claim.field == "title"
+    assert found.validation.state is ReviewState.ACCEPTED
+
+
+def test_an_incident_nobody_could_describe_is_reported_instead_of_accepted():
+    record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
+    event = {
+        "record_kind": "incident",
+        "incident_type": quote(POLICE_TAMIL, "திருடிச் சென்றனர்") | {"value": "property_crime"},
+    }
+
+    missing = run(event, record)
+    assert missing.record_kind is RecordKind.INCIDENT
+    assert missing.description is None
+    assert missing.validation.state is ReviewState.REVIEW_REQUIRED
+    issue = next(item for item in missing.validation.issues
+                 if item.code is IssueCode.PROVIDER_WARNING and item.field == "description")
+    assert "stays unresolved for a person" in issue.detail
+
+    refused = run(event | {"description": {"value": "A pipe was stolen.", "field": CONTENT,
+                                           "quote": "குழாயை மர்ம மனிதர்கள்"}}, record)
+    assert refused.description is None
+    grounding = [item for item in refused.validation.issues if item.field == "description"]
+    assert [item.code for item in grounding] == [IssueCode.UNSUPPORTED_CLAIM]
+
+
+def test_an_incident_whose_text_never_said_whether_it_goes_on_is_marked_unknown_loudly():
+    record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "incident_type": quote(POLICE_TAMIL, "திருடிச் சென்றனர்") | {"value": "property_crime"},
+        "description": quote(POLICE_TAMIL, "நீர்ப்பாசனக் குழாயை"),
+    }, record)
+
+    assert found.event_status is EventStatus.UNKNOWN
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+    assert any("event_status" in warning for warning in found.generation.warnings)
+
+
+def test_an_answer_cannot_call_itself_an_incident_that_no_quote_established():
+    record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
+    claim = {"record_kind": "incident",
+             "title": {"value": record["title"], "field": "title"},
+             "incident_type": {"value": "property_crime", "field": CONTENT,
+                               "quote": "குழாயை மர்ம மனிதர்கள்"}}
+
+    bare = run(claim, record)
+    assert bare.record_kind is RecordKind.UNRESOLVED
+    assert bare.context_type is None
+    assert bare.incident_type is EventType.UNRESOLVED
+    assert any(item.code is IssueCode.PROVIDER_WARNING and item.field == "record_kind"
+               for item in bare.validation.issues)
+
+    filed = run(claim | {"context_type": "general_information"}, record)
+    assert filed.record_kind is RecordKind.CONTEXT
+    assert filed.context_type is ContextType.GENERAL_INFORMATION
+    assert any(item.code is IssueCode.PROVIDER_WARNING and item.field == "record_kind"
+               for item in filed.validation.issues)
+
+
+def test_a_number_the_model_never_gave_is_attributed_to_the_pipeline_and_said_so():
+    record = synth(POLICE_TAMIL, title="கார்ப்பநேரி குழாய் திருட்டு விசாரணை", language="ta")
+    found = run({
+        "record_kind": "incident",
+        "incident_type": {"value": "property_crime", "field": CONTENT,
+                          "quote": "மர்ம நபர்கள் திருடிச் சென்றனர்",
+                          "char_start": POLICE_TAMIL.index("மர்ம நபர்கள் திருடிச் சென்றனர்")},
+        "description": {"value": "நீர்ப்பாசனக் குழாயை", "field": CONTENT,
+                        "quote": "நீர்ப்பாசனக் குழாயை",
+                        "char_start": POLICE_TAMIL.index("நீர்ப்பாசனக் குழாயை")},
+    }, record)
+
+    claim = found.claim("incident_type")
+    assert claim.confidence == DEFAULT_LLM_CONFIDENCE
+    assert claim.confidence != 1.0
+    assert "confidence was not reported" in claim.notes
+    cited = found.evidence_by_id()[claim.evidence_ids[0]]
+    assert "confidence was not reported" in cited.notes
+    assert any("reported no confidence" in warning for warning in found.generation.warnings)
+
+    stated = run({
+        "record_kind": "incident",
+        "incident_type": {"value": "property_crime", "field": CONTENT,
+                          "quote": "மர்ம நபர்கள் திருடிச் சென்றனர்",
+                          "char_start": POLICE_TAMIL.index("மர்ம நபர்கள் திருடிச் சென்றனர்"),
+                          "confidence": 0.4},
+    }, record)
+    assert stated.claim("incident_type").confidence == 0.4
+    assert stated.claim("incident_type").notes is None
+
+
+def test_the_prompt_decides_kind_status_normalisation_and_confidence_by_its_own_rules():
+    rules = extraction_request(build_context(waterlogging())).system.split("Rules:\n")[1]
+    assert "Not every record is an incident" in rules
+    assert "Answer record_kind as incident for the first kind" in rules
+    assert "context_type naming what the record does carry" in rules
+    assert "an act of the administration and an event at once" in rules
+    assert "informs without stating anything that took place" in rules
+    assert "unknown only when the record truly says nothing about now" in rules
+    assert "a rewritten name is not evidence" in rules
+    assert "nothing is 1.0 just because it was found" in rules
+    assert "`other` is for an event the record states plainly" in rules
+    assert "null when nothing says the clock matters" in rules
+
+    vocabulary = extraction_request(build_context(waterlogging())).system
+    assert "- record_kind: incident, forecast, context, unresolved" in vocabulary
+    assert "- context_type: market_price, weather_forecast" in vocabulary
+    assert {"record_kind", "context_type"} <= set(ExtractionDraft.model_fields)
+
+
+def test_the_rules_the_model_is_given_are_the_same_for_every_source():
+    def rules_for(record: dict) -> str:
+        system = extraction_request(build_context(record)).system
+        return system.split("Rules:\n")[1].split("Tokens per enumerated field")[0]
+
+    for record in (waterlogging(), market_price(), weather_forecast(), crop_distress_report()):
+        assert rules_for(record) == rules_for(waterlogging())
+        assert record["record_id"] not in rules_for(record)
+
+
+def test_a_price_line_keeps_the_values_its_own_fields_hold():
+    record = market_price(min_price=55.0, max_price=1004.0)
+    context = build_context(record)
+    found = run(
+        {
+            "record_kind": "context",
+            "context_type": "market_price",
+            "context_facts": [
+                {"field": "data.commodity", "value": "Tomato", "quote": "Tomato",
+                 "char_start": 0, "confidence": 0.9},
+                {"field": "data.min_price", "value": "55", "quote": "55.0", "char_start": 0,
+                 "confidence": 0.9},
+                {"field": "data.max_price", "value": "1,004", "quote": "1004.0", "char_start": 0,
+                 "confidence": 0.85},
+                {"field": "data.unit", "value": "kg", "quote": "kg", "char_start": 0,
+                 "confidence": 0.9},
+                {"field": "data.market", "value": "Anna nagar", "quote": "Anna nagar",
+                 "char_start": 0, "confidence": 0.9},
+            ],
+        },
+        record,
+    )
+
+    assert found.record_kind is RecordKind.CONTEXT
+    assert found.context_type is ContextType.MARKET_PRICE
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+    assert [item.field for item in found.context_facts] == [
+        "data.commodity", "data.min_price", "data.max_price", "data.unit", "data.market"
+    ]
+    assert [item.value for item in found.context_facts] == [
+        "Tomato", "55", "1,004", "kg", "Anna nagar"
+    ]
+    assert [item.review for item in found.context_facts] == [ReviewState.ACCEPTED] * 5
+    for fact in found.context_facts:
+        cited = found.evidence_by_id()[fact.evidence_ids[0]]
+        assert cited.field == fact.field
+        assert cited.quote == context.text_of(fact.field)
+
+
+def test_a_forecast_keeps_its_warning_and_temperatures_as_the_same_kind_of_fact():
+    record = weather_warning(text=CYCLONE_WARNING_TEXT)
+    warning = record["data"]["warning"]
+    found = run(
+        {
+            "record_kind": "forecast",
+            "context_type": "weather_forecast",
+            "context_facts": [
+                {"field": "data.warning", "value": warning, "quote": warning, "char_start": 0,
+                 "confidence": 0.9},
+                {"field": "data.max_temp_c", "value": "36.0", "quote": "36.0", "char_start": 0,
+                 "confidence": 0.95},
+                {"field": "data.min_temp_c", "value": "26.0", "quote": "26.0", "char_start": 0,
+                 "confidence": 0.95},
+                {"field": "data.station_id", "value": "43360", "quote": "43360", "char_start": 0,
+                 "confidence": 0.9},
+            ],
+        },
+        record,
+    )
+
+    assert found.record_kind is RecordKind.FORECAST
+    assert found.context_type is ContextType.WEATHER_FORECAST
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.event_status is EventStatus.UNKNOWN
+    assert [item.field for item in found.context_facts] == [
+        "data.warning", "data.max_temp_c", "data.min_temp_c", "data.station_id"
+    ]
+    assert all(item.review is ReviewState.ACCEPTED for item in found.context_facts)
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert {type(item).__name__ for item in found.context_facts} == {"ContextFact"}
+
+
+def test_a_fact_that_states_a_value_its_field_does_not_hold_is_left_for_a_person():
+    record = market_price(min_price=55.0, max_price=60.0)
+    found = run(
+        {
+            "record_kind": "context",
+            "context_type": "market_price",
+            "context_facts": [
+                {"field": "data.min_price", "value": "55.0", "quote": "55.0", "char_start": 0,
+                 "confidence": 0.9},
+                {"field": "data.max_price", "value": "₹60 per kilogram", "quote": "60.0",
+                 "char_start": 0, "confidence": 0.9},
+            ],
+        },
+        record,
+    )
+
+    assert found.context_facts[0].review is ReviewState.ACCEPTED
+    assert found.context_facts[1].review is ReviewState.REVIEW_REQUIRED
+    assert found.context_facts[1].evidence_ids
+    assert "the value is not what the field it names holds" in found.context_facts[1].notes
+    issue = next(
+        item for item in found.validation.issues if item.field == "context_facts[fact-2]"
+    )
+    assert issue.code is IssueCode.UNSUPPORTED_CLAIM
+    assert "is not a value 'data.max_price' carries" in issue.detail
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert "context_facts[fact-2]" in found.unaccepted_fields()
+    assert found.record_kind is RecordKind.CONTEXT
+
+
+def test_a_fact_naming_a_field_the_record_does_not_print_cites_no_evidence():
+    record = market_price()
+    found = run(
+        {
+            "record_kind": "context",
+            "context_type": "market_price",
+            "context_facts": [
+                {"field": "data.avg_price", "value": "48.0", "quote": "48.0", "char_start": 0},
+                {"field": "data.commodity", "quote": "Tomato", "char_start": 0},
+            ],
+        },
+        record,
+    )
+
+    assert found.context_facts[0].review is ReviewState.UNRESOLVED
+    assert found.context_facts[0].evidence_ids == []
+    unknown = next(
+        item for item in found.validation.issues if item.field == "context_facts[fact-1]"
+    )
+    assert unknown.code is IssueCode.UNKNOWN_FIELD
+    assert len(found.context_facts) == 1
+    valueless = next(
+        item for item in found.validation.issues
+        if item.field == "context_facts[fact-2]" and item.code is IssueCode.UNSUPPORTED_CLAIM
+    )
+    assert "with no value preserves nothing" in valueless.detail
+    assert found.validation.state is ReviewState.UNRESOLVED
+
+
+def test_quoted_field_values_with_no_evidenced_event_are_read_as_a_contextual_record():
+    record = market_price(min_price=55.0)
+    found = run(
+        {
+            "context_facts": [
+                {"field": "data.commodity", "value": "Tomato", "quote": "Tomato",
+                 "char_start": 0, "confidence": 0.9},
+                {"field": "data.min_price", "value": "55.0", "quote": "55.0", "char_start": 0,
+                 "confidence": 0.9},
+            ]
+        },
+        record,
+    )
+
+    assert found.record_kind is RecordKind.CONTEXT
+    assert found.context_type is None
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert any(
+        "named no record_kind" in warning and "filed as context" in warning
+        for warning in found.generation.warnings
+    )
+
+
+def test_one_classification_the_evidence_could_not_support_leaves_an_incident_an_incident():
+    record = waterlogging()
+    content = record["data"]["content"]
+    account = water_answer()
+    refused = run(
+        account
+        | {
+            "incident_type": {"value": "urban_waterlogging", "field": CONTENT,
+                              "quote": "வெள்ள பாதுகாப்பு நடவடிக்கை", "char_start": 0,
+                              "confidence": 0.6},
+            "context_facts": [{"field": CONTENT, "value": "நேற்று மாலை",
+                               "quote": "நேற்று மாலை",
+                               "char_start": content.index("நேற்று மாலை"), "confidence": 0.9}],
+        },
+        record,
+    )
+
+    assert refused.record_kind is RecordKind.INCIDENT
+    assert refused.incident_type is EventType.UNRESOLVED
+    assert refused.description == RAIN
+    assert refused.severity is SeverityLevel.MODERATE
+    assert refused.event_status is EventStatus.ONGOING
+    assert refused.claim("incident_type").review is ReviewState.UNRESOLVED
+    assert refused.context_facts[0].review is ReviewState.ACCEPTED
+    mismatch = next(
+        item for item in refused.validation.issues if item.field == "incident_type"
+    )
+    assert mismatch.code is IssueCode.UNSUPPORTED_CLAIM
+    assert refused.validation.state is ReviewState.REVIEW_REQUIRED
+
+    omitted = run(
+        {key: value for key, value in account.items() if key != "incident_type"}, record
+    )
+    assert omitted.record_kind is RecordKind.INCIDENT
+    assert omitted.incident_type is EventType.UNRESOLVED
+    assert omitted.validation.state is ReviewState.REVIEW_REQUIRED
+    warning = next(
+        item
+        for item in omitted.validation.issues
+        if item.field == "incident_type" and item.code is IssueCode.PROVIDER_WARNING
+    )
+    assert "the kind stands and the type is left for a person" in warning.detail
+
+
+def test_an_incident_without_its_clock_or_its_urgency_says_why_both_stay_null():
+    record = waterlogging()
+    answer = {
+        key: value
+        for key, value in water_answer().items()
+        if key not in ("event_time", "priority", "event_status")
+    }
+    found = run(answer, record)
+
+    assert found.event_time is None
+    assert found.priority is None
+    assert found.event_status is EventStatus.UNKNOWN
+    assert found.validation.state is ReviewState.ACCEPTED
+    said = " ".join(found.generation.warnings)
+    assert "event_time stays unresolved" in said
+    assert "priority is left" in said
+
+
+def test_the_prompt_holds_the_stage_2_7_rules_for_facts_and_for_field_independence():
+    request = extraction_request(build_context(waterlogging()))
+    rules = request.system.split("Rules:\n")[1]
+    assert "Read the three classification fields as three different questions" in rules
+    assert "One body sentence may carry all three and one quote may support all three" in rules
+    assert "a subject being police, fraud or disaster carries no band" in rules
+    assert "`info` is for a record that itself presents the matter as informational" in rules
+    assert "priority is how soon the district must act" in rules
+    assert "null when nothing says the clock matters" in rules
+    assert "not from the feed that carried the record, and not from the kind of event" in rules
+    assert "The kind is settled by the event, not by the fields that follow it" in rules
+    assert "one unreadable field does not undo an evidenced happening" in rules
+    assert "A fact copies and never interprets" in rules
+    assert "Two to eight, the most informative first" in rules
+    assert "Abstain one field at a time" in rules
+
+    assert "context_facts" in rules
+    assert "context_facts" in ExtractionDraft.model_fields
+
+
+PROBE_TITLE = "ரூ.45 லட்சம் முதலீட்டு மோசடி"
+FRAUD_ACT = "ரூ.45 லட்சத்தை ஒரு தனியார் நிறுவனம் மோசம் செய்தது"
+PROBE_WATCH = "கண்காணிப்பு குழுவினர்"
+PROBE_CASE = "வழக்கு பதிவு செய்து"
+
+
+def probe_record() -> dict[str, Any]:
+    return synth(INVEST_TAMIL, title=PROBE_TITLE, language="ta")
+
+
+def probe_answer() -> dict[str, Any]:
+    return {
+        "record_kind": "context",
+        "context_type": "administrative_notice",
+        "title": {"value": PROBE_TITLE, "field": "title"},
+        "description": {
+            "value": "A private firm took Rs 45 lakh from 150 families on a promise of doubling it.",
+            "field": CONTENT,
+            "quote": FRAUD_ACT,
+            "char_start": INVEST_TAMIL.index(FRAUD_ACT),
+            "confidence": 0.8,
+        },
+        "event_status": quote(INVEST_TAMIL, "விசாரிக்கின்றனர்") | {"value": "under_investigation"},
+        "department": quote(INVEST_TAMIL, PROBE_WATCH) | {"value": "police"},
+        "context_facts": [quote(INVEST_TAMIL, "150 குடும்பங்களிடமிருந்து")],
+    }
+
+
+def test_a_happening_the_answer_labelled_context_is_still_read_as_an_incident():
+    found = run(probe_answer(), probe_record())
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.context_type is None
+    assert found.event_status is EventStatus.UNDER_INVESTIGATION
+    assert found.department is Department.POLICE
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.priority is None
+    assert found.locations == [] and found.entities == []
+    assert found.description.startswith("A private firm took Rs 45 lakh")
+    assert [item.field for item in found.context_facts] == [CONTENT]
+    assert found.context_facts[0].review is ReviewState.ACCEPTED
+    assert any("the context label is dropped" in w for w in found.generation.warnings)
+    assert any(
+        item.field == "incident_type" and item.code is IssueCode.PROVIDER_WARNING
+        for item in found.validation.issues
+    )
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_an_evidenced_happening_needs_no_kind_token_from_the_answer_at_all():
+    answer = {
+        key: value
+        for key, value in probe_answer().items()
+        if key not in ("record_kind", "context_type")
+    }
+    found = run(answer, probe_record())
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.context_type is None
+    assert found.event_status is EventStatus.UNDER_INVESTIGATION
+    assert found.context_facts[0].review is ReviewState.ACCEPTED
+    assert not any("filed as context" in w for w in found.generation.warnings)
+
+
+def test_a_happening_keeps_its_kind_when_its_place_and_its_bands_came_back_empty():
+    found = run(
+        probe_answer()
+        | {
+            "record_kind": "incident",
+            "context_type": None,
+            "incident_type": quote(INVEST_TAMIL, "மோசம் செய்தது")
+                             | {"value": "cyber_or_financial_fraud"},
+            "category": quote(INVEST_TAMIL, PROBE_CASE) | {"value": "law_and_order"},
+            "locations": [{"text": "Melur", "location_type": "taluk", "role": "event_location",
+                           "field": CONTENT, "quote": "மேலூர்", "char_start": 0,
+                           "confidence": 0.7}],
+        },
+        probe_record(),
+    )
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.incident_type is EventType.CYBER_OR_FINANCIAL_FRAUD
+    assert found.category is IncidentCategory.LAW_AND_ORDER
+    assert found.event_status is EventStatus.UNDER_INVESTIGATION
+    assert found.locations[0].review is not ReviewState.ACCEPTED
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.priority is None
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_a_price_line_and_a_forecast_keep_their_kinds_when_their_prose_is_summarised():
+    price = market_price(min_price=55.0, max_price=60.0)
+    kept = run(
+        {
+            "record_kind": "context",
+            "context_type": "market_price",
+            "description": {"value": "Tomato sold at Rs 55 a kg in Anna nagar.",
+                            "field": "data.commodity", "quote": "Tomato", "char_start": 0,
+                            "confidence": 0.6},
+            "context_facts": [{"field": "data.min_price", "value": "55.0", "quote": "55.0",
+                               "char_start": 0, "confidence": 0.9}],
+        },
+        price,
+    )
+
+    assert kept.record_kind is RecordKind.CONTEXT
+    assert kept.context_type is ContextType.MARKET_PRICE
+    assert kept.event_status is EventStatus.UNKNOWN
+    assert kept.validation.state is ReviewState.ACCEPTED
+
+    forecast = weather_forecast()
+    text = forecast["data"]["forecast"]
+    said = run(
+        {
+            "record_kind": "forecast",
+            "context_type": "weather_forecast",
+            "description": {"value": "Cloud with thunder and light rain over Madurai.",
+                            "field": "data.forecast", "quote": text, "char_start": 0,
+                            "confidence": 0.7},
+            "context_facts": [{"field": "data.max_temp_c", "value": "33.1", "quote": "33.1",
+                               "char_start": 0, "confidence": 0.9}],
+        },
+        forecast,
+    )
+
+    assert said.record_kind is RecordKind.FORECAST
+    assert said.context_type is ContextType.WEATHER_FORECAST
+    assert said.event_status is EventStatus.UNKNOWN
+
+
+def test_an_event_whose_quotes_are_not_in_the_record_establishes_no_incident():
+    found = run(
+        {
+            "record_kind": "incident",
+            "context_type": "general_information",
+            "description": {"value": "Police searched the office and seized two laptops.",
+                            "field": CONTENT, "quote": "seized two laptops", "char_start": 0,
+                            "confidence": 0.8},
+            "event_status": {"value": "under_investigation", "field": CONTENT,
+                             "quote": "are investigating", "char_start": 0, "confidence": 0.8},
+            "incident_type": {"value": "cyber_or_financial_fraud", "field": CONTENT,
+                              "quote": "investment fraud", "char_start": 0, "confidence": 0.8},
+        },
+        probe_record(),
+    )
+
+    assert found.record_kind is RecordKind.CONTEXT
+    assert found.description is None
+    assert found.event_status is EventStatus.UNKNOWN
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.context_facts == []
+    assert any(
+        item.field == "record_kind" and item.code is IssueCode.PROVIDER_WARNING
+        for item in found.validation.issues
+    )
+    assert found.validation.state is ReviewState.UNRESOLVED
+
+
+def test_the_prompt_asks_whether_something_happened_before_it_asks_for_a_label():
+    rules = extraction_request(build_context(waterlogging())).system.split("Rules:\n")[1]
+
+    assert "does this record state that something happened" in rules
+    assert "a happening stays a happening whoever wrote about it" in rules
+    assert "never file a happening as context" in rules
+    assert "never leave an event's own fields blank" in rules
+    assert "Nor does the label you print prove anything" in rules
+    assert "a price or a temperature written into an account is still a state" in rules
+    assert "never a headline and never the body's prose" in rules
+    assert "searching into it or has filed a case about it" in rules
+    assert "A record that states no happening has no status to report" in rules
+    assert "leave the event fields null for those" not in rules
+
+
+CAPTURE_STAMP = RETRIEVED_AT.split(".")[0]
+
+
+def stamp_answer(*, stamp: str) -> tuple[dict, dict]:
+    body = (
+        f"The portal stamped this page {stamp}. Water stood on three roads after heavy rain "
+        "and officials were still monitoring the situation."
+    )
+    answer = {
+        "record_kind": "incident",
+        "description": quote(body, "Water stood on three roads after heavy rain"),
+        "incident_type": quote(body, "Water stood on three roads")
+        | {"value": "urban_waterlogging"},
+        "event_status": quote(body, "officials were still monitoring the situation")
+        | {"value": "ongoing"},
+        "event_time": quote(body, f"stamped this page {stamp}")
+        | {"value": stamp, "precision": "second"},
+    }
+    return synth(body), answer
+
+
+def test_a_stamp_that_is_the_instant_the_record_was_captured_is_not_the_time_it_happened():
+    record, answer = stamp_answer(stamp=CAPTURE_STAMP)
+    found = run(answer, record)
+
+    assert found.event_time is None
+    assert found.event_time_precision is TimePrecision.UNKNOWN
+    claim = found.claim("event_time")
+    assert claim.review is ReviewState.REVIEW_REQUIRED
+    assert "capture time" in (claim.notes or "")
+    assert found.evidence_by_id()[claim.evidence_ids[0]].quote == f"stamped this page {CAPTURE_STAMP}"
+    assert any(
+        item.field == "event_time" and item.code is IssueCode.PROVIDER_WARNING
+        for item in found.validation.issues
+    )
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert "event_time" in found.unaccepted_fields()
+
+
+def test_a_body_stamp_on_the_capture_day_that_is_not_the_capture_second_is_still_a_time():
+    record, answer = stamp_answer(stamp="2026-10-03T04:15:00")
+    found = run(answer, record)
+
+    assert found.event_time is not None
+    assert found.event_time.isoformat() == "2026-10-03T04:15:00"
+    assert found.claim("event_time").review is ReviewState.ACCEPTED
+    assert not any(item.field == "event_time" for item in found.validation.issues)
+    assert found.review_required is False
+
+
+def test_the_district_the_record_declared_about_itself_is_not_prose_the_model_may_quote():
+    payload = water_answer()
+    payload["locations"].append(
+        {
+            "text": "Madurai",
+            "normalized_name": "Madurai",
+            "location_type": "district",
+            "role": "event_container",
+            "district": "Madurai",
+            "field": "location.district",
+            "quote": "Madurai",
+            "confidence": 0.9,
+        }
+    )
+    found = run(payload)
+
+    assert found.locations[-1].review is not ReviewState.ACCEPTED
+    assert len([item for item in found.locations if item.review is ReviewState.ACCEPTED]) == 1
+    issue = next(
+        item for item in found.validation.issues if item.code is IssueCode.UNKNOWN_FIELD
+    )
+    assert "location.district" in issue.detail
+    assert "does not carry" in issue.detail
+    assert ("location.district", "Madurai") in [
+        (item.field, item.value) for item in found.source_geography
+    ]
+
+
+def test_a_priority_the_ladder_does_not_carry_is_refused_rather_than_rounded_to_the_nearest_band():
+    payload = water_answer()
+    payload["priority"] = quote(waterlogging()["data"]["content"], OFFICIALS) | {
+        "value": "urgent"
+    }
+    found = run(payload)
+
+    assert found.priority is None
+    assert found.claim("priority") is None
+    assert any(
+        item.field == "priority" and item.code is IssueCode.INVALID_VALUE
+        for item in found.validation.issues
+    )
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_an_evidenced_incident_that_also_names_a_context_type_keeps_the_event_and_drops_the_type():
+    found = run(water_answer() | {"context_type": "market_price"})
+
+    assert found.record_kind is RecordKind.INCIDENT
+    assert found.context_type is None
+    assert any("the context label is dropped" in w for w in found.generation.warnings)
+    assert found.review_required is False
+
+
+SHORTAGE_TAMIL = (
+    "மதுரை: செல்லூர் பகுதி மக்களுக்கு நான்கு வாரமாக குடிநீர் இல்லை. குடிநீர் இல்லாததால் "
+    "பெண்கள் காலைதோறும் நீண்ட தூரம் நடைகின்றனர். நாள்தோறும் 12 டேங்கர் லாரிகள் வந்தன. "
+    "செப்டம்பர் 30 அன்று புகார் கொடுக்கப்பட்டது. நகராட்சியின் குடிநீர் விநியோகப் பிரிவு "
+    "ஒழுங்காக இயங்கவில்லை. புகாரின் பேரில் மதுரை மாநகராட்சி ஆணையர் புதிய பொறுப்பை ஏற்றார்."
+)
+WATER_WORD = "குடிநீர்"
+WATER_AT = [47, 63, 221]
+ACT_CLAUSE = "செல்லூர் பகுதி மக்களுக்கு நான்கு வாரமாக குடிநீர் இல்லை"
+AUTHORITY_CLAUSE = "மதுரை மாநகராட்சி ஆணையர்"
+DATE_CLAUSE = "செப்டம்பர் 30 அன்று"
+TANKER_SPAN = "12 டேங்கர் லாரிகள்"
+
+
+def shortage_record(**fields: Any) -> dict:
+    return synth(SHORTAGE_TAMIL, title="குடிநீர் இல்லாத செல்லூர்", language="ta", **fields)
+
+
+def shortage_answer() -> dict[str, Any]:
+    body = SHORTAGE_TAMIL
+    return {
+        "record_kind": "incident",
+        "description": quote(body, ACT_CLAUSE),
+        "incident_type": quote(body, "குடிநீர் இல்லாததால்") | {"value": "drinking_water_shortage"},
+        "severity": quote(body, "நான்கு வாரமாக") | {"value": "moderate"},
+        "event_status": quote(body, TANKER_SPAN) | {"value": "ongoing"},
+        "category": quote(body, ACT_CLAUSE) | {"value": "water"},
+        "department": quote(body, AUTHORITY_CLAUSE) | {"value": "water_resources"},
+        "locations": [{"text": "செல்லூர்", "normalized_name": "Sellur", "location_type": "locality",
+                       "role": "event_location", "field": CONTENT, "quote": "செல்லூர்",
+                       "char_start": body.index("செல்லூர்"), "confidence": 0.85}],
+    }
+
+
+def repeated_word(payload: dict[str, Any]) -> dict[str, Any]:
+    for name, token in (("category", "water"), ("department", "water_resources")):
+        payload[name] = {"value": token, "field": CONTENT, "quote": WATER_WORD, "confidence": 0.8}
+    return payload
+
+
+def test_a_word_the_article_keeps_repeating_grounds_neither_category_nor_department():
+    found = run(repeated_word(shortage_answer()), shortage_record())
+
+    assert found.category is IncidentCategory.UNRESOLVED
+    assert found.department is Department.UNRESOLVED
+    for name in ("category", "department"):
+        claim = found.claim(name)
+        assert claim.review is ReviewState.UNRESOLVED
+        assert claim.evidence_ids == []
+        assert claim.notes == f"the quote occurs {len(WATER_AT)} times"
+    ambiguous = [
+        item for item in found.validation.issues if item.code is IssueCode.AMBIGUOUS_QUOTE
+    ]
+    assert [item.field for item in ambiguous] == ["category", "department"]
+    for issue in ambiguous:
+        assert f"occurs {len(WATER_AT)} times in data.content" in issue.detail
+        assert "the answer named no char_start" in issue.detail
+        assert str(WATER_AT[0]) in issue.detail and str(WATER_AT[-1]) in issue.detail
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_the_ambiguous_quote_leaves_the_fields_the_body_does_evidence_untouched():
+    found = run(repeated_word(shortage_answer()), shortage_record())
+
+    assert found.incident_type is EventType.DRINKING_WATER_SHORTAGE
+    assert found.severity is SeverityLevel.MODERATE
+    assert found.event_status is EventStatus.ONGOING
+    assert found.description == ACT_CLAUSE
+    assert found.locations[0].review is ReviewState.ACCEPTED
+    assert found.record_kind is RecordKind.INCIDENT
+    assert "category" in found.unaccepted_fields()
+    assert "department" in found.unaccepted_fields()
+
+
+def test_a_char_start_naming_one_copy_of_a_repeated_word_grounds_it():
+    payload = repeated_word(shortage_answer())
+    payload["category"] = quote(SHORTAGE_TAMIL, WATER_WORD, occurrence=2) | {"value": "water"}
+    found = run(payload, shortage_record())
+
+    claim = found.claim("category")
+    assert found.category is IncidentCategory.WATER
+    assert claim.review is ReviewState.ACCEPTED
+    cited = found.evidence_by_id()[claim.evidence_ids[0]]
+    assert (cited.field, cited.char_start, cited.quote) == (CONTENT, WATER_AT[2], WATER_WORD)
+    assert [
+        item.field
+        for item in found.validation.issues
+        if item.code is IssueCode.AMBIGUOUS_QUOTE
+    ] == ["department"]
+    assert found.department is Department.UNRESOLVED
+
+
+def test_each_classification_field_is_grounded_by_the_clause_that_carries_its_answer():
+    found = run(shortage_answer(), shortage_record())
+
+    assert found.category is IncidentCategory.WATER
+    assert found.department is Department.WATER_RESOURCES
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.validation.issues == []
+    assert found.claim("category").evidence_ids != found.claim("department").evidence_ids
+
+
+def test_a_context_fact_that_translates_its_field_reports_the_field_s_own_words():
+    payload = shortage_answer()
+    payload["context_facts"] = [
+        {"field": CONTENT, "value": "12 tankers", "quote": TANKER_SPAN,
+         "char_start": SHORTAGE_TAMIL.index(TANKER_SPAN), "confidence": 0.9}
+    ]
+    found = run(payload, shortage_record())
+
+    fact = found.context_facts[0]
+    assert fact.review is ReviewState.REVIEW_REQUIRED
+    assert fact.value == "12 tankers"
+    assert "the value is not what the field it names holds" in fact.notes
+    cited = found.evidence_by_id()[fact.evidence_ids[0]]
+    assert (cited.quote, cited.span_validation.value) == (TANKER_SPAN, "validated")
+    issue = next(
+        item for item in found.validation.issues if item.field == "context_facts[fact-1]"
+    )
+    assert issue.code is IssueCode.UNSUPPORTED_CLAIM
+    assert "'12 tankers' is not a value 'data.content' carries" in issue.detail
+    assert repr(TANKER_SPAN) in issue.detail
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+
+
+def test_a_context_fact_written_in_the_field_s_own_characters_is_copied():
+    payload = shortage_answer()
+    payload["context_facts"] = [
+        {"field": CONTENT, "value": TANKER_SPAN, "quote": TANKER_SPAN,
+         "char_start": SHORTAGE_TAMIL.index(TANKER_SPAN), "confidence": 0.9}
+    ]
+    found = run(payload, shortage_record())
+
+    assert found.context_facts[0].review is ReviewState.ACCEPTED
+    assert not any(item.code is IssueCode.UNSUPPORTED_CLAIM for item in found.validation.issues)
+
+
+def test_a_news_stamp_offered_as_the_event_time_stays_unresolved_without_demoting_the_reading():
+    record = shortage_record(event_time="2026-10-02T17:45:00")
+    payload = shortage_answer()
+    payload["event_time"] = {"value": "2026-10-02T17:45:00", "precision": "minute",
+                             "confidence": 0.8}
+    found = run(payload, record)
+
+    assert found.event_time is None
+    assert found.provenance.declared_event_time.isoformat() == "2026-10-02T17:45:00"
+    assert found.claim("event_time").review is ReviewState.UNRESOLVED
+    assert found.validation.issues == []
+    assert found.validation.state is ReviewState.ACCEPTED
+    said = " ".join(found.generation.warnings)
+    assert "which is its publication time" in said
+    assert "no span and no stamp" not in said
+    assert "the record's clock" not in said
+
+
+def test_a_record_whose_stamp_is_not_a_publication_time_keeps_it_as_the_record_s_clock():
+    record = shortage_record(event_time="2026-10-02T17:45:00", source_type="agriculture")
+    payload = shortage_answer()
+    payload["event_time"] = {"value": "2026-10-02T17:45:00", "precision": "minute",
+                             "confidence": 0.8}
+    found = run(payload, record)
+
+    assert found.event_time is not None and found.event_time.isoformat() == "2026-10-02T17:45:00"
+    claim = found.claim("event_time")
+    assert claim.method is ExtractionMethod.SOURCE_METADATA
+    assert claim.review is ReviewState.ACCEPTED
+    assert claim.evidence_ids == []
+    assert "the record's own declared event_time" in (claim.notes or "")
+    assert found.validation.issues == []
+    assert found.validation.state is ReviewState.ACCEPTED
+    assert found.review_required is False
+    said = " ".join(found.generation.warnings)
+    assert "the record's clock, not a moment the article evidenced" in said
+    assert "event_time stays unresolved" not in said
+
+
+def test_a_time_the_article_itself_states_is_evidenced_and_carries_no_clock_warning():
+    record = shortage_record(event_time="2026-10-02T17:45:00")
+    payload = shortage_answer()
+    payload["event_time"] = quote(SHORTAGE_TAMIL, DATE_CLAUSE) | {
+        "value": "2026-09-30T00:00:00", "precision": "day"
+    }
+    found = run(payload, record)
+
+    claim = found.claim("event_time")
+    assert claim.method is ExtractionMethod.LLM
+    assert claim.review is ReviewState.ACCEPTED
+    assert found.event_time_precision is TimePrecision.DAY
+    assert found.evidence_by_id()[claim.evidence_ids[0]].quote == DATE_CLAUSE
+    said = " ".join(found.generation.warnings)
+    assert "the record's clock" not in said and "stays unresolved" not in said
+
+
+def test_an_answer_that_omits_the_clock_leaves_it_unresolved_though_the_record_declares_one():
+    record = shortage_record(event_time="2026-10-02T17:45:00")
+    found = run(shortage_answer(), record)
+
+    assert found.event_time is None
+    assert found.event_time_precision is TimePrecision.UNKNOWN
+    assert found.provenance.declared_event_time.isoformat() == "2026-10-02T17:45:00"
+    assert found.provenance.declared_event_time_precision is TimePrecision.UNKNOWN
+    said = " ".join(found.generation.warnings)
+    assert "event_time stays unresolved" in said
+    assert "the record's clock" not in said
+
+
+def test_a_declaration_written_as_a_day_is_kept_as_a_day_when_the_answer_gave_no_clock():
+    record = shortage_record(event_time="2026-10-02")
+    found = run(shortage_answer(), record)
+
+    assert found.event_time is None
+    assert found.provenance.declared_event_time.isoformat() == "2026-10-02T00:00:00"
+    assert found.provenance.declared_event_time_precision is TimePrecision.DAY
+
+
+def test_a_record_that_printed_no_time_is_not_given_one_by_its_provenance():
+    record = shortage_record(event_time=None)
+    found = run(shortage_answer(), record)
+
+    assert found.event_time is None
+    assert found.provenance.declared_event_time is None
+    assert found.provenance.declared_event_time_precision is None
+
+
+def test_the_prompt_holds_the_stage_2_10_rules_for_the_span_that_carries_each_answer():
+    rules = extraction_request(build_context(shortage_record())).system.split("Rules:\n")[1]
+
+    assert "a span supports a field only when that span alone gives" in rules
+    assert "names its subject, runs through the whole text and proves nobody" in rules
+    assert "a repeated word cannot say which" in rules
+    assert "until it identifies the one occurrence you are" in rules
+    assert "an offset that is nearly right is refused as flatly as one that is far wrong" in rules
+    assert "a translated or glossed value is not a copy even when its quote is verbatim" in rules
+    assert "never quote the page's date stamp to dress that" in rules
+
+
+OUTAGE_WINDOW = "காலை 10:00 மணி முதல் மதியம் 2:00 மணி வரை"
+DENGUE_TREATMENT = "டெங்கு சிகிச்சை"
+
+
+def test_a_band_the_record_printed_about_itself_is_kept_as_a_declaration_not_a_severity():
+    record = orange_alert()
+    body = record["data"]["content"]
+    found = run({"record_kind": "incident", "description": quote(body, OUTAGE_WINDOW)}, record)
+
+    assert "மின்தடை" not in body
+    assert found.provenance.declared_severity == "Orange Alert"
+    assert found.provenance.declared_status == "UPDATED"
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.event_status is EventStatus.UNKNOWN
+    assert found.priority is None
+    assert found.title == record["title"]
+    assert found.claim("title").method is ExtractionMethod.SOURCE_METADATA
+    assert found.claim("title").review is ReviewState.ACCEPTED
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert any(
+        issue.code is IssueCode.PROVIDER_WARNING and issue.field == "incident_type"
+        for issue in found.validation.issues
+    )
+
+
+def test_disaster_words_alone_hold_a_meeting_report_for_a_person_instead_of_a_case():
+    record = keyword_bait_article()
+    body = record["data"]["content"]
+    found = run(
+        {
+            "record_kind": "incident",
+            "incident_type": quote(body, DENGUE_TREATMENT) | {"value": "disease_outbreak"},
+            "severity": quote(body, DENGUE_TREATMENT) | {"value": "high"},
+        },
+        record,
+    )
+
+    assert found.description is None
+    assert found.claim("description") is None
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert found.review_required is True
+    assert any(
+        issue.code is IssueCode.PROVIDER_WARNING and issue.field == "description"
+        for issue in found.validation.issues
+    )
+    assert found.title == record["title"]
+
+
+TSUNAMI_QUESTION = (
+    "A residents' association in Madurai has asked whether a tsunami could reach the district. "
+    "Officials said no warning has been issued and no sea surge was recorded anywhere nearby."
+)
+
+
+def test_a_hypothetical_disaster_question_is_held_rather_than_read_as_a_happening():
+    record = synth(TSUNAMI_QUESTION, title="Tsunami question raised in Madurai")
+    found = run(
+        {
+            "record_kind": "incident",
+            "description": quote(TSUNAMI_QUESTION, "no warning has been issued"),
+            "incident_type": quote(TSUNAMI_QUESTION, "tsunami") | {"value": "tsunami"},
+        },
+        record,
+    )
+
+    assert found.incident_type is EventType.UNRESOLVED
+    assert found.severity is SeverityLevel.UNRESOLVED
+    assert found.validation.state is ReviewState.REVIEW_REQUIRED
+    assert any(
+        issue.code is IssueCode.INVALID_VALUE and issue.field == "incident_type"
+        for issue in found.validation.issues
+    )
+    assert found.description == "no warning has been issued"

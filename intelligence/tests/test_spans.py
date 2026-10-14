@@ -1,5 +1,3 @@
-"""Stage 2: evidence spans are derived from the source, verified against it, never typed."""
-
 from __future__ import annotations
 
 import json
@@ -8,7 +6,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from intelligence.extraction.spans import (
+from intelligence.models.enums import ExtractionMethod, Modality, SpanValidation
+from intelligence.models.evidence import Evidence
+from intelligence.spans import (
     AmbiguousQuoteError,
     EmptyQuoteError,
     OccurrenceOutOfBoundsError,
@@ -25,10 +25,6 @@ from intelligence.extraction.spans import (
     revalidate,
     verify_evidence,
 )
-from intelligence.models.enums import ExtractionMethod, IncidentStatus, Modality, SpanValidation
-from intelligence.models.evidence import Evidence
-from intelligence.models.classification import RelevanceInfo
-from intelligence.models.incident import Incident
 from intelligence.tests.builders import (
     BENCH_CONTENT_TA,
     CONTENT_TA,
@@ -36,7 +32,6 @@ from intelligence.tests.builders import (
     SOURCE_ID,
     SOURCE_TYPE,
     SOURCE_URL,
-    field_hash,
     span_evidence,
 )
 
@@ -115,7 +110,6 @@ def test_offsets_are_code_points_not_bytes():
 
     assert any(unicodedata.combining(character) for character in quote)
     assert evidence.char_end - evidence.char_start == len(quote)
-    # Tamil is three bytes per character; byte arithmetic would overshoot.
     assert len(quote.encode("utf-8")) > evidence.char_end - evidence.char_start
     assert text[evidence.char_start : evidence.char_end] == quote
 
@@ -196,7 +190,6 @@ def test_missing_quote_is_rejected():
 
 
 def test_a_quote_that_only_matches_after_normalisation_is_rejected_with_a_hint():
-    """Reporting the near-miss is fine; silently normalising the source is not."""
     text = "மதுரை cafe\u0301 office"
     with pytest.raises(QuoteNotFoundError) as excinfo:
         locate(text, "café")
@@ -242,7 +235,6 @@ def test_field_hash_is_sha256_of_the_whole_original_field():
     evidence = build_evidence(field(), "மதுரையில்", method=RULE)
 
     assert evidence.field_text_hash == compute_field_hash(CONTENT_TA)
-    assert evidence.field_text_hash == field_hash(CONTENT_TA)
     assert len(evidence.field_text_hash) == 64
     assert evidence.field_text_hash == evidence.field_text_hash.lower()
 
@@ -313,7 +305,6 @@ def test_build_evidence_at_accepts_a_span_the_caller_located():
 
 
 def test_a_supplied_span_is_still_verified_against_the_text():
-    """A regex stage may say where, but never what: a lying range is rejected."""
     with pytest.raises(SpanError, match="does not reproduce"):
         build_evidence_at(
             field(), Span(quote="மதுரை", char_start=0, char_end=6), method=ExtractionMethod.REGEX
@@ -329,7 +320,6 @@ def test_a_supplied_span_cannot_point_outside_the_field():
 
 
 def test_a_span_running_past_the_end_of_the_field_is_rejected():
-    """A truncated slice could coincidentally equal the quote; bounds are checked."""
     with pytest.raises(SpanError, match="runs past the end"):
         build_evidence_at(
             field("abc"), Span(quote="abc", char_start=0, char_end=99), method=RULE
@@ -337,7 +327,6 @@ def test_a_span_running_past_the_end_of_the_field_is_rejected():
 
 
 def test_stage_two_output_matches_the_handbuilt_stage_one_fixture():
-    """The producer must reproduce what Stage 1 pinned by hand, offset for offset."""
     quote = "4800 மனுக்களை"
     built = build_evidence(field(), quote, method=RULE, confidence=0.95)
     fixture = span_evidence("ev-quantity", quote=quote)
@@ -402,7 +391,6 @@ def test_verification_detects_a_changed_source_field():
 
 
 def test_a_mismatch_is_never_repaired():
-    """Silently re-finding the quote would make an edited source look honest."""
     evidence = build_evidence(field(), "மதுரையில்", method=RULE)
     edited = CONTENT_TA.replace("மதுரையில்", "கோவை") + " மதுரையில்"
     revalidated, check = revalidate(evidence, edited)
@@ -432,7 +420,6 @@ def test_an_unchanged_verdict_leaves_the_evidence_untouched():
 
 
 def test_offsets_are_verified_even_when_the_hash_matches():
-    """A hand-typed span over the right field must still fail on its quote."""
     quote = "மதுரை"
     span = locate(CONTENT_TA, quote)
     liar = build_evidence(field(), quote, method=RULE).model_copy(
@@ -494,25 +481,6 @@ def test_tamil_quote_survives_a_json_round_trip():
     assert restored == evidence
     assert restored.quote == quote
     assert CONTENT_TA[restored.char_start : restored.char_end] == quote
-
-
-def test_produced_evidence_plugs_into_an_incident_reference():
-    evidence = build_evidence(field(), "ஆர்ப்பாட்டத்தில்", method=RULE, confidence=0.9)
-    incident = Incident(
-        incident_id="INC-STAGE2-0001",
-        status=IncidentStatus.CANDIDATE,
-        evidence=[evidence],
-        relevance=RelevanceInfo(
-            state="incident",
-            is_incident=True,
-            method=RULE,
-            confidence=0.9,
-            evidence_ids=[evidence.evidence_id],
-        ),
-    )
-
-    assert incident.resolve_evidence(evidence.evidence_id) is not None
-    assert incident.contributing_record_ids() == [RECORD_ID]
 
 
 def test_provenance_of_the_title_field_is_addressable():

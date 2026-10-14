@@ -1,5 +1,3 @@
-"""The provider seam: configuration from the environment or a local .env, transport errors, structured answers."""
-
 from __future__ import annotations
 
 import json
@@ -9,30 +7,37 @@ from typing import Any, Optional
 
 import httpx
 import pytest
-from groq import APIConnectionError, AuthenticationError, BadRequestError
+from groq import APIConnectionError, AuthenticationError, BadRequestError, RateLimitError
 
 from intelligence.llm import (
+    DEFAULT_MAX_WAIT_SECONDS,
     DOTENV_PATH,
     ENV_API_KEY,
     ENV_BASE_URL,
+    ENV_MAX_WAIT,
     ENV_MODEL,
     ENV_PROVIDER,
     ENV_REASONING_EFFORT,
     ENV_TIMEOUT,
     GroqProvider,
+    LIMIT_UNCLASSIFIED,
     LLMConfig,
     LLMRequest,
     LLMResponse,
     OpenAICompatibleProvider,
     ProviderNotConfigured,
+    QuotaExhaustedError,
+    RateLimitedError,
     StructuredOutputError,
     TransportError,
     build_provider,
     json_schema_for,
+    limit_state,
     load_dotenv_file,
     parse_json_object,
+    retry_guidance,
 )
-from intelligence.intelligence import ExtractionDraft
+from intelligence.intelligence import PROMPT_DIGEST, ExtractionDraft
 
 KEY = "sk-not-a-real-key"
 
@@ -99,7 +104,6 @@ CONFIG_VARS = (ENV_PROVIDER, ENV_MODEL, ENV_BASE_URL, ENV_API_KEY, ENV_TIMEOUT)
 def local_env_file(monkeypatch, tmp_path, text: str) -> str:
     path = tmp_path / ".env"
     path.write_text(text, encoding="utf-8")
-    # Snapshot the real environment first, so the file's keys cannot outlive the test.
     for name in CONFIG_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("intelligence.llm.DOTENV_PATH", str(path))
@@ -199,15 +203,26 @@ def groq_reply(content: str, *, finish: str = "stop") -> Any:
 
 
 class GroqCompletions:
-    """The one SDK method this provider calls: client.chat.completions.create."""
-
-    def __init__(self, reply: Any, error: Optional[BaseException] = None) -> None:
+    def __init__(
+        self,
+        reply: Any,
+        error: Optional[BaseException] = None,
+        *,
+        answers: Optional[list[Any]] = None,
+    ) -> None:
         self.reply = reply
         self.error = error
+        self.answers = answers
         self.calls: list[dict[str, Any]] = []
+        self.slept: list[float] = []
 
     def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
+        if self.answers is not None:
+            outcome = self.answers[min(len(self.calls) - 1, len(self.answers) - 1)]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
         if self.error is not None:
             raise self.error
         return self.reply
@@ -219,7 +234,10 @@ def groq_provider(reply: Any, error: Optional[BaseException] = None) -> tuple[Gr
     config = LLMConfig(
         provider="groq", model="openai/gpt-oss-120b", api_key=KEY, temperature=0.2, max_tokens=512
     )
-    return GroqProvider(config, client=client), completions
+    return (
+        GroqProvider(config, client=client, sleeper=completions.slept.append),
+        completions,
+    )
 
 
 def test_groq_sends_one_chat_completion_with_the_configured_settings():
@@ -375,6 +393,22 @@ def test_the_request_schema_is_the_draft_the_pipeline_parses():
     assert "latitude" not in json.dumps(schema)
 
 
+def test_the_answer_shape_a_provider_is_asked_for_survives_a_cleanup_pass():
+    schema = json_schema_for(ExtractionDraft)
+    assert schema["description"] == "The whole model answer for one record."
+    assert schema["$defs"]["ContextFactDraft"]["description"].startswith(
+        "One value the record carries."
+    )
+    assert PROMPT_DIGEST == "6e2f43b839df9fca", (
+        "the reuse key moved: it hashes the prompt text and the answer shape together, and the shape "
+        "is generated from the draft models' docstrings, so trimming one of those rewrites what a "
+        "provider is asked to answer and strands every semantic reading already in a checkpoint - "
+        "stage-2.29 rewrote rules 1, 3 and 5 to forbid a quote stitched across two fields and to read "
+        "severity and priority from the whole article, and the readings taken under stage-2.22 will be "
+        "re-asked of the billed provider"
+    )
+
+
 def test_a_response_carries_what_the_endpoint_reported():
     built, _ = provider([(200, json.dumps({"model": "gpt-oss-120b-prod", "choices": [
         {"message": {"content": "{\"a\": 1}"}, "finish_reason": "stop"}]}))])
@@ -441,3 +475,193 @@ def test_a_strict_answer_the_endpoint_could_never_validate_points_at_the_budget(
     assert "INTELLIGENCE_LLM_MAX_TOKENS" in reported
     assert "INTELLIGENCE_LLM_REASONING_EFFORT" in reported
     assert KEY not in reported
+
+
+def groq_refusal(status: int, body: Any) -> Any:
+    return RateLimitError(
+        f"Error code: {status}",
+        response=httpx.Response(
+            status, request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        ),
+        body=body,
+    )
+
+
+def test_only_a_refusal_the_endpoint_actually_made_is_read_as_a_limit():
+    assert limit_state(200, {"error": {"code": "insufficient_quota"}}) is None
+    assert limit_state(500, "upstream is down") is None
+    assert limit_state(429, {"error": {"code": "insufficient_quota",
+                                        "message": "You exceeded your current quota"}}) == "quota"
+    assert limit_state(429, {"error": {"code": "daily_quota_exceeded",
+                                        "message": "Daily token quota exceeded"}}) == "quota"
+    assert limit_state(429, {"error": {"code": "rate_limit_exceeded",
+                                        "message": "Too many requests"}}) == "rate"
+    assert limit_state(429, "Too Many Requests") == "rate"
+    assert limit_state(402, "card declined") == "quota"
+    assert limit_state(429, "a body that names nothing") == LIMIT_UNCLASSIFIED
+
+
+def test_a_required_wait_is_read_from_whatever_stated_it():
+    assert retry_guidance({"error": {"message": "busy", "retry_after": 12}}) == 12.0
+    assert retry_guidance('{"error": {"message": "busy", "retry_after_ms": 1500}}') == 1.5
+    assert retry_guidance({"error": {"message": "Rate limit reached. Please try again in 30.5s."}}) == 30.5
+    assert retry_guidance({"error": {"message": "Slow down, retry after 2 minutes"}}) == 120.0
+    assert retry_guidance(None, {"retry-after": "47"}) == 47.0
+    assert retry_guidance(None, {"x-ratelimit-reset-tokens": "1m30s"}) == 90.0
+    assert retry_guidance({"error": {"message": "Rate limit reached for this model"}}) is None
+    assert retry_guidance(None, {"content-type": "application/json"}) is None
+
+
+def test_the_waiting_budget_is_configuration_and_is_named_when_it_was_not_enough():
+    found = LLMConfig.from_env({ENV_MODEL: "m", ENV_MAX_WAIT: "90"})
+    assert found.max_wait_seconds == 90.0 and found.summary()["max_wait_seconds"] == 90.0
+    assert LLMConfig.from_env({ENV_MODEL: "m"}).max_wait_seconds == DEFAULT_MAX_WAIT_SECONDS
+    with pytest.raises(ProviderNotConfigured, match="MAX_WAIT_SECONDS"):
+        LLMConfig.from_env({ENV_MODEL: "m", ENV_MAX_WAIT: "next Tuesday"})
+
+
+def test_an_exhausted_allowance_is_never_retried_and_is_named_as_quota():
+    refusal = json.dumps(
+        {"error": {"code": "insufficient_quota", "message": "You exceeded your current quota"}}
+    )
+    built, recorder = provider([(429, refusal), (200, chat_body({}))])
+
+    with pytest.raises(QuotaExhaustedError, match="refused on its allowance"):
+        built.generate_structured(request())
+
+    assert len(recorder.calls) == 1 and recorder.slept == []
+
+
+def test_a_daily_allowance_refusal_is_not_read_as_a_busy_window():
+    refusal = json.dumps(
+        {"error": {"code": "daily_quota_exceeded", "message": "Daily token quota exceeded",
+                   "retry_after": 3600}}
+    )
+    built, recorder = provider([(429, refusal), (200, chat_body({}))])
+
+    with pytest.raises(QuotaExhaustedError):
+        built.generate_structured(request())
+
+    assert len(recorder.calls) == 1 and recorder.slept == []
+
+
+def test_a_busy_window_is_waited_out_over_its_sends_and_then_named_as_a_rate_limit():
+    refusal = json.dumps({"error": {"code": "rate_limit_exceeded", "message": "Too many requests"}})
+    built, recorder = provider([(429, refusal)])
+
+    with pytest.raises(RateLimitedError, match="answered 429"):
+        built.generate_structured(request())
+
+    assert len(recorder.calls) == 3 and recorder.slept == [30.0, 30.0]
+    assert sum(recorder.slept) == DEFAULT_MAX_WAIT_SECONDS
+
+
+def test_a_busy_window_that_stated_its_wait_is_waited_and_asked_again():
+    refusal = json.dumps(
+        {"error": {"code": "rate_limit_exceeded", "message": "Rate limit reached",
+                   "retry_after": 20}}
+    )
+    built, recorder = provider([(429, refusal), (200, chat_body({"title": {"value": "x"}}))])
+
+    output = built.generate_structured(request())
+
+    assert output.payload["title"]["value"] == "x"
+    assert len(recorder.calls) == 2 and recorder.slept == [20.0]
+
+
+def test_a_wait_longer_than_the_budget_is_not_half_waited_and_says_so():
+    refusal = json.dumps(
+        {"error": {"code": "rate_limit_exceeded", "message": "Rate limit reached",
+                   "retry_after": 3600}}
+    )
+    built, recorder = provider([(429, refusal), (200, chat_body({}))])
+
+    with pytest.raises(RateLimitedError, match="asked for 3600s") as raised:
+        built.generate_structured(request())
+
+    assert len(recorder.calls) == 1 and recorder.slept == []
+    assert ENV_MAX_WAIT in str(raised.value)
+
+
+def test_a_billing_refusal_that_names_no_code_is_still_read_as_an_exhausted_allowance():
+    built, recorder = provider([(402, "your card was declined"), (200, chat_body({}))])
+
+    with pytest.raises(QuotaExhaustedError):
+        built.generate_structured(request())
+
+    assert len(recorder.calls) == 1
+
+
+def test_a_refusal_that_explained_nothing_but_a_limit_gets_one_further_send():
+    built, recorder = provider([(429, json.dumps({"detail": "hold on"}))])
+
+    with pytest.raises(RateLimitedError, match="answered 429") as raised:
+        built.generate_structured(request())
+
+    assert len(recorder.calls) == 2 and recorder.slept == [0.2]
+    assert "quota" not in str(raised.value).casefold()
+
+
+def test_a_groq_allowance_refusal_is_separated_from_a_groq_busy_window():
+    spent, calls = groq_provider(
+        groq_reply("{}"),
+        error=groq_refusal(429, {"error": {"code": "daily_quota_exceeded",
+                                           "message": "Daily token quota exceeded"}}),
+    )
+    with pytest.raises(QuotaExhaustedError, match="nothing further was sent") as raised:
+        spent.complete(request(payload_shape=False))
+    assert "daily_quota_exceeded" in str(raised.value) and KEY not in str(raised.value)
+    assert len(calls.calls) == 1 and calls.slept == []
+
+    busy, sent = groq_provider(
+        groq_reply("{}"),
+        error=groq_refusal(429, {"error": {"code": "rate_limit_exceeded",
+                                           "message": "Rate limit reached for this model"}}),
+    )
+    with pytest.raises(RateLimitedError, match="Rate limit reached"):
+        busy.complete(request(payload_shape=False))
+    assert len(sent.calls) == 3 and sent.slept == [30.0, 30.0]
+
+
+def test_a_groq_wait_stated_in_its_headers_is_honoured_and_the_record_is_asked_again():
+    refusal = httpx.Response(
+        429,
+        headers={"retry-after": "5", "x-ratelimit-reset-tokens": "4m"},
+        request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+    )
+    busy = RateLimitError(
+        "Error code: 429",
+        response=refusal,
+        body={"error": {"code": "rate_limit_exceeded", "message": "Rate limit reached for this model"}},
+    )
+    completions = GroqCompletions(groq_reply("{}"), answers=[busy, groq_reply("{}")])
+    built = GroqProvider(
+        LLMConfig(provider="groq", model="openai/gpt-oss-120b", api_key=KEY),
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+        sleeper=completions.slept.append,
+    )
+
+    built.complete(request(payload_shape=False))
+
+    assert completions.slept == [5.0] and len(completions.calls) == 2
+
+
+def test_a_groq_refusal_whole_the_day_long_is_never_sent_again():
+    refusal = httpx.Response(
+        429,
+        headers={"retry-after": "86400"},
+        request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+    )
+    built, calls = groq_provider(
+        groq_reply("{}"),
+        error=RateLimitError(
+            "Error code: 429",
+            response=refusal,
+            body={"error": {"code": "rate_limit_exceeded", "message": "Rate limit reached"}},
+        ),
+    )
+
+    with pytest.raises(RateLimitedError, match="asked for 86400s"):
+        built.complete(request(payload_shape=False))
+
+    assert len(calls.calls) == 1 and calls.slept == []

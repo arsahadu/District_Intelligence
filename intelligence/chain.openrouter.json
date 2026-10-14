@@ -1,0 +1,17 @@
+
+{
+  "candidates": [
+    {
+      "provider": "openai_compatible",
+      "model": "openai/gpt-oss-120b",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY"
+    },
+    {
+      "provider": "openai_compatible",
+      "model": "qwen/qwen3.8-flash",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY"
+    }
+  ]
+}
