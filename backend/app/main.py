@@ -5,6 +5,7 @@ from app.api.health import router as health_router
 from app.api.incidents import router as incidents_router
 from app.api.records import router as records_router
 from app.api.sources import router as sources_router
+from app.document_intelligence.router import router as document_intelligence_router
 
 app = FastAPI(
     title="District Intelligence API",
@@ -28,6 +29,7 @@ app.include_router(health_router)
 app.include_router(records_router)
 app.include_router(incidents_router)
 app.include_router(sources_router)
+app.include_router(document_intelligence_router)
 
 
 @app.get("/")

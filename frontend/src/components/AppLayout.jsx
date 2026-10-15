@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: '◫' },
   { id: 'incidents', label: 'Incidents', icon: '≡' },
+  { id: 'documents', label: 'Government Documents', icon: '▤' },
   { id: 'news', label: 'News Intelligence', icon: '▤' },
   { id: 'weather', label: 'Weather', icon: '◌' },
   { id: 'agriculture', label: 'Agriculture & Markets', icon: '⌁' },
