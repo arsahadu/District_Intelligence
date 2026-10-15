@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Any
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -11,6 +12,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/document-intelligence", tags=["Document Intelligence"])
 
 from .insights import generate_document_insights, InsightsError
+
+
+def _public_document_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key not in {"s3_bucket", "s3_key"}}
 
 
 @router.post("/jobs/{job_id}/insights")
@@ -29,6 +34,8 @@ def generate_job_insights(job_id: str):
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InsightsError as exc:
         logger.exception("Gemini document insights failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -50,7 +57,7 @@ async def upload_document(file: UploadFile = File(...)):
         metadata = service.submit_document(file.filename or "uploaded-document", content)
         return {
             "message": "Document uploaded; Textract OCR job started.",
-            **metadata,
+            **_public_document_payload(metadata),
             "poll_url": f"/document-intelligence/jobs/{metadata['job_id']}",
         }
     except ValueError as exc:
@@ -68,7 +75,7 @@ async def upload_document(file: UploadFile = File(...)):
 def get_document_job(job_id: str):
     """Poll Textract processing; returns extracted text once complete."""
     try:
-        return get_service().get_job(job_id)
+        return _public_document_payload(get_service().get_job(job_id))
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ClientError, BotoCoreError) as exc:

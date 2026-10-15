@@ -4,7 +4,7 @@ A standalone FastAPI router that uploads government documents to a private S3 bu
 
 ## What this MVP does
 
-- Accepts PDF, PNG, JPG/JPEG, and TIFF uploads.
+- Accepts PDF and TIFF uploads.
 - Enforces a configurable 20 MB upload limit.
 - Stores originals under `documents/raw/` with UUID-based keys.
 - Starts asynchronous Textract text detection.
@@ -46,19 +46,9 @@ export DOCUMENTS_MAX_BYTES="20971520"
 
 Use the already-approved AWS profile or execution role. Do not commit credentials, create a new IAM role/user, or make the bucket public.
 
-## 4. Register the router
+## 4. Router registration
 
-In `backend/app/main.py`, add:
-
-```python
-from app.document_intelligence.router import router as document_intelligence_router
-```
-
-After `app = FastAPI(...)` is created, add:
-
-```python
-app.include_router(document_intelligence_router)
-```
+The FastAPI application registers this router in `backend/app/main.py`. Do not register it a second time. The module dependencies are included through `backend/requirements.txt`.
 
 Keep these endpoints behind the application's existing authentication/authorization. Before production, restrict uploads and job-result access to authorized Collector users and enforce per-user job ownership. This standalone module intentionally does not invent a replacement auth system.
 
@@ -82,12 +72,10 @@ Poll `GET /document-intelligence/jobs/{job_id}`. While processing, it returns `s
 
 ## 7. Frontend integration contract
 
-1. Upload the selected file to `POST /document-intelligence/documents`.
-2. Keep the returned `job_id`.
-3. Poll `poll_url` every 3–5 seconds until `SUCCEEDED` or `FAILED`.
-4. Display extracted text and page/line references.
-5. Pass the extracted text to the existing Gemini/intelligence adapter to generate a summary, key dates, department responsibilities, action items, and document Q&A.
-6. Show insights as drafts with source citations; require human confirmation before creating official actions.
+1. Upload the selected PDF to `POST /document-intelligence/documents`.
+2. Keep the returned `job_id` and poll `poll_url` every 4 seconds until OCR succeeds or reaches a terminal status.
+3. When OCR is `SUCCEEDED`, call `POST /document-intelligence/jobs/{job_id}/insights`. The backend generates and caches structured Gemini insights.
+4. Display insights as drafts with source citations. Keep OCR text hidden by default, and require human confirmation before taking official action.
 
 This feature is independent of the source ingestion pipeline; do not rerun ingestion to upload documents.
 
@@ -95,5 +83,5 @@ This feature is independent of the source ingestion pipeline; do not rerun inges
 
 - This MVP extracts text only. For table/form structure, extend it with `StartDocumentAnalysis` and `GetDocumentAnalysis` using `TABLES`, `FORMS`, and/or `LAYOUT`.
 - Textract's published language support does not list Tamil. Validate actual Tamil documents before relying on its OCR; this MVP should first be tested with English documents.
-- This is the OCR stage, not the final AI insight generator. The next integration step is to connect the extracted text to the existing model adapter and require page-level citations.
+- Gemini insights are available from the document-insights endpoint and are drafts requiring human verification; they do not create official actions.
 - Before production, add malware scanning, document retention/deletion policy, per-user access checks, audit events, rate limiting, and tests for oversized/invalid uploads.

@@ -6,3 +6,4 @@ psycopg[binary]
 pydantic-settings
 pytest
 httpx
+-r app/document_intelligence/requirements.txt

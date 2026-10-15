@@ -18,7 +18,11 @@ def test_backend_imports_repository_incident_contract_without_pythonpath():
                 "from app.api.incidents import Incident as APIIncident; "
                 "from intelligence.contract import Incident; "
                 "assert APIIncident is Incident; "
-                "assert '/incidents' in app.main.app.openapi()['paths']"
+                "paths = app.main.app.openapi()['paths']; "
+                "assert '/incidents' in paths; "
+                "assert '/document-intelligence/documents' in paths; "
+                "assert '/document-intelligence/jobs/{job_id}' in paths; "
+                "assert '/document-intelligence/jobs/{job_id}/insights' in paths"
             ),
         ],
         cwd=backend_dir,

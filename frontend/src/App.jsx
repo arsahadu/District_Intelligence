@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import AppLayout from './components/AppLayout.jsx'
 import IncidentDetailPanel from './components/IncidentDetailPanel.jsx'
+import GovernmentDocuments from './pages/GovernmentDocuments.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import { getIncident, getIncidents } from './services/api.js'
 import './App.css'
@@ -101,15 +102,18 @@ function App() {
         lastUpdated={lastUpdated}
         onRefresh={refresh}
       >
-        <Dashboard
-          view={view}
-          incidents={incidents}
-          status={status}
-          error={error}
-          onRetry={refresh}
-          onSelectIncident={selectIncident}
-          onNavigate={setView}
-        />
+        <div hidden={view === 'documents'}>
+          <Dashboard
+            view={view === 'documents' ? 'overview' : view}
+            incidents={incidents}
+            status={status}
+            error={error}
+            onRetry={refresh}
+            onSelectIncident={selectIncident}
+            onNavigate={setView}
+          />
+        </div>
+        {view === 'documents' ? <GovernmentDocuments /> : null}
       </AppLayout>
       {selectedId ? (
         <IncidentDetailPanel
