@@ -3,6 +3,7 @@ import AppLayout from './components/AppLayout.jsx'
 import IncidentDetailPanel from './components/IncidentDetailPanel.jsx'
 import GovernmentDocuments from './pages/GovernmentDocuments.jsx'
 import Dashboard from './pages/Dashboard.jsx'
+import GISMapView from './pages/GISMapView.jsx'
 import { getIncident, getIncidents } from './services/api.js'
 import './App.css'
 
@@ -100,11 +101,12 @@ function App() {
         onNavigate={setView}
         connection={connection}
         lastUpdated={lastUpdated}
-        onRefresh={refresh}
+        onRefresh={view === 'map' ? undefined : refresh}
+        showConnection={view !== 'map'}
       >
-        <div hidden={view === 'documents'}>
+        <div hidden={view === 'documents' || view === 'map'}>
           <Dashboard
-            view={view === 'documents' ? 'overview' : view}
+            view={view === 'documents' || view === 'map' ? 'overview' : view}
             incidents={incidents}
             status={status}
             error={error}
@@ -114,6 +116,7 @@ function App() {
           />
         </div>
         {view === 'documents' ? <GovernmentDocuments /> : null}
+        {view === 'map' ? <GISMapView /> : null}
       </AppLayout>
       {selectedId ? (
         <IncidentDetailPanel

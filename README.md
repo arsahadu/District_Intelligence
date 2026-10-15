@@ -29,6 +29,16 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The dashboard requests Incident v2.0 records from `GET /incidents` and loads selected record details from `GET /incidents/{incident_id}`. Set `VITE_API_BASE_URL` in `frontend/.env` to point to a different API origin; it defaults to `http://localhost:8000`.
+Start the GIS API in another terminal so Map View can load processed records and boundaries:
+
+```powershell
+Set-Location gis
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python app.py
+```
+
+Open `http://localhost:5173`. The dashboard requests Incident v2.0 records from `GET /incidents` and loads selected record details from `GET /incidents/{incident_id}`. Set `VITE_API_BASE_URL` in `frontend/.env` to point to a different API origin; it defaults to `http://localhost:8000`. The React Map View uses the Python GIS service at `http://127.0.0.1:8080` by default; details are in [gis/README.md](gis/README.md).
 
 The incident list endpoint currently returns all matching records as a JSON array and has no pagination parameters. The dashboard paginates display rows locally without discarding fetched records. Search and the available category, severity, priority, status, location, and event-date filters are applied to the complete fetched response.

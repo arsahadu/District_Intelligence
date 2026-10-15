@@ -296,37 +296,6 @@ function AgricultureView({ incidents, onSelect }) {
   )
 }
 
-function MapView({ incidents }) {
-  const mapped = incidents.flatMap((incident) => (incident.locations || [])
-    .filter((location) => Number.isFinite(location.latitude) && Number.isFinite(location.longitude))
-    .map((location) => ({ ...location, incident })))
-
-  if (!mapped.length) {
-    return (
-      <EmptyState title="Map data unavailable">
-        No incident locations currently include resolved GIS coordinates. Place names are shown in incident records; no map pins or coordinates have been inferred.
-      </EmptyState>
-    )
-  }
-
-  return (
-    <section className="panel mapped-locations">
-      <div className="panel-heading">
-        <div><span className="eyebrow">RESOLVED GIS LOCATIONS</span><h2>Incident coordinates</h2></div>
-        <span className="record-count">{mapped.length} locations</span>
-      </div>
-      <ul>
-        {mapped.map(({ incident, ...location }, index) => (
-          <li key={`${incident.incident_id}-${location.location_id}-${index}`}>
-            <span><strong>{location.text}</strong><small>{incident.title || incident.incident_id}</small></span>
-            <code>{location.latitude}, {location.longitude}</code>
-          </li>
-        ))}
-      </ul>
-    </section>
-  )
-}
-
 function SourcesView({ incidents }) {
   const sources = useMemo(() => {
     const index = new Map()
@@ -444,7 +413,6 @@ export default function Dashboard({
       {status === 'ready' && view === 'agriculture' ? (
         <AgricultureView incidents={incidents} onSelect={onSelectIncident} />
       ) : null}
-      {status === 'ready' && view === 'map' ? <MapView incidents={incidents} /> : null}
       {status === 'ready' && view === 'sources' ? <SourcesView incidents={incidents} /> : null}
     </div>
   )
