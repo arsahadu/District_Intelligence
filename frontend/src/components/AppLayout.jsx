@@ -73,6 +73,7 @@ export default function AppLayout({
   connection,
   lastUpdated,
   onRefresh,
+  showConnection = true,
   children,
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -130,24 +131,28 @@ export default function AppLayout({
             <time className="today-date" dateTime={new Date().toISOString()}>
               {date}
             </time>
-            <span className={`api-status api-${connection}`} role="status">
-              <span aria-hidden="true" />
-              {connection === 'connected'
-                ? 'API connected'
-                : connection === 'loading'
-                  ? 'Connecting'
-                  : 'API unavailable'}
-            </span>
-            <button
-              className="button button-refresh"
-              type="button"
-              onClick={onRefresh}
-              disabled={connection === 'loading'}
-              title={lastUpdated ? `Last refreshed ${lastUpdated}` : 'Refresh incidents'}
-            >
-              <span aria-hidden="true">↻</span>
-              <span className="refresh-label">Refresh</span>
-            </button>
+            {showConnection ? (
+              <span className={`api-status api-${connection}`} role="status">
+                <span aria-hidden="true" />
+                {connection === 'connected'
+                  ? 'API connected'
+                  : connection === 'loading'
+                    ? 'Connecting'
+                    : 'API unavailable'}
+              </span>
+            ) : null}
+            {onRefresh ? (
+              <button
+                className="button button-refresh"
+                type="button"
+                onClick={onRefresh}
+                disabled={connection === 'loading'}
+                title={lastUpdated ? `Last refreshed ${lastUpdated}` : 'Refresh incidents'}
+              >
+                <span aria-hidden="true">↻</span>
+                <span className="refresh-label">Refresh</span>
+              </button>
+            ) : null}
           </div>
         </header>
         <main className="main-content">
