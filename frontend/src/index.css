@@ -1,18 +1,52 @@
 :root {
-  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  font-family: Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-weight: 400;
-  color: #34485b;
-  background: #f5f7f8;
+  color: #1F2937;
+  background: #F4F6F9;
   color-scheme: light;
-  --navy: #21394f;
-  --ink: #34485b;
-  --ink-soft: #607080;
-  --muted: #788693;
-  --line: #e1e6ea;
+
+  /* Official Government Operations Design Tokens */
+  --navy: #183153;
+  --blue: #285EA8;
+  --blue-hover: #1e4b87;
+  --blue-light: #EAF1F8;
+  --bg: #F4F6F9;
+  --surface: #FFFFFF;
+  --text-primary: #1F2937;
+  --text-secondary: #596579;
+  --text-muted: #768396;
+  --line: #DCE2EA;
+  --line-subtle: #EAEFF5;
+
+  /* Semantic Status Colors */
+  --success: #287D58;
+  --success-bg: #EBF6F0;
+  --success-border: #C6E7D5;
+
+  --warning: #A9650B;
+  --warning-bg: #FDF6E9;
+  --warning-border: #F6DFBA;
+
+  --error: #B4232F;
+  --error-bg: #FDE8E9;
+  --error-border: #F7C4C7;
+
+  /* Legacy compatibility aliases */
+  --ink: var(--text-primary);
+  --ink-soft: var(--text-secondary);
+  --muted: var(--text-muted);
+
+  /* Shadows & Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --shadow-sm: 0 1px 2px rgba(24, 49, 83, 0.05);
+  --shadow-md: 0 2px 6px rgba(24, 49, 83, 0.07), 0 1px 2px rgba(24, 49, 83, 0.04);
+  --shadow-lg: 0 12px 32px rgba(24, 49, 83, 0.12);
 }
 
 * {
@@ -22,37 +56,45 @@
 html {
   min-width: 320px;
   min-height: 100%;
-  background: #f5f7f8;
+  background: var(--bg);
 }
 
 body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
+  color: var(--text-primary);
+  background: var(--bg);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 button,
 input,
-select {
+select,
+textarea {
   font-family: inherit;
 }
 
 button,
 a,
 input,
-select {
+select,
+textarea {
   -webkit-tap-highlight-color: transparent;
 }
 
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
-select:focus-visible {
-  outline: 3px solid #8eb2cf;
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--blue);
   outline-offset: 2px;
 }
 
 ::selection {
-  background: #d8e6f0;
-  color: #1f3d57;
+  background: #D5E4F5;
+  color: var(--navy);
 }

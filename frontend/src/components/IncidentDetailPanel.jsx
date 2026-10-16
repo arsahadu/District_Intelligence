@@ -20,7 +20,14 @@ function DetailField({ label, children }) {
   )
 }
 
-export default function IncidentDetailPanel({ incident, loading, error, onRetry, onClose }) {
+export default function IncidentDetailPanel({
+  incident,
+  loading,
+  error,
+  onRetry,
+  onClose,
+  onSelectMapRecord,
+}) {
   const panel = useRef(null)
   const closeButton = useRef(null)
 
@@ -48,7 +55,9 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose])
 
-  const reviewRequired = incident ? requiresReview(incident) : false
+  const reviewRequired = incident
+    ? ['incident', 'unresolved'].includes(incident.record_kind) && requiresReview(incident)
+    : false
   const referenceLabels = new Map([
     ...(incident?.entities || []).map((entity) => [entity.entity_id, entity.text]),
     ...(incident?.locations || []).map((location) => [
@@ -57,7 +66,11 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
     ]),
   ])
   const provenanceUrl = safeHttpUrl(incident?.provenance?.source_url)
-  const sourceRecordId = incident?.provenance?.record_id || incident?.source_record_id || incident?.provenance?.source_record_id
+  const sourceRecordId = incident?.provenance?.record_id || incident?.source_record_id
+  const mapRecordKind = incident?.record_kind === 'incident' ? 'incident' : 'context'
+  const mapRecordId = incident?.record_kind === 'incident'
+    ? incident?.incident_id
+    : sourceRecordId
   const contextFacts = incident?.context_facts || []
 
   return (
@@ -72,7 +85,9 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
         aria-labelledby="incident-detail-title"
       >
         <header className="detail-header">
-          <span className="detail-eyebrow">INCIDENT RECORD</span>
+          <span className="detail-eyebrow">
+            {incident?.record_kind === 'incident' ? 'INCIDENT RECORD' : 'RELATED ASSESSMENT'}
+          </span>
           <button
             ref={closeButton}
             className="icon-button detail-close"
@@ -93,6 +108,15 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
             </>
           ) : <h2 id="incident-detail-title">Incident details</h2>}
         </header>
+        {incident && mapRecordId ? (
+          <button
+            className="button button-secondary incident-map-action"
+            type="button"
+            onClick={() => onSelectMapRecord?.(mapRecordKind, mapRecordId)}
+          >
+            View on district map
+          </button>
+        ) : null}
 
         {loading ? <LoadingState label="Loading incident details" /> : null}
         {error ? (
@@ -105,8 +129,8 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
           <div className="detail-scroll">
             {reviewRequired ? (
               <div className="review-notice">
-                <strong>Human review required</strong>
-                <p>This record is unresolved or has claims awaiting review. Treat its assessment as provisional.</p>
+                <strong>Assessment needs review</strong>
+                <p>This assessment has not met acceptance validation and should not be treated as a confirmed incident.</p>
               </div>
             ) : null}
 
@@ -118,12 +142,10 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
             ) : null}
 
             <section className="detail-section">
-              <h3>Incident summary</h3>
+              <h3>{incident.record_kind === 'incident' ? 'Incident summary' : 'Assessment summary'}</h3>
               <dl className="detail-grid">
-                <DetailField label="Record kind">{displayValue(incident.record_kind || (incident.context_type ? 'context' : 'incident'))}</DetailField>
                 <DetailField label="Category">{displayValue(incident.category)}</DetailField>
-                <DetailField label="Type">{displayValue(incident.incident_type)}</DetailField>
-                <DetailField label="Context type">{displayValue(incident.context_type)}</DetailField>
+                <DetailField label="Incident type">{displayValue(incident.incident_type)}</DetailField>
                 <DetailField label="Priority">{displayValue(incident.priority)}</DetailField>
                 <DetailField label="Status">{displayValue(incident.event_status)}</DetailField>
                 <DetailField label="Event time">{formatDateTime(incident.event_time)}</DetailField>
@@ -161,7 +183,7 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
               <section className="detail-section">
                 <h3>Intelligence assessment</h3>
                 <p className="assessment-disclaimer">
-                  Structured assessments are pipeline output, not source quotations or independent confirmation.
+                  Assessments are not source quotations. Review the supporting evidence before treating a claim as confirmed.
                 </p>
                 <div className="claim-list">
                   {incident.claims.map((claim, index) => (
@@ -173,12 +195,6 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
                         </span>
                       </div>
                       <p>{displayValue(claim.value)}</p>
-                      <span className="claim-method">
-                        {displayValue(claim.method)}
-                        {claim.confidence !== null && claim.confidence !== undefined
-                          ? ` · ${Math.round(claim.confidence * 100)}% confidence`
-                          : ''}
-                      </span>
                       {claim.notes ? <p className="claim-notes">{claim.notes}</p> : null}
                     </article>
                   ))}
@@ -215,23 +231,14 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
             ) : null}
 
             <section className="detail-section">
-              <h3>Validation & provenance</h3>
+              <h3>Review & sources</h3>
               <dl className="detail-grid">
-                <DetailField label="Validation state">{displayValue(incident.validation?.state)}</DetailField>
-                <DetailField label="Validator">{incident.validation?.validator}</DetailField>
-                <DetailField label="Checked at">{formatDateTime(incident.validation?.checked_at)}</DetailField>
+                <DetailField label="Review status">{requiresReview(incident) ? 'Needs review' : 'Accepted'}</DetailField>
                 <DetailField label="Source">{incident.provenance?.source_id}</DetailField>
-                <DetailField label="Source type">{incident.provenance?.source_type}</DetailField>
-                <DetailField label="Source record">{sourceRecordId || incident.provenance?.record_id}</DetailField>
                 <DetailField label="Declared event time">{formatDateTime(incident.provenance?.declared_event_time)}</DetailField>
                 <DetailField label="Declared precision">{formatPrecision(incident.provenance?.declared_event_time_precision)}</DetailField>
-                <DetailField label="Fields without value">{Array.isArray(incident.provenance?.fields_without_value) ? incident.provenance.fields_without_value.join(', ') : displayValue(incident.provenance?.fields_without_value)}</DetailField>
-                <DetailField label="Retrieved at">{formatDateTime(incident.provenance?.retrieved_at)}</DetailField>
-                <DetailField label="Schema version">{incident.schema_version}</DetailField>
-                {sourceRecordId ? (
-                  <DetailField label="Original record">
-                    <a href={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/records/${encodeURIComponent(sourceRecordId)}`} target="_blank" rel="noopener noreferrer">Open original CommonRecord</a>
-                  </DetailField>
+                {incident.provenance?.retrieved_at ? (
+                  <DetailField label="Source received">{formatDateTime(incident.provenance.retrieved_at)}</DetailField>
                 ) : null}
                 {provenanceUrl ? (
                   <DetailField label="Source URL">
@@ -243,7 +250,6 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
                 <ul className="validation-issues">
                   {incident.validation.issues.map((issue, index) => (
                     <li key={`${issue.code}-${index}`}>
-                      <strong>{displayValue(issue.code)}</strong>
                       {issue.detail ? <span>{issue.detail}</span> : null}
                     </li>
                   ))}
@@ -251,22 +257,6 @@ export default function IncidentDetailPanel({ incident, loading, error, onRetry,
               ) : null}
             </section>
 
-            {incident.generation ? (
-              <section className="detail-section">
-                <h3>Generation metadata</h3>
-                <dl className="detail-grid">
-                  <DetailField label="Provider">{incident.generation.provider}</DetailField>
-                  <DetailField label="Model">{incident.generation.model}</DetailField>
-                  <DetailField label="Prompt version">{incident.generation.prompt_version}</DetailField>
-                  <DetailField label="Generated at">{formatDateTime(incident.generation.generated_at)}</DetailField>
-                </dl>
-                {incident.generation.warnings?.length ? (
-                  <ul className="validation-issues">
-                    {incident.generation.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
-                  </ul>
-                ) : null}
-              </section>
-            ) : null}
           </div>
         ) : null}
       </aside>

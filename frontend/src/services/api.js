@@ -1,5 +1,7 @@
+const ENV = import.meta.env || {}
+
 export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+  ENV.VITE_API_BASE_URL || 'http://localhost:8000'
 ).replace(/\/+$/, '')
 
 async function requestJson(path) {
@@ -20,6 +22,15 @@ export async function getIncidents() {
     throw new Error('The incidents endpoint returned an unexpected response.')
   }
   return incidents
+}
+
+export async function getRecords() {
+  const records = await requestJson('/records')
+  if (!Array.isArray(records)
+    || records.some((record) => !record || typeof record !== 'object' || Array.isArray(record))) {
+    throw new Error('The CommonRecords endpoint returned an unexpected response.')
+  }
+  return records
 }
 
 export async function getIncident(incidentId) {

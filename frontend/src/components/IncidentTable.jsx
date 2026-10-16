@@ -24,7 +24,7 @@ function sortIncidents(incidents, sort) {
   return ordered
 }
 
-export default function IncidentTable({ incidents, total, onSelect }) {
+export default function IncidentTable({ incidents, total, onSelect, onSelectMapRecord }) {
   const [sort, setSort] = useState('priority')
   const [page, setPage] = useState(1)
   const sorted = useMemo(() => sortIncidents(incidents, sort), [incidents, sort])
@@ -69,6 +69,7 @@ export default function IncidentTable({ incidents, total, onSelect }) {
               <th scope="col">Event time</th>
               <th scope="col">Source</th>
               <th scope="col">Review</th>
+              <th scope="col">Map</th>
             </tr>
           </thead>
           <tbody>
@@ -81,7 +82,6 @@ export default function IncidentTable({ incidents, total, onSelect }) {
                     onClick={() => onSelect(incident.incident_id)}
                   >
                     <strong>{incident.title || 'Untitled incident'}</strong>
-                    <span>{incident.incident_id}</span>
                   </button>
                 </td>
                 <td>
@@ -100,6 +100,15 @@ export default function IncidentTable({ incidents, total, onSelect }) {
                 </td>
                 <td><span className="source-cell">{getSourceLabel(incident)}</span></td>
                 <td><ReviewTag required={requiresReview(incident)} /></td>
+                <td>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => onSelectMapRecord?.('incident', incident.incident_id)}
+                  >
+                    Map
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

@@ -134,7 +134,7 @@ RECORDS_PATH = "/records"
 
 # a forecast and a market line are records the platform can store too, filed under their own record_kind;
 # an unresolved kind has nothing evidenced in it, so it stays local until a human says what it is
-POSTABLE_KINDS = (RecordKind.INCIDENT, RecordKind.FORECAST, RecordKind.CONTEXT)
+POSTABLE_KINDS = (RecordKind.INCIDENT,)
 
 LINE_FIELDS = (
     ("kind", "record_kind"),
@@ -226,8 +226,9 @@ def process_record(
     environ: Optional[Mapping[str, str]] = None,
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
+    allow_document: bool = False,
 ) -> Incident:
-    if route(record) is Mode.STRUCTURED:
+    if route(record, allow_document=allow_document) is Mode.STRUCTURED:
         return process_structured(record, text_keys=text_keys, extra_keys=extra_keys)
     if provider is None:
         provider = build_provider(config, environ=environ)
@@ -650,12 +651,13 @@ def run_record(
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
     chain: Optional[Chain] = None,
+    allow_document: bool = False,
 ) -> Outcome:
     payload = record if isinstance(record, Mapping) else {}
     record_id = str(payload.get("record_id") or "?")
     source_type = str(payload.get("source_type") or "")
     record_type = str(payload.get("record_type") or "")
-    mode = route(record)
+    mode = route(record, allow_document=allow_document)
 
     def stopped(error: str, turns: Sequence[str] = ()) -> Outcome:
         return Outcome(
@@ -677,7 +679,11 @@ def run_record(
         try:
             answered = chain.read(
                 lambda asked: process_record(
-                    record, provider=asked, text_keys=text_keys, extra_keys=extra_keys
+                    record,
+                    provider=asked,
+                    text_keys=text_keys,
+                    extra_keys=extra_keys,
+                    allow_document=allow_document,
                 )
             )
         except ChainExhaustedError as error:
@@ -706,6 +712,7 @@ def run_record(
             environ=environ,
             text_keys=text_keys,
             extra_keys=extra_keys,
+            allow_document=allow_document,
         )
     except MappingError as error:
         return stopped(f"record unreadable: {error}")
@@ -730,13 +737,14 @@ class _Job:
     prompt_version: str
     source_type: str = ""
     record_type: str = ""
+    allow_document: bool = False
     input_hash: Optional[str] = None
     prompt_digest: str = ""
 
 
-def _job(record: Any) -> _Job:
+def _job(record: Any, *, allow_document: bool = False) -> _Job:
     payload = record if isinstance(record, Mapping) else {}
-    mode = route(record)
+    mode = route(record, allow_document=allow_document)
     return _Job(
         record=payload,
         record_id=str(payload.get("record_id") or "?"),
@@ -744,6 +752,7 @@ def _job(record: Any) -> _Job:
         prompt_version=prompt_version_for(mode),
         source_type=str(payload.get("source_type") or ""),
         record_type=str(payload.get("record_type") or ""),
+        allow_document=allow_document,
         prompt_digest=prompt_digest_for(mode),
     )
 
@@ -817,6 +826,7 @@ def _read_batch(
             config=config,
             environ=environ,
             chain=chain,
+            allow_document=job.allow_document,
         )
 
     for job in structured:
@@ -893,6 +903,7 @@ def run_pipeline(
     chain: Optional[Chain] = None,
     chain_path: Optional[str] = None,
     records: Optional[Sequence[Mapping[str, Any]]] = None,
+    allow_documents: bool = False,
 ) -> RunSummary:
     if batch_size < 1:
         raise ValueError(f"--batch-size must be at least 1, got {batch_size}")
@@ -921,7 +932,7 @@ def run_pipeline(
         fetched = len(records)
         selected = records if all_records or limit is None else records[:limit]
 
-    jobs = [_job(record) for record in selected]
+    jobs = [_job(record, allow_document=allow_documents) for record in selected]
     summary = RunSummary(base_url=origin, fetched=fetched, selected=len(jobs), store=store)
 
     if chain is not None:
@@ -1150,7 +1161,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         prog="python -m intelligence.pipeline",
         description=(
             "Read CommonRecords and run the intelligence pipeline. --post-incidents opts in to "
-            "writing accepted Incidents, forecasts and context records back."
+            "writing accepted incident results back."
         ),
     )
     selection = parser.add_argument_group("selection")
@@ -1232,8 +1243,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--post-incidents",
         action="store_true",
-        help="POST accepted Incidents, forecasts and context records to the platform API, newly "
-             "read or reused from a checkpoint; review-required and unresolved results are not posted",
+        help="POST accepted incident results to the platform API, newly read or reused from a "
+             "checkpoint; context, forecast, review-required and unresolved results are not posted",
     )
     parser.add_argument(
         "--link-events",
@@ -1537,6 +1548,7 @@ def main(
             semantic_concurrency=args.semantic_concurrency,
             chain_path=args.llm_chain,
             records=documents,
+            allow_documents=bool(args.document),
         )
     except BackendError as error:
         return abort("backend", str(error), EXIT_BACKEND)
@@ -1645,8 +1657,7 @@ def main(
         postable = summary.postable
         if not postable:
             print(
-                "POST /incidents: nothing to send — the run produced no accepted "
-                "incident, forecast or context record"
+                "POST /incidents: nothing to send — the run produced no accepted incident"
             )
         post_failed = False
         for outcome in postable:

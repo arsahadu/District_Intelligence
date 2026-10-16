@@ -195,8 +195,6 @@ def test_a_forecast_and_a_price_line_are_kept_out_of_the_incident_total():
 
     assert [item.incident.incident_id for item in summary.postable] == [
         incident.incident_id,
-        forecast.incident_id,
-        price.incident_id,
     ]
     assert RecordKind.UNRESOLVED not in POSTABLE_KINDS
 

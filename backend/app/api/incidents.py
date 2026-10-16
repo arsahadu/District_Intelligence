@@ -39,6 +39,7 @@ _ALLOWED_TOP_LEVEL_FIELDS = {
     "record_kind",
     "context_type",
     "context_facts",
+    "source_geography",
 }
 
 _ALLOWED_PROVENANCE_FIELDS = {

@@ -962,10 +962,7 @@ def test_reuse_returns_the_whole_context_payload_not_only_its_kind(tmp_path):
     eligible = {
         item.incident.incident_id: item.incident.record_kind.value for item in again.postable
     }
-    assert eligible == {
-        f"INC-{PRICE_ID}": "context",
-        f"INC-{FORECAST_ID}": "forecast",
-    }
+    assert eligible == {}
 
 
 def test_a_context_reading_from_an_older_mapping_version_is_read_again_for_free(

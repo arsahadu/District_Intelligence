@@ -47,17 +47,85 @@ def test_agriculture_and_weather_records_are_read_without_a_model():
     assert route(as_record_model(market_price())) is Mode.STRUCTURED
 
 
-def test_prose_and_unfamiliar_records_are_read_for_their_meaning():
+def test_only_news_sources_enter_the_narrative_path():
     assert route(waterlogging()) is Mode.SEMANTIC
-    assert route(base_record(record_id="OCR-1", source_type="document",
-                             data={"content": "page text"})) is Mode.SEMANTIC
+    assert route(crop_distress_report()) is Mode.STRUCTURED
+    assert route(base_record(source_type="irrigation_board")) is Mode.STRUCTURED
 
-    assert route(crop_distress_report()) is Mode.SEMANTIC
-    assert route(dict(market_price(), data={"market": "X", "notes": "line one\nline two"})) \
-        is Mode.SEMANTIC
-    assert route(dict(market_price(), data={"rows": [{"min_price": 1}]})) is Mode.SEMANTIC
-    assert route(dict(market_price(), data={})) is Mode.SEMANTIC
-    assert route(dict(market_price(), source_type="")) is Mode.SEMANTIC
+
+def test_known_news_publisher_metadata_is_used_without_admitting_other_records():
+    publisher_record = base_record(
+        source_id="dinamalar",
+        source_type="",
+        record_type="article",
+    )
+    agriculture_record = base_record(
+        source_id="dinamalar",
+        source_type="agriculture",
+        record_type="article",
+    )
+    unknown_article = base_record(
+        source_id="unknown", source_type="publisher", record_type="article"
+    )
+
+    assert route(publisher_record) is Mode.SEMANTIC
+    assert route(agriculture_record) is Mode.STRUCTURED
+    assert route(unknown_article) is Mode.STRUCTURED
+
+
+def test_local_documents_are_narrative_only_when_explicitly_enabled():
+    document = base_record(record_id="OCR-1", source_type="document",
+                           data={"content": "page text"})
+
+    assert route(document) is Mode.STRUCTURED
+    assert route(document, allow_document=True) is Mode.SEMANTIC
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        market_price(),
+        dict(market_price(), data={"content": "prose market note"}),
+        dict(market_price(), data={"market": {"name": "Anna nagar"}}),
+        dict(market_price(), data={}),
+        dict(market_price(), data=None),
+        dict(market_price(), data={"market": None, "quantity": None}),
+        weather_forecast(),
+        dict(weather_forecast(), data={"content": "storm warning prose"}),
+        dict(weather_forecast(), data={"forecast": {"summary": "rain"}}),
+        dict(weather_forecast(), data={}),
+        dict(weather_forecast(), data=None),
+        base_record(source_type="irrigation_board", data={"content": "narrative"}),
+    ],
+)
+def test_non_news_record_shapes_never_enter_the_narrative_path(record):
+    assert route(record) is Mode.STRUCTURED
+
+    outcome = pipeline.run_record(record, provider=NeverCalled())
+
+    assert outcome.mode is Mode.STRUCTURED
+
+
+def test_ingestion_normalizer_source_values_route_deterministically():
+    news = base_record(
+        source_id="dinamalar", source_type="news", record_type="article",
+        data={"content": "article body", "language": "ta"},
+    )
+    price = market_price()
+    forecast = weather_forecast()
+
+    assert (news["source_type"], news["record_type"], news["source_id"]) == (
+        "news", "article", "dinamalar"
+    )
+    assert (price["source_type"], price["record_type"], price["source_id"]) == (
+        "agriculture", "market_price", "tn_agri_marketing"
+    )
+    assert (forecast["source_type"], forecast["record_type"], forecast["source_id"]) == (
+        "weather", "forecast", "imd"
+    )
+    assert route(news) is Mode.SEMANTIC
+    assert route(price) is Mode.STRUCTURED
+    assert route(forecast) is Mode.STRUCTURED
 
 
 def test_a_price_line_keeps_every_value_the_record_holds_without_being_asked_about():

@@ -1,4 +1,4 @@
-"""Madurai District GIS API for persisted intelligence incidents."""
+"""Madurai District GIS API for saved incidents and source records."""
 
 from threading import Lock
 from datetime import date
@@ -148,7 +148,7 @@ async def get_geojson(
     """Return RFC 7946 GeoJSON for mapped persisted incidents."""
     dataset = get_dataset()
     records = _filter_records(
-        dataset["mapped_records"],
+        dataset.get("incident_mapped_records", dataset["mapped_records"]),
         category=category,
         source_type=source_type,
         record_kind=record_kind,
@@ -171,6 +171,83 @@ async def get_unmapped_records(
     search: Optional[str] = Query(None),
 ) -> JSONResponse:
     """Return persisted incidents without a reliable map location."""
+    dataset = get_dataset()
+    records = _filter_records(
+        dataset.get("incident_unmapped_records", dataset["unmapped_records"]),
+        category=category,
+        source_type=source_type,
+        record_kind=record_kind,
+        search=search,
+    )
+    return JSONResponse(content=records)
+
+
+@app.get("/api/map/records", response_class=JSONResponse)
+async def get_map_records(
+    category: Optional[str] = Query(None),
+    source_type: Optional[str] = Query(None),
+    record_kind: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    taluk: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+) -> JSONResponse:
+    """Return incidents and contextual source records as distinct map records."""
+    dataset = get_dataset()
+    records = _filter_records(
+        dataset["all_records"],
+        category=category,
+        source_type=source_type,
+        record_kind=record_kind,
+        severity=severity,
+        status=status,
+        taluk=taluk,
+        search=search,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return JSONResponse(content=records)
+
+
+@app.get("/api/map/geojson", response_class=JSONResponse)
+async def get_map_geojson(
+    category: Optional[str] = Query(None),
+    source_type: Optional[str] = Query(None),
+    record_kind: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    taluk: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+) -> JSONResponse:
+    """Return mapped incidents and contextual records in one collision-safe layer."""
+    dataset = get_dataset()
+    records = _filter_records(
+        dataset["mapped_records"],
+        category=category,
+        source_type=source_type,
+        record_kind=record_kind,
+        severity=severity,
+        status=status,
+        taluk=taluk,
+        search=search,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return JSONResponse(content=build_geojson_feature_collection(records))
+
+
+@app.get("/api/map/unmapped", response_class=JSONResponse)
+async def get_map_unmapped_records(
+    category: Optional[str] = Query(None),
+    source_type: Optional[str] = Query(None),
+    record_kind: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Return every incident or source record without a reliable map point."""
     dataset = get_dataset()
     records = _filter_records(
         dataset["unmapped_records"],

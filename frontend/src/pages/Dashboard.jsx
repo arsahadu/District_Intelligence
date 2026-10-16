@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import FilterBar from '../components/FilterBar.jsx'
 import IncidentTable from '../components/IncidentTable.jsx'
+import CommonRecordList from '../components/CommonRecordList.jsx'
 import {
   EmptyState,
   ErrorState,
@@ -14,17 +15,18 @@ import {
   formatDateTime,
   getSourceLabel,
   incidentLocation,
-  isAgricultureIncident,
-  isForecastRecord,
   isHighPriority,
   isIncidentRecord,
-  isNewsIncident,
-  isWeatherIncident,
   matchesSearch,
   requiresReview,
   safeHttpUrl,
   sortByAttention,
 } from '../utils/incidents.js'
+import {
+  adaptCommonRecordForDisplay,
+  commonRecordsForSource,
+  sortCommonRecords,
+} from '../utils/commonRecords.js'
 
 const INITIAL_FILTERS = {
   search: '',
@@ -40,15 +42,16 @@ const INITIAL_FILTERS = {
 const PAGE_INFO = {
   overview: ['Madurai District Overview', 'A source-backed view of current district incidents and items requiring attention.'],
   incidents: ['Incidents', 'Search and review structured incidents recorded for Madurai district.'],
-  news: ['News Intelligence', 'District incidents derived from news sources, with direct links to the supporting evidence.'],
-  weather: ['Weather', 'Weather-related incident records and alerts available in the district intelligence feed.'],
-  agriculture: ['Agriculture & Markets', 'Agriculture incidents and market observations from available source records.'],
-  map: ['Map View', 'Location references from the incident register.'],
+  news: ['News & Intelligence', 'District news and related intelligence assessments, with links to the original reporting.'],
+  weather: ['Weather', 'Forecasts, observations, and warnings relevant to the district.'],
+  agriculture: ['Agriculture & Markets', 'Reported commodity prices and market information.'],
+  map: ['Map View', 'Incidents and district information, with uncertain locations clearly identified.'],
   sources: ['Sources', 'Source records and references cited by available incidents.'],
 }
 
 function PageIntro({ view, count, onRefresh }) {
   const [title, description] = PAGE_INFO[view]
+  const countLabel = ['weather', 'agriculture', 'news'].includes(view) ? 'record' : 'incident'
   return (
     <div className="page-intro">
       <div>
@@ -57,7 +60,11 @@ function PageIntro({ view, count, onRefresh }) {
         <p>{description}</p>
       </div>
       <div className="intro-actions">
-        {Number.isInteger(count) ? <span className="record-count">{count} {count === 1 ? 'incident' : 'incidents'}</span> : null}
+        {Number.isInteger(count) ? (
+          <span className="record-count">
+            {count} {countLabel}{count === 1 ? '' : 's'}
+          </span>
+        ) : null}
         <button className="button button-secondary refresh-inline" type="button" onClick={onRefresh}>
           <span aria-hidden="true">↻</span> Refresh data
         </button>
@@ -90,7 +97,35 @@ function IncidentRow({ incident, onSelect, index }) {
   )
 }
 
-function Overview({ incidents, onSelect, onNavigate }) {
+function DistrictSignal({ label, record, onSelect }) {
+  if (!record) return null
+  const display = adaptCommonRecordForDisplay(record)
+  const facts = record.source_type === 'weather'
+    ? display.warning || display.weatherCondition
+    : record.source_type === 'agriculture'
+      ? [
+        display.commodity,
+        display.market,
+        display.minPrice !== null && display.maxPrice !== null
+          ? `₹${display.minPrice}–₹${display.maxPrice}${display.priceUnit ? ` / ${display.priceUnit}` : ''}`
+          : null,
+      ].filter(Boolean).join(' · ')
+      : display.source
+  return (
+    <button
+      className={`district-signal district-signal-${record.source_type}`}
+      type="button"
+      onClick={() => onSelect('context', display.id)}
+    >
+      <span>{label}</span>
+      <strong>{display.title}</strong>
+      {facts ? <small>{facts}</small> : null}
+      <time dateTime={display.timestamp || undefined}>{formatDateTime(display.timestamp)}</time>
+    </button>
+  )
+}
+
+function Overview({ incidents, commonRecords, connection, lastUpdated, onSelect, onSelectMapRecord, onNavigate }) {
   const incidentRecords = incidents.filter(isIncidentRecord)
   const highPriority = incidentRecords.filter(isHighPriority).length
   const needsReview = incidentRecords.filter(requiresReview).length
@@ -115,45 +150,123 @@ function Overview({ incidents, onSelect, onNavigate }) {
     totals[status] = (totals[status] || 0) + 1
     return totals
   }, {})).sort((a, b) => b[1] - a[1])
+  const weatherWarning = sortCommonRecords(
+    commonRecordsForSource(commonRecords, 'weather').filter((record) => record.data?.warning),
+    'recent',
+  )[0]
+  const latestNews = sortCommonRecords(commonRecordsForSource(commonRecords, 'news'), 'recent')[0]
+  const latestMarket = sortCommonRecords(commonRecordsForSource(commonRecords, 'agriculture'), 'recent')[0]
 
   return (
     <>
-      <div className="summary-grid">
-        <SummaryCard label="Total incidents" value={incidentRecords.length} note="Incident records" />
-        <SummaryCard label="High / critical" value={highPriority} note="Priority or severity" tone="red" />
-        <SummaryCard label="Review required" value={needsReview} note="Validation or claim state" tone="amber" />
-        <SummaryCard label="Reporting sources" value={sources.size} note="Cited by these incidents" tone="green" />
+      <div className="overview-statusline" role="status">
+        <span className={`statusline-indicator statusline-${connection}`} aria-hidden="true" />
+        <span className="statusline-label">District information</span>
+        <strong>
+          {connection === 'connected'
+            ? 'Available'
+            : connection === 'loading'
+              ? 'Refreshing'
+              : 'Unavailable'}
+        </strong>
+        <span className="statusline-divider" aria-hidden="true" />
+        <span>{lastUpdated ? `Updated ${lastUpdated}` : 'Refresh to check for current information'}</span>
       </div>
 
-      <section className="panel attention-panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">PRIORITY QUEUE</span>
-            <h2>Attention required</h2>
-          </div>
-          <div className="queue-actions">
-            {attentionRecords.length > attention.length ? (
-              <span className="queue-count">Top {attention.length} of {attentionRecords.length}</span>
-            ) : null}
-            <button className="text-button" type="button" onClick={() => onNavigate('incidents')}>
-              View all incidents <span aria-hidden="true">→</span>
-            </button>
-          </div>
-        </div>
-        {attention.length ? (
-          <div className="attention-list">
-            {attention.map((incident, index) => (
-              <IncidentRow incident={incident} index={index} key={incident.incident_id} onSelect={onSelect} />
-            ))}
-          </div>
-        ) : (
-          <EmptyState title="No incidents currently require attention">
-            No high-priority or review-required incident records are available.
-          </EmptyState>
-        )}
-      </section>
+      <div className="summary-grid summary-grid-overview">
+        <SummaryCard
+          label="Incident register"
+          value={incidentRecords.length}
+          note="Current district incidents"
+          featured
+        />
+        <SummaryCard label="High / critical" value={highPriority} note="Priority or severity" tone="red" />
+        <SummaryCard label="Review required" value={needsReview} note="Validation or claim state" tone="amber" />
+        <SummaryCard label="Cited sources" value={sources.size} note="Referenced in incident records" tone="green" />
+      </div>
 
-      <div className="overview-grid">
+      {(weatherWarning || latestNews || latestMarket) ? (
+        <section className="district-signals" aria-label="District updates">
+          <div className="panel-heading">
+            <div><span className="eyebrow">DISTRICT UPDATES</span><h2>Latest information</h2></div>
+          </div>
+          <div className="district-signal-grid">
+            <DistrictSignal label="Weather warning" record={weatherWarning} onSelect={onSelectMapRecord} />
+            <DistrictSignal label="Latest news" record={latestNews} onSelect={onSelectMapRecord} />
+            <DistrictSignal label="Market update" record={latestMarket} onSelect={onSelectMapRecord} />
+          </div>
+        </section>
+      ) : null}
+
+      <div className="command-overview-grid">
+        <section className="panel attention-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">PRIORITY QUEUE</span>
+              <h2>Attention required</h2>
+            </div>
+            <div className="queue-actions">
+              {attentionRecords.length > attention.length ? (
+                <span className="queue-count">Top {attention.length} of {attentionRecords.length}</span>
+              ) : null}
+              <button className="text-button" type="button" onClick={() => onNavigate('incidents')}>
+                View register <span aria-hidden="true">→</span>
+              </button>
+            </div>
+          </div>
+          {attention.length ? (
+            <div className="attention-list">
+              {attention.map((incident, index) => (
+                <IncidentRow incident={incident} index={index} key={incident.incident_id} onSelect={onSelect} />
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="No incidents currently require attention">
+              No high-priority or review-required incident records are available.
+            </EmptyState>
+          )}
+        </section>
+
+        <section className="panel activity-panel">
+          <div className="panel-heading">
+            <div><span className="eyebrow">CURRENT REGISTER</span><h2>District activity</h2></div>
+          </div>
+          <p className="activity-summary">
+            {incidentRecords.length} incident {incidentRecords.length === 1 ? 'record' : 'records'} across {categories.length} reported {categories.length === 1 ? 'category' : 'categories'}.
+          </p>
+          <h3>By category</h3>
+          {categories.length ? (
+            <div className="breakdown-list">
+              {categories.map(([category, amount]) => (
+                <div className="breakdown-row" key={category}>
+                  <span>{category.replaceAll('_', ' ')}</span>
+                  <span
+                    className="breakdown-track"
+                    role="img"
+                    aria-label={`${amount} of ${incidentRecords.length} incidents`}
+                  >
+                    <span style={{ width: `${incidentRecords.length ? (amount / incidentRecords.length) * 100 : 0}%` }} />
+                  </span>
+                  <strong>{amount}</strong>
+                </div>
+              ))}
+            </div>
+          ) : <p className="activity-empty">Category totals will appear when incident records are available.</p>}
+          <h3>Reported status</h3>
+          {statuses.length ? (
+            <div className="status-summary-list">
+              {statuses.map(([status, amount]) => (
+                <span key={status}>{status.replaceAll('_', ' ')} <strong>{amount}</strong></span>
+              ))}
+            </div>
+          ) : <p className="activity-empty">No status values have been supplied.</p>}
+          <div className="overview-shortcuts" aria-label="District modules">
+            <button type="button" onClick={() => onNavigate('documents')}>Government documents <span aria-hidden="true">→</span></button>
+            <button type="button" onClick={() => onNavigate('map')}>Open district map <span aria-hidden="true">→</span></button>
+          </div>
+          {sources.size ? <p className="panel-footnote">Source references are available with each incident record.</p> : null}
+        </section>
+
         <section className="panel recent-panel">
           <div className="panel-heading">
             <div><span className="eyebrow">EVENT TIMELINE</span><h2>Recent incidents</h2></div>
@@ -180,119 +293,49 @@ function Overview({ incidents, onSelect, onNavigate }) {
           ) : <EmptyState title="No incidents available" />}
           <p className="panel-footnote">Ordered by event time. The Incident v2.0 response does not expose created or updated timestamps.</p>
         </section>
-
-        <section className="panel activity-panel">
-          <div className="panel-heading">
-            <div><span className="eyebrow">CURRENT REGISTER</span><h2>District activity</h2></div>
-          </div>
-          <p className="activity-summary">
-            {incidentRecords.length} incident {incidentRecords.length === 1 ? 'record' : 'records'} across {categories.length} reported {categories.length === 1 ? 'category' : 'categories'}.
-          </p>
-          <h3>By category</h3>
-          <div className="breakdown-list">
-            {categories.map(([category, amount]) => (
-              <div className="breakdown-row" key={category}>
-                <span>{category.replaceAll('_', ' ')}</span>
-                <span className="breakdown-track"><span style={{ width: `${incidentRecords.length ? (amount / incidentRecords.length) * 100 : 0}%` }} /></span>
-                <strong>{amount}</strong>
-              </div>
-            ))}
-          </div>
-          <h3>Reported status</h3>
-          <div className="status-summary-list">
-            {statuses.map(([status, amount]) => (
-              <span key={status}>{status.replaceAll('_', ' ')} <strong>{amount}</strong></span>
-            ))}
-          </div>
-          {sources.size ? <p className="panel-footnote">Sources cited: {[...sources].join(', ')}</p> : null}
-        </section>
       </div>
     </>
   )
 }
 
-function NewsView({ incidents, onSelect }) {
-  const news = incidents.filter(isNewsIncident)
+function NewsView({ records, incidents, onSelectMapRecord, onSelectIncident }) {
   return (
-    <>
-      <div className="information-note">
-        <strong>Source-backed intelligence</strong>
-        <p>These are incident records derived from news sources. A report and its extracted claims are not, by themselves, independent confirmation that an event occurred.</p>
-      </div>
-      <IncidentTable incidents={news} total={news.length} onSelect={onSelect} />
-    </>
+    <CommonRecordList
+      records={records}
+      incidents={incidents}
+      category="news"
+      onSelectMap={onSelectMapRecord}
+      onSelectIncident={onSelectIncident}
+      sourceLabel="District news"
+      emptyTitle="No district news available"
+      emptyText="News records will appear here when available."
+    />
   )
 }
 
-function WeatherView({ incidents, onSelect }) {
-  const weather = sortByAttention(incidents.filter(
-    (incident) => isWeatherIncident(incident) || isForecastRecord(incident),
-  ))
-  if (!weather.length) {
-    return (
-      <EmptyState title="No weather-related forecasts recorded">
-        No weather forecasts or alerts are present in the intelligence feed.
-      </EmptyState>
-    )
-  }
+function WeatherView({ records, onSelectMapRecord }) {
   return (
-    <>
-      <div className="information-note information-warning">
-        <strong>Forecast and context records</strong>
-        <p>These records describe forecast conditions or weather context, not confirmed weather incidents.</p>
-      </div>
-      <IncidentTable incidents={weather} total={weather.length} onSelect={onSelect} />
-    </>
+    <CommonRecordList
+      records={records}
+      category="weather"
+      onSelectMap={onSelectMapRecord}
+      sourceLabel="Weather forecasts & observations"
+      emptyTitle="No weather information available"
+      emptyText="Forecasts and observations will appear here when available."
+    />
   )
 }
 
-function AgricultureView({ incidents, onSelect }) {
-  const agriculture = incidents.filter(
-    (incident) => isAgricultureIncident(incident) || incident.record_kind === 'context',
-  )
-  const marketObservations = agriculture.filter((incident) =>
-    incident.context_type === 'market_price' || incident.provenance?.record_type?.toLowerCase().includes('market'))
-
+function AgricultureView({ records, onSelectMapRecord }) {
   return (
-    <>
-      <div className="information-note information-green">
-        <strong>Incidents and observations are distinct</strong>
-        <p>Market-source records may describe an observation or announcement rather than a verified incident. Only values present in the incident fields or cited evidence are shown.</p>
-      </div>
-      {marketObservations.length ? (
-        <section className="market-observations">
-          <div className="panel-heading">
-            <div><span className="eyebrow">SOURCE RECORDS</span><h2>Market observations</h2></div>
-            <span className="record-count">{marketObservations.length}</span>
-          </div>
-          <div className="market-list">
-            {marketObservations.map((incident) => (
-              <article className="market-observation" key={incident.incident_id}>
-                <div className="market-observation-main">
-                  <span className="observation-label">Observation · {incident.validation?.state?.replaceAll('_', ' ') || 'validation not specified'}</span>
-                  <button type="button" className="market-title" onClick={() => onSelect(incident.incident_id)}>
-                    {incident.title || 'Untitled market record'}
-                  </button>
-                  <span>{incidentLocation(incident)} · {formatDateTime(incident.event_time)}</span>
-                  {incident.evidence?.length ? (
-                    <ul className="market-evidence">
-                      {incident.evidence.slice(0, 3).map((item) => (
-                        <li key={item.evidence_id}>
-                          <span>{item.field || 'Source excerpt'}</span>
-                          {item.quote || 'No excerpt supplied'}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-                <SeverityIndicator value={incident.severity} />
-              </article>
-            ))}
-          </div>
-        </section>
-      ) : null}
-      <IncidentTable incidents={agriculture} total={agriculture.length} onSelect={onSelect} />
-    </>
+    <CommonRecordList
+      records={records}
+      category="agriculture"
+      onSelectMap={onSelectMapRecord}
+      sourceLabel="Agriculture & market prices"
+      emptyTitle="No market information available"
+      emptyText="Market prices will appear here when available."
+    />
   )
 }
 
@@ -336,17 +379,17 @@ function SourcesView({ incidents }) {
       {sources.map((source) => (
         <article className="source-card" key={source.source_id}>
           <span className="source-icon" aria-hidden="true">↗</span>
-          <h2>{source.source_id}</h2>
-          <p>{[...source.source_types].join(', ') || 'Source type not specified'}</p>
+          <h2>{source.source_id.replaceAll('_', ' ')}</h2>
+          <p>{[...source.source_types].map((type) => type.replaceAll('_', ' ')).join(', ') || 'Source type not specified'}</p>
           <dl>
             <div><dt>Incident records</dt><dd>{source.incidents.size}</dd></div>
-            <div><dt>Source records cited</dt><dd>{source.record_ids.size}</dd></div>
+            <div><dt>Supporting references</dt><dd>{source.record_ids.size}</dd></div>
           </dl>
           {[...source.urls].map((url) => {
             const safeUrl = safeHttpUrl(url)
             return safeUrl ? (
               <a className="evidence-link" href={safeUrl} key={url} target="_blank" rel="noopener noreferrer">
-                Open cited source <span aria-hidden="true">↗</span>
+                View source <span aria-hidden="true">↗</span>
               </a>
             ) : (
               <span className="unsafe-url-note" key={url}>Source link is not a valid HTTP(S) URL.</span>
@@ -361,59 +404,108 @@ function SourcesView({ incidents }) {
 export default function Dashboard({
   view,
   incidents,
+  commonRecords,
+  commonRecordStatus,
+  commonRecordError,
   status,
   error,
+  connection,
+  lastUpdated,
   onRetry,
   onSelectIncident,
+  onSelectMapRecord,
   onNavigate,
 }) {
   const [filters, setFilters] = useState(INITIAL_FILTERS)
-  const filteredIncidents = useMemo(() => incidents.filter((incident) =>
+  const incidentRecords = useMemo(() => incidents.filter(isIncidentRecord), [incidents])
+  const newsRecords = useMemo(
+    () => commonRecordsForSource(commonRecords, 'news'),
+    [commonRecords],
+  )
+  const weatherRecords = useMemo(
+    () => commonRecordsForSource(commonRecords, 'weather'),
+    [commonRecords],
+  )
+  const agricultureRecords = useMemo(
+    () => commonRecordsForSource(commonRecords, 'agriculture'),
+    [commonRecords],
+  )
+  const filteredIncidents = useMemo(() => incidentRecords.filter((incident) =>
     matchesSearch(incident, filters.search) && compareIncidentFilters(incident, filters)),
-  [incidents, filters])
-  const pageCount = status !== 'ready'
-    ? undefined
-    : view === 'overview' || view === 'incidents'
-      ? incidents.length
+  [incidentRecords, filters])
+  const pageCount = view === 'weather'
+    ? commonRecordStatus === 'ready' ? weatherRecords.length : undefined
+    : view === 'agriculture'
+      ? commonRecordStatus === 'ready' ? agricultureRecords.length : undefined
       : view === 'news'
-        ? incidents.filter(isNewsIncident).length
-        : view === 'weather'
-          ? incidents.filter(isWeatherIncident).length
-          : view === 'agriculture'
-            ? incidents.filter(isAgricultureIncident).length
+        ? commonRecordStatus === 'ready' ? newsRecords.length : undefined
+        : status !== 'ready'
+          ? undefined
+          : view === 'overview' || view === 'incidents'
+            ? incidentRecords.length
             : undefined
   const changeFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }))
   const clearFilters = () => setFilters(INITIAL_FILTERS)
+  const recordView = ['news', 'weather', 'agriculture'].includes(view)
+  const incidentView = !recordView
 
   return (
     <div className="dashboard-page">
       <PageIntro view={view} count={pageCount} onRefresh={onRetry} />
-      {status === 'loading' ? <LoadingState /> : null}
-      {status === 'error' ? <ErrorState message={error} onRetry={onRetry} /> : null}
-      {status === 'empty' ? (
+      {incidentView && status === 'loading' ? <LoadingState /> : null}
+      {incidentView && status === 'error' ? <ErrorState message={error} onRetry={onRetry} /> : null}
+      {incidentView && status === 'empty' ? (
         <EmptyState title="No incidents recorded">
-          The API is connected, but the incident register currently contains no records.
+          No incident records are currently available.
         </EmptyState>
       ) : null}
       {status === 'ready' && view === 'overview' ? (
-        <Overview incidents={incidents} onSelect={onSelectIncident} onNavigate={onNavigate} />
+        <Overview
+          incidents={incidentRecords}
+          commonRecords={commonRecords}
+          connection={connection}
+          lastUpdated={lastUpdated}
+          onSelect={onSelectIncident}
+          onSelectMapRecord={onSelectMapRecord}
+          onNavigate={onNavigate}
+        />
       ) : null}
       {status === 'ready' && view === 'incidents' ? (
         <>
-          <FilterBar incidents={incidents} filters={filters} onChange={changeFilter} onClear={clearFilters} />
-          <IncidentTable incidents={filteredIncidents} total={incidents.length} onSelect={onSelectIncident} />
+          <FilterBar incidents={incidentRecords} filters={filters} onChange={changeFilter} onClear={clearFilters} />
+          <IncidentTable
+            incidents={filteredIncidents}
+            total={incidentRecords.length}
+            onSelect={onSelectIncident}
+            onSelectMapRecord={onSelectMapRecord}
+          />
         </>
       ) : null}
-      {status === 'ready' && view === 'news' ? (
-        <NewsView incidents={incidents} onSelect={onSelectIncident} />
+      {recordView && commonRecordStatus === 'loading' ? (
+        <LoadingState label={`Loading ${view === 'news' ? 'district news' : view === 'weather' ? 'weather information' : 'market information'}`} />
       ) : null}
-      {status === 'ready' && view === 'weather' ? (
-        <WeatherView incidents={incidents} onSelect={onSelectIncident} />
+      {recordView && commonRecordStatus === 'error' ? (
+        <ErrorState
+          title={`${view === 'news' ? 'District news' : view === 'weather' ? 'Weather information' : 'Market information'} is temporarily unavailable`}
+          message={commonRecordError}
+          onRetry={onRetry}
+        />
       ) : null}
-      {status === 'ready' && view === 'agriculture' ? (
-        <AgricultureView incidents={incidents} onSelect={onSelectIncident} />
+      {view === 'news' && commonRecordStatus === 'ready' ? (
+        <NewsView
+          records={newsRecords}
+          incidents={incidents}
+          onSelectMapRecord={onSelectMapRecord}
+          onSelectIncident={onSelectIncident}
+        />
       ) : null}
-      {status === 'ready' && view === 'sources' ? <SourcesView incidents={incidents} /> : null}
+      {view === 'weather' && commonRecordStatus === 'ready' ? (
+        <WeatherView records={weatherRecords} onSelectMapRecord={onSelectMapRecord} />
+      ) : null}
+      {view === 'agriculture' && commonRecordStatus === 'ready' ? (
+        <AgricultureView records={agricultureRecords} onSelectMapRecord={onSelectMapRecord} />
+      ) : null}
+      {status === 'ready' && view === 'sources' ? <SourcesView incidents={incidentRecords} /> : null}
     </div>
   )
 }

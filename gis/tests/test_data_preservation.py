@@ -54,11 +54,16 @@ def test_dataset_contains_only_persisted_incident_documents(monkeypatch):
 
     monkeypatch.setattr(
         data_loader,
-        "fetch_saved_incidents",
+        "fetch_saved_documents",
         lambda: (
             incidents,
             {"incidents": {"status": "available", "error": None}},
         ),
+    )
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_common_records",
+        lambda: ([], {"records": {"status": "available", "error": None}}),
     )
     dataset = data_loader.load_gis_dataset()
 
@@ -75,11 +80,16 @@ def test_incident_fields_and_source_evidence_are_preserved(monkeypatch):
     incident = persisted_incident()
     monkeypatch.setattr(
         data_loader,
-        "fetch_saved_incidents",
+        "fetch_saved_documents",
         lambda: (
             [incident],
             {"incidents": {"status": "available", "error": None}},
         ),
+    )
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_common_records",
+        lambda: ([], {"records": {"status": "available", "error": None}}),
     )
 
     record = data_loader.load_gis_dataset()["all_records"][0]
@@ -93,6 +103,101 @@ def test_incident_fields_and_source_evidence_are_preserved(monkeypatch):
     assert record["evidence"][0]["evidence_id"] == "evidence-42"
     assert record["base_lat"] == 9.9179
     assert record["base_lng"] == 78.1504
+
+
+def test_common_records_keep_identity_source_values_and_map_separately(monkeypatch):
+    tamil_news = {
+        "record_id": "NEWS-TA-1",
+        "source_id": "dinamalar",
+        "source_type": "news",
+        "record_type": "article",
+        "title": "\u0bae\u0ba4\u0bc1\u0bb0\u0bc8 \u0b9a\u0bc6\u0baf\u0bcd\u0ba4\u0bbf",
+        "event_time": "2026-10-14T10:00:00+00:00",
+        "location": {"raw_text": "Madurai", "district": "Madurai"},
+        "data": {"content": "\u0ba4\u0bae\u0bbf\u0bb4\u0bcd \u0b89\u0bb3\u0bcd\u0bb3\u0b9f\u0b95\u0bcd\u0b95\u0bae\u0bcd"},
+        "source_url": "https://example.test/news/1",
+    }
+    market = {
+        "record_id": "MARKET-1",
+        "source_id": "tn_agri_marketing",
+        "source_type": "agriculture",
+        "record_type": "market_price",
+        "title": "Tomato price - Anaiyur",
+        "event_time": "2026-10-14T00:00:00+00:00",
+        "location": {"raw_text": "Anaiyur Uzhavar Santhai, Madurai", "district": "Madurai"},
+        "data": {"commodity": "Tomato", "market": "Anaiyur", "min_price": 25, "max_price": 30, "unit": "kg"},
+        "source_url": "https://example.test/market/1",
+    }
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_saved_documents",
+        lambda: (
+            [persisted_incident()],
+            {"incidents": {"status": "available", "error": None}},
+        ),
+    )
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_common_records",
+        lambda: (
+            [tamil_news, market],
+            {"records": {"status": "available", "error": None}},
+        ),
+    )
+
+    dataset = data_loader.load_gis_dataset()
+    news_record = next(record for record in dataset["all_records"] if record["id"] == "NEWS-TA-1")
+    market_record = next(record for record in dataset["all_records"] if record["id"] == "MARKET-1")
+
+    assert news_record["record_kind"] == "context"
+    assert news_record["title"] == tamil_news["title"]
+    assert news_record["details"]["content"] == tamil_news["data"]["content"]
+    assert news_record["source_url"] == tamil_news["source_url"]
+    assert not news_record["is_geocoded"]
+    assert news_record["location_precision"] == "area_only"
+    assert market_record["record_kind"] == "context"
+    assert market_record["is_geocoded"]
+    assert market_record["coordinate_origin"] == "registry_approximate"
+    assert market_record["location_precision"] == "approximate_named_place"
+    assert dataset["stats"]["incidentCount"] == 1
+    assert dataset["stats"]["commonRecordCount"] == 2
+    assert dataset["stats"]["mapRecordCount"] == 3
+    assert dataset["stats"]["mapUnmappedCount"] == 1
+
+
+def test_common_record_data_coordinates_are_validated_and_preserved(monkeypatch):
+    record = {
+        "record_id": "COORDINATE-1",
+        "source_type": "news",
+        "source_id": "district_report",
+        "record_type": "article",
+        "title": "Source coordinates",
+        "location": {"raw_text": "Madurai"},
+        "data": {"latitude": 9.91, "longitude": 78.12},
+        "source_url": "https://example.test/source",
+    }
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_saved_documents",
+        lambda: ([], {"incidents": {"status": "available", "error": None}}),
+    )
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_common_records",
+        lambda: ([record], {"records": {"status": "available", "error": None}}),
+    )
+
+    mapped = data_loader.load_gis_dataset()["all_records"][0]
+    assert mapped["is_geocoded"]
+    assert mapped["base_lat"] == 9.91
+    assert mapped["base_lng"] == 78.12
+    assert mapped["coordinate_origin"] == "source"
+    assert mapped["location_precision"] == "source_coordinates"
+
+    record["data"] = {"latitude": 78.12, "longitude": 9.91}
+    swapped = data_loader.load_gis_dataset()["all_records"][0]
+    assert not swapped["is_geocoded"]
+    assert swapped["resolution_status"] == "INVALID_SOURCE_COORDINATES"
 
 
 def test_gis_does_not_require_source_sample_json_files():

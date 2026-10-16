@@ -90,8 +90,18 @@ def test_gis_fetches_persisted_incidents_only_and_preserves_provenance(monkeypat
 
     def backend_get(url, timeout):
         calls.append((url, timeout))
-        assert url.endswith("/incidents")
-        return Response()
+        if url.endswith("/incidents"):
+            return Response()
+        assert url.endswith("/records")
+
+        class RecordsResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return [common_record()]
+
+        return RecordsResponse()
 
     monkeypatch.setattr(data_loader.requests, "get", backend_get)
     incidents, status = data_loader.fetch_saved_incidents()
@@ -100,7 +110,12 @@ def test_gis_fetches_persisted_incidents_only_and_preserves_provenance(monkeypat
     assert all(timeout == data_loader.BACKEND_TIMEOUT_SECONDS for _, timeout in calls)
     assert status["incidents"]["status"] == "available"
 
-    monkeypatch.setattr(data_loader, "fetch_saved_incidents", lambda: (incidents, status))
+    monkeypatch.setattr(data_loader, "fetch_saved_documents", lambda: (payload, status))
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_common_records",
+        lambda: ([common_record()], {"records": {"status": "available", "error": None}}),
+    )
     dataset = data_loader.load_gis_dataset()
     incident = dataset["incident_records"][0]
     assert incident["id"] == "incident-1"
@@ -113,14 +128,36 @@ def test_gis_fetches_persisted_incidents_only_and_preserves_provenance(monkeypat
     assert dataset["stats"]["incidentCount"] == 1
     assert dataset["stats"]["totalRecords"] == 1
     assert dataset["stats"]["highSeverityCount"] == 1
-    assert all(record["record_kind"] == "incident" for record in dataset["all_records"])
+    assert len(dataset["all_records"]) == 2
+    assert [record["record_kind"] for record in dataset["all_records"]].count("incident") == 1
+    assert dataset["context_records"][0]["intelligence_outcomes"] == [
+        {
+            "status": "needs_review",
+            "incident_id": "incident-1",
+            "title": "Saved rainfall incident",
+            "record_kind": "incident",
+        },
+        {
+            "status": "information_only",
+            "incident_id": "context-1",
+            "title": "Saved rainfall incident",
+            "record_kind": "context",
+        },
+    ]
+    assert dataset["stats"]["commonRecordCount"] == 1
+    assert dataset["stats"]["incidentCount"] == 1
 
 
 def test_empty_incident_api_results_produce_empty_gis_dataset(monkeypatch):
     monkeypatch.setattr(
         data_loader,
-        "fetch_saved_incidents",
+        "fetch_saved_documents",
         lambda: ([], {"incidents": {"status": "available", "error": None}}),
+    )
+    monkeypatch.setattr(
+        data_loader,
+        "fetch_common_records",
+        lambda: ([], {"records": {"status": "available", "error": None}}),
     )
 
     dataset = data_loader.load_gis_dataset()
@@ -132,7 +169,7 @@ def test_empty_incident_api_results_produce_empty_gis_dataset(monkeypatch):
 def test_unavailable_incident_api_is_reported_without_fallback(monkeypatch):
     monkeypatch.setattr(
         data_loader,
-        "fetch_saved_incidents",
+        "fetch_saved_documents",
         lambda: (_ for _ in ()).throw(
             data_loader.GISDataUnavailable("backend is not reachable")
         ),

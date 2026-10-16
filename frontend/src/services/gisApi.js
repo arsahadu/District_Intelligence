@@ -35,6 +35,30 @@ export async function getGISIncidents(signal) {
   return payload
 }
 
+export async function getGISMapRecords(signal) {
+  const payload = await requestJson('/api/map/records', { signal })
+  if (!Array.isArray(payload)) {
+    throw new Error('The map records endpoint did not return a JSON list.')
+  }
+  return payload
+}
+
+export async function getGISMapUnmappedRecords(signal) {
+  const payload = await requestJson('/api/map/unmapped', { signal })
+  if (!Array.isArray(payload)) {
+    throw new Error('The map unmapped endpoint did not return a JSON list.')
+  }
+  return payload
+}
+
+export async function getGISMapGeoJSON(signal) {
+  const payload = requireObject(await requestJson('/api/map/geojson', { signal }), 'map GeoJSON')
+  if (payload.type !== 'FeatureCollection' || !Array.isArray(payload.features)) {
+    throw new Error('The map GeoJSON endpoint returned an invalid FeatureCollection.')
+  }
+  return payload
+}
+
 export async function getGISUnmappedRecords(signal) {
   const payload = await requestJson('/api/unmapped', { signal })
   if (!Array.isArray(payload)) {

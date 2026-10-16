@@ -8,9 +8,9 @@ export function SeverityIndicator({ value }) {
   )
 }
 
-export function SummaryCard({ label, value, note, tone = 'navy' }) {
+export function SummaryCard({ label, value, note, tone = 'navy', featured = false }) {
   return (
-    <article className={`summary-card summary-${tone}`}>
+    <article className={`summary-card summary-${tone} ${featured ? 'summary-featured' : ''}`}>
       <span className="summary-label">{label}</span>
       <strong className="summary-value">{value}</strong>
       {note ? <span className="summary-note">{note}</span> : null}
@@ -37,11 +37,11 @@ export function EmptyState({ title, children }) {
   )
 }
 
-export function ErrorState({ message, onRetry }) {
+export function ErrorState({ message, onRetry, title = 'Incidents could not be loaded' }) {
   return (
     <div className="state-panel error-state" role="alert">
       <span className="error-mark" aria-hidden="true">!</span>
-      <h3>Incidents could not be loaded</h3>
+      <h3>{title}</h3>
       <p>{message}</p>
       <button className="button button-secondary" type="button" onClick={onRetry}>
         Retry connection

@@ -45,8 +45,11 @@ def _known_severity(value: Any) -> Optional[str]:
 
 def _source_coordinates(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     location = _dict(record.get("location"))
+    data = _dict(record.get("data"))
     latitude = record.get("latitude", record.get("lat", location.get("latitude")))
     longitude = record.get("longitude", record.get("lng", location.get("longitude")))
+    latitude = latitude if latitude is not None else data.get("latitude", data.get("lat"))
+    longitude = longitude if longitude is not None else data.get("longitude", data.get("lng"))
     if latitude is None and longitude is None:
         return None
 
@@ -218,7 +221,11 @@ def normalize_record(
         )
         raw_location_text = first_location.get("text")
     else:
-        raw_location_text = raw_location_object.get("raw_text") or raw_location_object.get("text")
+        raw_location_text = (
+            raw_location_object.get("raw_text")
+            or raw_location_object.get("text")
+            or raw_location_object.get("district")
+        )
     if raw_location_text is None and not is_saved_document:
         raw_location_text = raw_record.get("raw_location_text")
     if raw_location_text is None:
@@ -277,6 +284,7 @@ def normalize_record(
         "taluk": resolution.get("taluk") or "Unassigned",
         "location_name": resolution.get("resolved_name"),
         "administrative_level": resolution.get("administrative_level"),
+        "location_precision": resolution.get("location_precision"),
         "raw_location_text": str(raw_location_text),
         "resolution_status": resolution.get("resolution_status"),
         "resolution_reason": resolution.get("reason"),
@@ -325,7 +333,7 @@ def assign_dispersed_coordinates(records: List[Dict[str, Any]]) -> List[Dict[str
                 record["display_lng"] = record["base_lng"]
                 continue
             angle = index * math.pi * (3.0 - math.sqrt(5.0))
-            radius_m = 7.0 + 2.0 * math.sqrt(index)
+            radius_m = 16.0 + 7.0 * math.sqrt(index)
             lat_offset = (radius_m * math.cos(angle)) / 111_320.0
             lng_scale = 111_320.0 * math.cos(math.radians(float(record["base_lat"])))
             lng_offset = (radius_m * math.sin(angle)) / max(lng_scale, 1.0)
