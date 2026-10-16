@@ -476,13 +476,6 @@ def extraction_request(context: RecordContext) -> LLMRequest:
         + "\n\nEvery `field` names one of these, exactly as printed above, and every quote is "
         "verbatim inside it: "
         + ", ".join(context.paths)
-        + (
-            ""
-            if context.document is None
-            else "\n\nThe data.page_* fields are a document's pages as read by OCR or from its text "
-            "layer, and may hold misread characters: quote them exactly as printed, misreadings "
-            "included, never corrected, completed or translated."
-        )
         + "\n\nRespond with the JSON object only."
     )
     return LLMRequest(
@@ -561,10 +554,6 @@ def validate_extraction(output: StructuredOutput, context: RecordContext) -> Inc
         raise InvalidExtraction(draft_diagnosis(error)) from error
 
     report = _Report()
-    for page in () if context.document is None else context.document.pages:
-        trouble = page.unreadable or page.low_quality
-        if trouble:
-            report.warn(f"{context.document.file_name} page {page.number}: {trouble}")
     draft = _bound_lists(draft, report)
     payload = output.payload
     for key in sorted(set(payload) & FORBIDDEN_TOP_LEVEL):
@@ -874,16 +863,13 @@ def _ground(
             )
         chosen = matched
 
-    reading = context.reading(source.field)
     notes = None if confidence is not None else UNREPORTED_CONFIDENCE
-    if reading is not None:
-        notes = "; ".join(part for part in (context.document.note(reading), notes) if part)
     try:
         evidence = source.evidence_at(
             chosen,
             method=ExtractionMethod.LLM,
             confidence=_confidence(confidence, report, subject=subject),
-            modality=Modality.TEXT if reading is None else reading.modality,
+            modality=Modality.TEXT,
             notes=notes,
         )
     except (SpanError, ValueError) as error:
@@ -891,16 +877,6 @@ def _ground(
             IssueCode.SPAN_MISMATCH,
             f"the span could not be built: {error}",
             str(error),
-        )
-    doubt = None if reading is None else context.document.doubt(
-        reading, chosen.char_start, chosen.char_end
-    )
-    if doubt is not None:
-        return _Grounded(
-            evidence=evidence,
-            review=ReviewState.REVIEW_REQUIRED,
-            reason="the recognised text at this span is uncertain",
-            issue=Issue(code=IssueCode.UNCERTAIN_RECOGNITION, field=subject, detail=doubt),
         )
     return _Grounded(evidence=evidence, review=ReviewState.ACCEPTED, reason=anchored)
 

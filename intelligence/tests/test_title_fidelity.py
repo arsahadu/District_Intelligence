@@ -259,6 +259,9 @@ def test_a_place_the_record_declared_about_itself_is_not_a_location_the_model_ow
     index = found.evidence_by_id()
     for item in geography:
         row = index[item.evidence_ids[0]]
-        assert row.char_start is None and row.field == item.field
+        assert row.field == item.field
+        assert (row.char_start, row.quote, row.span_validation) == (
+            0, item.value, SpanValidation.VALIDATED,
+        )
     assert found.record_kind is RecordKind.UNRESOLVED
     replayed(found, record)

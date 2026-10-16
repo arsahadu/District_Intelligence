@@ -318,6 +318,9 @@ def build_metadata_evidence(
     modality: Modality = Modality.TEXT,
     notes: Optional[str] = None,
 ) -> Evidence:
+    # the field's own text is the quote: a metadata claim adds nothing to it, so the span is the
+    # whole field at its exact character offsets and reads as an excerpt instead of a blank
+    held = source.text.strip()
     return Evidence(
         evidence_id=evidence_id or derive_metadata_evidence_id(source),
         record_id=source.record_id,
@@ -325,8 +328,11 @@ def build_metadata_evidence(
         source_type=source.source_type,
         field=source.field,
         method=ExtractionMethod.SOURCE_METADATA,
+        quote=source.text if held else None,
+        char_start=0 if held else None,
+        char_end=len(source.text) if held else None,
         field_text_hash=source.text_hash,
-        span_validation=SpanValidation.NOT_APPLICABLE,
+        span_validation=SpanValidation.VALIDATED if held else SpanValidation.NOT_APPLICABLE,
         modality=modality,
         source_url=source.source_url,
         raw_reference=source.raw_reference,

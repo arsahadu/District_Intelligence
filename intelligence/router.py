@@ -7,7 +7,6 @@ NEWS_SOURCE_TYPES = frozenset({"news"})
 NEWS_SOURCE_IDS = frozenset({"dinamalar"})
 NON_NEWS_SOURCE_TYPES = frozenset({"agriculture", "weather"})
 NON_NEWS_RECORD_TYPES = frozenset({"market_price", "forecast"})
-DOCUMENT_SOURCE_TYPE = "document"
 
 
 class Mode(str, Enum):
@@ -21,7 +20,7 @@ def _value(record: Any, name: str) -> Any:
     return getattr(record, name, None)
 
 
-def route(record: Any, *, allow_document: bool = False) -> Mode:
+def route(record: Any) -> Mode:
     source_type = str(_value(record, "source_type") or "").strip().casefold()
     record_type = str(_value(record, "record_type") or "").strip().casefold()
     source_id = str(_value(record, "source_id") or "").strip().casefold()
@@ -31,6 +30,6 @@ def route(record: Any, *, allow_document: bool = False) -> Mode:
         not source_type
         and source_id in NEWS_SOURCE_IDS
         and record_type == "article"
-    ) or (allow_document and source_type == DOCUMENT_SOURCE_TYPE):
+    ):
         return Mode.SEMANTIC
     return Mode.STRUCTURED

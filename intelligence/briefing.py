@@ -25,7 +25,6 @@ from intelligence.copilot import (
     confidence_of,
     digit_set,
     event_block,
-    is_document,
     rows_of,
     saved_lines,
     script_of,
@@ -54,7 +53,7 @@ from intelligence.recurrence import (
 )
 from intelligence.trends import NOT_ASKED, Trend, TrendStatus, claim_words_in
 
-BRIEF_PROMPT_VERSION = "brief-1"
+BRIEF_PROMPT_VERSION = "brief-2"
 BRIEFINGS_FILENAME = "briefings.jsonl"
 BRIEF_SUMMARY_FILENAME = "briefing.json"
 
@@ -94,7 +93,6 @@ class BriefSection(str, Enum):
     RISING = "rising"
     OPEN = "open"
     RECORDED = "recorded"
-    DOCUMENTS = "documents"
 
 
 class ActionKind(str, Enum):
@@ -268,8 +266,8 @@ BRIEF_RULES = "\n".join(
         "3. Each line belongs to one section: " + SECTION_TOKENS + ". situation is what the period held, "
         "recurring is a saved issue that keeps happening in it, rising is a measured increase, open is a "
         "report still waiting for a department, recorded is an action or resolution the records themselves "
-        "state, documents is what came from a file read locally. Write a line only for a section the briefing "
-        "lists as having content, and name the events or saved items the line rests on.",
+        "state. Write a line only for a section the briefing lists as having content, and name the events "
+        "or saved items the line rests on.",
         "4. Each action is something a person could do next and names what it follows from: an event by the "
         "number printed with it, or a saved recurring issue or measured increase by the identifier printed "
         "with it. kind is one of " + ACTION_TOKENS + ": follow_up when a report states no answer yet, verify "
@@ -428,7 +426,6 @@ class Briefing(StrictModel):
     geographic_precision: str = "unknown"
     open_followups: list[OpenFollowUp] = Field(default_factory=list)
     recorded_responses: list[RecordedResponse] = Field(default_factory=list)
-    document_records: list[str] = Field(default_factory=list)
     items: list[BriefItemRef] = Field(default_factory=list)
     named_items: list[str] = Field(default_factory=list)
     numbers: list[str] = Field(default_factory=list)
@@ -644,7 +641,6 @@ class Measured:
     recorded: list[RecordedResponse] = field(default_factory=list)
     status_unstated: int = 0
     status_unquoted: int = 0
-    document_records: list[str] = field(default_factory=list)
     undated: int = 0
     outside_period: int = 0
     skipped_review: int = 0
@@ -701,8 +697,6 @@ class Measured:
             found.append(BriefSection.OPEN)
         if self.recorded:
             found.append(BriefSection.RECORDED)
-        if self.document_records:
-            found.append(BriefSection.DOCUMENTS)
         return found
 
 
@@ -816,14 +810,6 @@ def measure(
         truncated=len(in_period) - len(shown),
         undated=len([unit for unit in units if unit.when is None]),
         outside_period=len(units) - len(in_period),
-        document_records=sorted(
-            {
-                incident.provenance.record_id
-                for unit in in_period
-                for incident in unit.incidents
-                if is_document(incident)
-            }
-        ),
     )
     found.available = available_rows(in_period)
     found.areas, found.precision = areas_of(in_period)
@@ -909,11 +895,6 @@ def brief_lines(
     if measured.outside_period:
         summary.append(
             f"{measured.outside_period} dated event(s) fall outside this period and are not counted here."
-        )
-    if measured.document_records:
-        summary.append(
-            f"{len(measured.document_records)} record(s) in the period came from a document read locally: "
-            + ", ".join(measured.document_records)
         )
     for family in families:
         summary.append(
@@ -1455,7 +1436,6 @@ def build_briefing(
         geographic_precision=measured.precision,
         open_followups=measured.followups,
         recorded_responses=measured.recorded,
-        document_records=measured.document_records,
         items=list(refs),
         named_items=named_items,
         numbers=sorted(allowed, key=lambda item: int(item)),
@@ -1486,7 +1466,6 @@ class BriefReport:
     outside_period: int = 0
     skipped_review: int = 0
     excluded_by_filter: int = 0
-    document_records: int = 0
     families: int = 0
     trends: int = 0
     alerts: int = 0
@@ -1536,7 +1515,6 @@ class BriefReport:
             "Open with a quote": self.open_followups,
             "Action or resolution recorded": self.recorded,
             "No status evidenced": self.status_unstated,
-            "Document records": self.document_records,
             "Briefing drafted": self.asked,
             "Briefing reused": self.reused,
             "Events beyond one request": self.truncated,
@@ -1583,11 +1561,6 @@ class BriefReport:
             )
         if not self.trends:
             lines.append("no measured increase overlapped the period, so nothing rising could be named in it")
-        if not self.document_records:
-            lines.append(
-                "no record here came from a document read locally, so the briefing has no document evidence "
-                "to report"
-            )
         if self.truncated:
             lines.append(
                 f"{self.truncated} event(s) fall in the period but were beyond the {MAX_BRIEF_EVENTS} printed "
@@ -1660,7 +1633,6 @@ def district_briefing(
     report.units = len(counts.units)
     report.undated = counts.undated
     report.outside_period = counts.outside_period
-    report.document_records = len(counts.document_records)
     report.open_followups = len(counts.followups)
     report.recorded = len(counts.recorded)
     report.status_unstated = counts.status_unstated
@@ -1849,11 +1821,6 @@ def briefing_document(brief: Briefing) -> list[str]:
     if brief.recorded_responses:
         lines.append(f"{len(brief.recorded_responses)} response(s) the records themselves state:")
         lines += [f"  {row.incident_id}: {row.quote}" for row in brief.recorded_responses]
-    if brief.document_records:
-        lines.append(
-            f"{len(brief.document_records)} record(s) came from a document read locally: "
-            + ", ".join(brief.document_records)
-        )
     lines.append("Suggested actions - each is a person's decision, never recorded as done here:")
     if not brief.actions:
         lines.append("  none carried a citation, so none is offered")
