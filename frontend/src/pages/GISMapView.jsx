@@ -80,6 +80,10 @@ function getFeatureId(feature) {
   return feature?.id ?? properties.id
 }
 
+function getRecordKey(record) {
+  return `${record.record_kind}:${record.id}`
+}
+
 function MapSelection({ selected, onReset }) {
   const map = useMap()
 
@@ -157,7 +161,7 @@ function GISMapCanvas({
           const feature = featureById.get(`${record.record_kind}:${record.id}`)
           const coordinates = feature?.geometry?.coordinates
           if (!Array.isArray(coordinates) || coordinates.length < 2) return null
-          const selectedRecord = selected?.id === record.id
+          const selectedRecord = selected && getRecordKey(selected) === getRecordKey(record)
           const color = markerColor(record)
           return (
             <CircleMarker
@@ -454,7 +458,9 @@ export default function GISMapView() {
     record.is_geocoded && record.base_lat !== null && record.base_lng !== null
       && featureById.has(`${record.record_kind}:${record.id}`)
   ))
-  const selectedRecord = records.find((record) => record.id === selectedId) || null
+  const selectedRecord = records.find((record) => getRecordKey(record) === selectedId)
+    || unmapped.find((record) => getRecordKey(record) === selectedId)
+    || null
   const stats = snapshot?.stats
 
   const setFilter = (field, value) => setFilters((current) => ({ ...current, [field]: value }))
@@ -586,22 +592,27 @@ export default function GISMapView() {
               <div className="gis-map-count-row">
                 <span><strong>{mappedRecords.length}</strong> mapped incidents match the current filters</span>
                 <span>{visibleUnmapped.length} unmapped match</span>
+                {!records.length && snapshot.boundaries?.features?.length ? (
+                  <span className="gis-map-context-note">
+                    Administrative boundaries are shown; no incident records are currently available.
+                  </span>
+                ) : null}
               </div>
-              {mappedRecords.length ? (
+              {mappedRecords.length || snapshot.boundaries?.features?.length ? (
                 <GISMapCanvas
                   records={mappedRecords}
                   featureById={featureById}
                   boundaries={snapshot.boundaries}
                   selected={selectedRecord}
-                  onSelect={(record) => setSelectedId(record.id)}
+                  onSelect={(record) => setSelectedId(getRecordKey(record))}
                   onReset={() => setSelectedId(null)}
                 />
               ) : (
                 <div className="gis-map-empty">
-                  <EmptyState title={records.length ? 'No mapped records match these filters' : 'No GIS records available'}>
+                  <EmptyState title={records.length ? 'No mapped records match these filters' : 'No GIS map data available'}>
                     {records.length
-                      ? 'Try enabling another layer or clearing the filters.'
-                      : 'No persisted incident records have been returned by the backend yet.'}
+                      ? 'Clear the active filters to view mapped records.'
+                      : 'The GIS service did not return incident records or administrative boundaries.'}
                   </EmptyState>
                 </div>
               )}
@@ -612,7 +623,10 @@ export default function GISMapView() {
             </div>
             <aside className="gis-side-panel">
               <GISRecordDetails record={selectedRecord} />
-              <GISUnmappedPanel records={visibleUnmapped} onSelect={(record) => setSelectedId(record.id)} />
+              <GISUnmappedPanel
+                records={visibleUnmapped}
+                onSelect={(record) => setSelectedId(getRecordKey(record))}
+              />
             </aside>
           </section>
         </>

@@ -1,0 +1,20 @@
+{
+  "updated_at": "2026-10-16T08:46:42+00:00",
+  "schema_version": "2.0",
+  "base_url": "http://127.0.0.1:8000",
+  "provider": "groq",
+  "model": "openai/gpt-oss-120b",
+  "chain": [
+    "groq/openai/gpt-oss-120b"
+  ],
+  "records": 357,
+  "states": {
+    "completed": 352,
+    "review_required": 5,
+    "failed": 0,
+    "deferred": 0
+  },
+  "results_file": "results.jsonl",
+  "results_digest": "f605487cbaf253b9f060d41ca9c724c53095e6f5fb966d8429b84e8b4e20ad45",
+  "superseded_entries": 0
+}

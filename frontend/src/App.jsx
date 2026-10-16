@@ -4,12 +4,17 @@ import IncidentDetailPanel from './components/IncidentDetailPanel.jsx'
 import GovernmentDocuments from './pages/GovernmentDocuments.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import GISMapView from './pages/GISMapView.jsx'
-import { getIncident, getIncidents } from './services/api.js'
+import { getIncident, getIncidents, getRecords } from './services/api.js'
+import { isIncidentRecord } from './utils/incidents.js'
 import './App.css'
+import './CommandCentre.css'
 
 function App() {
   const [view, setView] = useState('overview')
   const [incidents, setIncidents] = useState([])
+  const [commonRecords, setCommonRecords] = useState([])
+  const [commonRecordStatus, setCommonRecordStatus] = useState('loading')
+  const [commonRecordError, setCommonRecordError] = useState('')
   const [status, setStatus] = useState('loading')
   const [connection, setConnection] = useState('loading')
   const [error, setError] = useState('')
@@ -31,8 +36,9 @@ function App() {
       try {
         const data = await getIncidents()
         if (!active) return
-        setIncidents(data)
-        setStatus(data.length ? 'ready' : 'empty')
+        const incidentDocuments = data.filter(isIncidentRecord)
+        setIncidents(incidentDocuments)
+        setStatus(incidentDocuments.length ? 'ready' : 'empty')
         setConnection('connected')
         setLastUpdated(new Intl.DateTimeFormat('en-IN', {
           timeZone: 'Asia/Kolkata',
@@ -49,6 +55,28 @@ function App() {
       }
     }
     void loadIncidents()
+    return () => { active = false }
+  }, [refreshKey])
+
+  useEffect(() => {
+    let active = true
+    async function loadCommonRecords() {
+      setCommonRecordStatus('loading')
+      setCommonRecordError('')
+      try {
+        const data = await getRecords()
+        if (!active) return
+        setCommonRecords(data)
+        setCommonRecordStatus('ready')
+      } catch (requestError) {
+        if (!active) return
+        setCommonRecordStatus('error')
+        setCommonRecordError(requestError instanceof Error
+          ? requestError.message
+          : 'An unexpected error occurred while requesting CommonRecords.')
+      }
+    }
+    void loadCommonRecords()
     return () => { active = false }
   }, [refreshKey])
 
@@ -108,8 +136,13 @@ function App() {
           <Dashboard
             view={view === 'documents' || view === 'map' ? 'overview' : view}
             incidents={incidents}
+            commonRecords={commonRecords}
+            commonRecordStatus={commonRecordStatus}
+            commonRecordError={commonRecordError}
             status={status}
             error={error}
+            connection={connection}
+            lastUpdated={lastUpdated}
             onRetry={refresh}
             onSelectIncident={selectIncident}
             onNavigate={setView}
