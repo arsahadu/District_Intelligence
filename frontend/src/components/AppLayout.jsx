@@ -169,10 +169,10 @@ export default function AppLayout({
               <span className={`api-status api-${connection}`} role="status">
                 <span aria-hidden="true" />
                 {connection === 'connected'
-                  ? 'API connected'
+                  ? 'Information available'
                   : connection === 'loading'
                     ? 'Connecting'
-                    : 'API unavailable'}
+                    : 'Information unavailable'}
               </span>
             ) : null}
             {onRefresh ? (
@@ -181,7 +181,7 @@ export default function AppLayout({
                 type="button"
                 onClick={onRefresh}
                 disabled={connection === 'loading'}
-                title={lastUpdated ? `Last refreshed ${lastUpdated}` : 'Refresh incidents'}
+                title={lastUpdated ? `District information updated ${lastUpdated}` : 'Refresh district information'}
               >
                 <span aria-hidden="true">↻</span>
                 <span className="refresh-label">Refresh</span>
@@ -193,7 +193,7 @@ export default function AppLayout({
           {children}
           <footer className="page-footer">
             <span>District Intelligence Platform · Office of the District Collector, Madurai</span>
-            {lastUpdated ? <span>Incident feed refreshed {lastUpdated}</span> : null}
+            {lastUpdated ? <span>District information updated {lastUpdated}</span> : null}
           </footer>
         </main>
       </div>

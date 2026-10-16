@@ -17,13 +17,16 @@ import {
   incidentLocation,
   isHighPriority,
   isIncidentRecord,
-  isNewsIncident,
   matchesSearch,
   requiresReview,
   safeHttpUrl,
   sortByAttention,
 } from '../utils/incidents.js'
-import { commonRecordsForSource } from '../utils/commonRecords.js'
+import {
+  adaptCommonRecordForDisplay,
+  commonRecordsForSource,
+  sortCommonRecords,
+} from '../utils/commonRecords.js'
 
 const INITIAL_FILTERS = {
   search: '',
@@ -39,16 +42,16 @@ const INITIAL_FILTERS = {
 const PAGE_INFO = {
   overview: ['Madurai District Overview', 'A source-backed view of current district incidents and items requiring attention.'],
   incidents: ['Incidents', 'Search and review structured incidents recorded for Madurai district.'],
-  news: ['News Intelligence', 'District incidents derived from news sources, with direct links to the supporting evidence.'],
-  weather: ['Weather', 'Weather forecasts and observations returned as CommonRecords by the platform API.'],
-  agriculture: ['Agriculture & Markets', 'Market prices and agriculture observations returned as CommonRecords by the platform API.'],
-  map: ['Map View', 'Location references from the incident register.'],
+  news: ['News & Intelligence', 'District news and related intelligence assessments, with links to the original reporting.'],
+  weather: ['Weather', 'Forecasts, observations, and warnings relevant to the district.'],
+  agriculture: ['Agriculture & Markets', 'Reported commodity prices and market information.'],
+  map: ['Map View', 'Incidents and district information, with uncertain locations clearly identified.'],
   sources: ['Sources', 'Source records and references cited by available incidents.'],
 }
 
 function PageIntro({ view, count, onRefresh }) {
   const [title, description] = PAGE_INFO[view]
-  const countLabel = view === 'weather' || view === 'agriculture' ? 'record' : 'incident'
+  const countLabel = ['weather', 'agriculture', 'news'].includes(view) ? 'record' : 'incident'
   return (
     <div className="page-intro">
       <div>
@@ -94,7 +97,35 @@ function IncidentRow({ incident, onSelect, index }) {
   )
 }
 
-function Overview({ incidents, connection, lastUpdated, onSelect, onNavigate }) {
+function DistrictSignal({ label, record, onSelect }) {
+  if (!record) return null
+  const display = adaptCommonRecordForDisplay(record)
+  const facts = record.source_type === 'weather'
+    ? display.warning || display.weatherCondition
+    : record.source_type === 'agriculture'
+      ? [
+        display.commodity,
+        display.market,
+        display.minPrice !== null && display.maxPrice !== null
+          ? `₹${display.minPrice}–₹${display.maxPrice}${display.priceUnit ? ` / ${display.priceUnit}` : ''}`
+          : null,
+      ].filter(Boolean).join(' · ')
+      : display.source
+  return (
+    <button
+      className={`district-signal district-signal-${record.source_type}`}
+      type="button"
+      onClick={() => onSelect('context', display.id)}
+    >
+      <span>{label}</span>
+      <strong>{display.title}</strong>
+      {facts ? <small>{facts}</small> : null}
+      <time dateTime={display.timestamp || undefined}>{formatDateTime(display.timestamp)}</time>
+    </button>
+  )
+}
+
+function Overview({ incidents, commonRecords, connection, lastUpdated, onSelect, onSelectMapRecord, onNavigate }) {
   const incidentRecords = incidents.filter(isIncidentRecord)
   const highPriority = incidentRecords.filter(isHighPriority).length
   const needsReview = incidentRecords.filter(requiresReview).length
@@ -119,34 +150,53 @@ function Overview({ incidents, connection, lastUpdated, onSelect, onNavigate }) 
     totals[status] = (totals[status] || 0) + 1
     return totals
   }, {})).sort((a, b) => b[1] - a[1])
+  const weatherWarning = sortCommonRecords(
+    commonRecordsForSource(commonRecords, 'weather').filter((record) => record.data?.warning),
+    'recent',
+  )[0]
+  const latestNews = sortCommonRecords(commonRecordsForSource(commonRecords, 'news'), 'recent')[0]
+  const latestMarket = sortCommonRecords(commonRecordsForSource(commonRecords, 'agriculture'), 'recent')[0]
 
   return (
     <>
       <div className="overview-statusline" role="status">
         <span className={`statusline-indicator statusline-${connection}`} aria-hidden="true" />
-        <span className="statusline-label">Incident feed</span>
+        <span className="statusline-label">District information</span>
         <strong>
           {connection === 'connected'
-            ? 'Connected'
+            ? 'Available'
             : connection === 'loading'
-              ? 'Connecting'
+              ? 'Refreshing'
               : 'Unavailable'}
         </strong>
         <span className="statusline-divider" aria-hidden="true" />
-        <span>{lastUpdated ? `Last refreshed ${lastUpdated}` : 'No successful refresh recorded'}</span>
+        <span>{lastUpdated ? `Updated ${lastUpdated}` : 'Refresh to check for current information'}</span>
       </div>
 
       <div className="summary-grid summary-grid-overview">
         <SummaryCard
           label="Incident register"
           value={incidentRecords.length}
-          note="Structured district records"
+          note="Current district incidents"
           featured
         />
         <SummaryCard label="High / critical" value={highPriority} note="Priority or severity" tone="red" />
         <SummaryCard label="Review required" value={needsReview} note="Validation or claim state" tone="amber" />
-        <SummaryCard label="Cited sources" value={sources.size} note="Distinct source identifiers" tone="green" />
+        <SummaryCard label="Cited sources" value={sources.size} note="Referenced in incident records" tone="green" />
       </div>
+
+      {(weatherWarning || latestNews || latestMarket) ? (
+        <section className="district-signals" aria-label="District updates">
+          <div className="panel-heading">
+            <div><span className="eyebrow">DISTRICT UPDATES</span><h2>Latest information</h2></div>
+          </div>
+          <div className="district-signal-grid">
+            <DistrictSignal label="Weather warning" record={weatherWarning} onSelect={onSelectMapRecord} />
+            <DistrictSignal label="Latest news" record={latestNews} onSelect={onSelectMapRecord} />
+            <DistrictSignal label="Market update" record={latestMarket} onSelect={onSelectMapRecord} />
+          </div>
+        </section>
+      ) : null}
 
       <div className="command-overview-grid">
         <section className="panel attention-panel">
@@ -214,7 +264,7 @@ function Overview({ incidents, connection, lastUpdated, onSelect, onNavigate }) 
             <button type="button" onClick={() => onNavigate('documents')}>Government documents <span aria-hidden="true">→</span></button>
             <button type="button" onClick={() => onNavigate('map')}>Open district map <span aria-hidden="true">→</span></button>
           </div>
-          {sources.size ? <p className="panel-footnote">Source IDs cited: {[...sources].join(', ')}</p> : null}
+          {sources.size ? <p className="panel-footnote">Source references are available with each incident record.</p> : null}
         </section>
 
         <section className="panel recent-panel">
@@ -248,50 +298,44 @@ function Overview({ incidents, connection, lastUpdated, onSelect, onNavigate }) 
   )
 }
 
-function NewsView({ incidents, onSelect }) {
-  const news = incidents.filter(isNewsIncident)
+function NewsView({ records, incidents, onSelectMapRecord, onSelectIncident }) {
   return (
-    <>
-      <div className="information-note">
-        <strong>Source-backed intelligence</strong>
-        <p>These are incident records derived from news sources. A report and its extracted claims are not, by themselves, independent confirmation that an event occurred.</p>
-      </div>
-      <IncidentTable incidents={news} total={news.length} onSelect={onSelect} />
-    </>
+    <CommonRecordList
+      records={records}
+      incidents={incidents}
+      category="news"
+      onSelectMap={onSelectMapRecord}
+      onSelectIncident={onSelectIncident}
+      sourceLabel="District news"
+      emptyTitle="No district news available"
+      emptyText="News records will appear here when available."
+    />
   )
 }
 
-function WeatherView({ records }) {
+function WeatherView({ records, onSelectMapRecord }) {
   return (
-    <>
-      <div className="information-note information-warning">
-        <strong>Weather source records</strong>
-        <p>Forecast conditions and observations are shown from CommonRecords, separately from assessed incidents.</p>
-      </div>
-      <CommonRecordList
-        records={records}
-        sourceLabel="Weather records"
-        emptyTitle="No weather records available"
-        emptyText="No weather CommonRecords are present in the platform API."
-      />
-    </>
+    <CommonRecordList
+      records={records}
+      category="weather"
+      onSelectMap={onSelectMapRecord}
+      sourceLabel="Weather forecasts & observations"
+      emptyTitle="No weather information available"
+      emptyText="Forecasts and observations will appear here when available."
+    />
   )
 }
 
-function AgricultureView({ records }) {
+function AgricultureView({ records, onSelectMapRecord }) {
   return (
-    <>
-      <div className="information-note information-green">
-        <strong>Market records and incidents are distinct</strong>
-        <p>Market prices and agriculture observations are shown from CommonRecords and are not incident assessments.</p>
-      </div>
-      <CommonRecordList
-        records={records}
-        sourceLabel="Agriculture and market records"
-        emptyTitle="No agriculture or market records available"
-        emptyText="No agriculture CommonRecords are present in the platform API."
-      />
-    </>
+    <CommonRecordList
+      records={records}
+      category="agriculture"
+      onSelectMap={onSelectMapRecord}
+      sourceLabel="Agriculture & market prices"
+      emptyTitle="No market information available"
+      emptyText="Market prices will appear here when available."
+    />
   )
 }
 
@@ -335,17 +379,17 @@ function SourcesView({ incidents }) {
       {sources.map((source) => (
         <article className="source-card" key={source.source_id}>
           <span className="source-icon" aria-hidden="true">↗</span>
-          <h2>{source.source_id}</h2>
-          <p>{[...source.source_types].join(', ') || 'Source type not specified'}</p>
+          <h2>{source.source_id.replaceAll('_', ' ')}</h2>
+          <p>{[...source.source_types].map((type) => type.replaceAll('_', ' ')).join(', ') || 'Source type not specified'}</p>
           <dl>
             <div><dt>Incident records</dt><dd>{source.incidents.size}</dd></div>
-            <div><dt>Source records cited</dt><dd>{source.record_ids.size}</dd></div>
+            <div><dt>Supporting references</dt><dd>{source.record_ids.size}</dd></div>
           </dl>
           {[...source.urls].map((url) => {
             const safeUrl = safeHttpUrl(url)
             return safeUrl ? (
               <a className="evidence-link" href={safeUrl} key={url} target="_blank" rel="noopener noreferrer">
-                Open cited source <span aria-hidden="true">↗</span>
+                View source <span aria-hidden="true">↗</span>
               </a>
             ) : (
               <span className="unsafe-url-note" key={url}>Source link is not a valid HTTP(S) URL.</span>
@@ -369,13 +413,14 @@ export default function Dashboard({
   lastUpdated,
   onRetry,
   onSelectIncident,
+  onSelectMapRecord,
   onNavigate,
 }) {
   const [filters, setFilters] = useState(INITIAL_FILTERS)
   const incidentRecords = useMemo(() => incidents.filter(isIncidentRecord), [incidents])
-  const newsIncidents = useMemo(
-    () => incidentRecords.filter(isNewsIncident),
-    [incidentRecords],
+  const newsRecords = useMemo(
+    () => commonRecordsForSource(commonRecords, 'news'),
+    [commonRecords],
   )
   const weatherRecords = useMemo(
     () => commonRecordsForSource(commonRecords, 'weather'),
@@ -392,16 +437,17 @@ export default function Dashboard({
     ? commonRecordStatus === 'ready' ? weatherRecords.length : undefined
     : view === 'agriculture'
       ? commonRecordStatus === 'ready' ? agricultureRecords.length : undefined
-      : status !== 'ready'
-        ? undefined
-        : view === 'overview' || view === 'incidents'
-          ? incidentRecords.length
-          : view === 'news'
-            ? newsIncidents.length
+      : view === 'news'
+        ? commonRecordStatus === 'ready' ? newsRecords.length : undefined
+        : status !== 'ready'
+          ? undefined
+          : view === 'overview' || view === 'incidents'
+            ? incidentRecords.length
             : undefined
   const changeFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }))
   const clearFilters = () => setFilters(INITIAL_FILTERS)
-  const incidentView = view !== 'weather' && view !== 'agriculture'
+  const recordView = ['news', 'weather', 'agriculture'].includes(view)
+  const incidentView = !recordView
 
   return (
     <div className="dashboard-page">
@@ -410,52 +456,54 @@ export default function Dashboard({
       {incidentView && status === 'error' ? <ErrorState message={error} onRetry={onRetry} /> : null}
       {incidentView && status === 'empty' ? (
         <EmptyState title="No incidents recorded">
-          The API is connected, but the incident register currently contains no records.
+          No incident records are currently available.
         </EmptyState>
       ) : null}
       {status === 'ready' && view === 'overview' ? (
         <Overview
           incidents={incidentRecords}
+          commonRecords={commonRecords}
           connection={connection}
           lastUpdated={lastUpdated}
           onSelect={onSelectIncident}
+          onSelectMapRecord={onSelectMapRecord}
           onNavigate={onNavigate}
         />
       ) : null}
       {status === 'ready' && view === 'incidents' ? (
         <>
           <FilterBar incidents={incidentRecords} filters={filters} onChange={changeFilter} onClear={clearFilters} />
-          <IncidentTable incidents={filteredIncidents} total={incidentRecords.length} onSelect={onSelectIncident} />
+          <IncidentTable
+            incidents={filteredIncidents}
+            total={incidentRecords.length}
+            onSelect={onSelectIncident}
+            onSelectMapRecord={onSelectMapRecord}
+          />
         </>
       ) : null}
-      {status === 'ready' && view === 'news' ? (
-        <NewsView incidents={newsIncidents} onSelect={onSelectIncident} />
+      {recordView && commonRecordStatus === 'loading' ? (
+        <LoadingState label={`Loading ${view === 'news' ? 'district news' : view === 'weather' ? 'weather information' : 'market information'}`} />
       ) : null}
-      {view === 'weather' && commonRecordStatus === 'loading' ? (
-        <LoadingState label="Loading weather CommonRecords" />
-      ) : null}
-      {view === 'weather' && commonRecordStatus === 'error' ? (
+      {recordView && commonRecordStatus === 'error' ? (
         <ErrorState
-          title="Weather CommonRecords could not be loaded"
+          title={`${view === 'news' ? 'District news' : view === 'weather' ? 'Weather information' : 'Market information'} is temporarily unavailable`}
           message={commonRecordError}
           onRetry={onRetry}
+        />
+      ) : null}
+      {view === 'news' && commonRecordStatus === 'ready' ? (
+        <NewsView
+          records={newsRecords}
+          incidents={incidents}
+          onSelectMapRecord={onSelectMapRecord}
+          onSelectIncident={onSelectIncident}
         />
       ) : null}
       {view === 'weather' && commonRecordStatus === 'ready' ? (
-        <WeatherView records={weatherRecords} />
-      ) : null}
-      {view === 'agriculture' && commonRecordStatus === 'loading' ? (
-        <LoadingState label="Loading agriculture CommonRecords" />
-      ) : null}
-      {view === 'agriculture' && commonRecordStatus === 'error' ? (
-        <ErrorState
-          title="Agriculture CommonRecords could not be loaded"
-          message={commonRecordError}
-          onRetry={onRetry}
-        />
+        <WeatherView records={weatherRecords} onSelectMapRecord={onSelectMapRecord} />
       ) : null}
       {view === 'agriculture' && commonRecordStatus === 'ready' ? (
-        <AgricultureView records={agricultureRecords} />
+        <AgricultureView records={agricultureRecords} onSelectMapRecord={onSelectMapRecord} />
       ) : null}
       {status === 'ready' && view === 'sources' ? <SourcesView incidents={incidentRecords} /> : null}
     </div>

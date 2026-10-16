@@ -8,6 +8,7 @@ import { createServer } from 'vite'
 import { getRecords } from '../src/services/api.js'
 import { isIncidentRecord } from '../src/utils/incidents.js'
 import {
+  adaptCommonRecordForDisplay,
   classifyCommonRecordSource,
   commonRecordDataEntries,
   commonRecordsForSource,
@@ -15,6 +16,7 @@ import {
   searchCommonRecords,
   sortCommonRecords,
 } from '../src/utils/commonRecords.js'
+import { filterMapRecords } from '../src/utils/mapRecords.js'
 
 const records = [
   {
@@ -25,6 +27,7 @@ const records = [
     title: 'News item',
     event_time: '2026-10-02T12:00:00',
     location: { raw_text: 'Madurai', district: 'Madurai', state: 'Tamil Nadu' },
+    source_url: 'https://news.example.test/article',
     data: { content: 'news body' },
   },
   {
@@ -112,9 +115,51 @@ test('CommonRecord search, sorting, location and source fields use returned reco
     ['min temp c', '24.5 °C'],
     ['relative humidity 0830', '71%'],
   ])
+  const display = adaptCommonRecordForDisplay(agriculture[0])
+  assert.equal(display.id, 'AGRI-1')
+  assert.equal(display.category, 'agriculture')
+  assert.equal(display.original, agriculture[0])
+  assert.equal(display.sourceUrl, agriculture[0].source_url)
+  assert.equal(adaptCommonRecordForDisplay(records[0]).locationPrecision, 'District-level location')
+  assert.equal(adaptCommonRecordForDisplay({
+    ...records[0],
+    location: { raw_text: 'மதுரை' },
+  }).locationPrecision, 'District-level location')
+  assert.equal(adaptCommonRecordForDisplay({
+    ...records[2],
+    source_id: 'imd_city_madurai',
+    location: { raw_text: 'Madurai', district: 'Madurai' },
+    data: { station_id: '43360' },
+  }).locationPrecision, 'Approximate weather-station location')
 })
 
-test('weather and agriculture record views render real backend values and source links', async () => {
+test('map filters apply consistently to mapped and unmapped categories and keep incident totals distinct', () => {
+  const recordsForMap = [
+    { record_kind: 'incident', id: 'INC-1', source_type: 'news', category: 'flood', severity: 'high', taluk: 'Madurai East', date_only: '2026-10-03', search_string: 'flood madurai' },
+    { record_kind: 'context', id: 'AGRI-1', source_type: 'agriculture', details: { commodity: 'Tomato' }, date_only: '2026-10-03', search_string: 'tomato anna nagar' },
+    { record_kind: 'context', id: 'WEATHER-1', source_type: 'weather', details: { warning: 'Heavy rain' }, date_only: '2026-10-04', search_string: 'rain madurai' },
+    { record_kind: 'context', id: 'NEWS-1', source_type: 'news', details: {}, date_only: '2026-10-04', search_string: 'civic update' },
+  ]
+
+  assert.deepEqual(
+    filterMapRecords(recordsForMap, { recordType: 'incidents' }).map((record) => record.id),
+    ['INC-1'],
+  )
+  assert.deepEqual(
+    filterMapRecords(recordsForMap, { recordType: 'weather', alert: 'warning' }).map((record) => record.id),
+    ['WEATHER-1'],
+  )
+  assert.deepEqual(
+    filterMapRecords(recordsForMap, { recordType: 'agriculture', commodity: 'Tomato' }).map((record) => record.id),
+    ['AGRI-1'],
+  )
+  assert.deepEqual(
+    filterMapRecords(recordsForMap, { recordType: 'all', taluk: 'Madurai East' }).map((record) => record.id),
+    ['INC-1'],
+  )
+})
+
+test('news, weather, and agriculture cards preserve source links and map actions', async () => {
   const root = fileURLToPath(new URL('..', import.meta.url))
   const vite = await createServer({
     root,
@@ -128,24 +173,42 @@ test('weather and agriculture record views render real backend values and source
     )
     const agricultureHtml = renderToStaticMarkup(React.createElement(CommonRecordList, {
       records: commonRecordsForSource(records, 'agriculture'),
+      category: 'agriculture',
       sourceLabel: 'Agriculture and market records',
       emptyTitle: 'No agriculture records',
       emptyText: 'No records.',
+      onSelectMap: () => {},
     }))
     const weatherHtml = renderToStaticMarkup(React.createElement(CommonRecordList, {
       records: commonRecordsForSource(records, 'weather'),
+      category: 'weather',
       sourceLabel: 'Weather records',
       emptyTitle: 'No weather records',
       emptyText: 'No records.',
+      onSelectMap: () => {},
+    }))
+    const newsHtml = renderToStaticMarkup(React.createElement(CommonRecordList, {
+      records: commonRecordsForSource(records, 'news'),
+      incidents: [],
+      category: 'news',
+      sourceLabel: 'District news',
+      emptyTitle: 'No news records',
+      emptyText: 'No records.',
+      onSelectMap: () => {},
     }))
 
     assert.match(agricultureHtml, /Tomato price - Anna nagar/)
-    assert.match(agricultureHtml, /46 \/ kg/)
+    assert.match(agricultureHtml, /₹46–₹50 \/ kg/)
     assert.match(agricultureHtml, /https:\/\/agrimark\.tn\.gov\.in\/price/)
+    assert.match(agricultureHtml, /View on map/)
+    assert.doesNotMatch(agricultureHtml, /raw JSON|CommonRecord|record_id/)
     assert.match(weatherHtml, /Madurai Weather Forecast/)
     assert.match(weatherHtml, /24\.5 °C/)
     assert.match(weatherHtml, /71%/)
     assert.match(weatherHtml, /https:\/\/mausam\.imd\.gov\.in\//)
+    assert.match(weatherHtml, /Forecast for/)
+    assert.match(newsHtml, /News item/)
+    assert.match(newsHtml, /View original article/)
   } finally {
     await vite.close()
   }

@@ -56,7 +56,61 @@ export function commonRecordLocation(record) {
   const parts = values.filter((value, index) => !values.slice(0, index).some((earlier) =>
     earlier.toLocaleLowerCase().includes(value.toLocaleLowerCase())))
   return parts.join(', ')
-    || 'Location not provided'
+    || 'Location unavailable'
+}
+
+export function adaptCommonRecordForDisplay(record) {
+  const data = record?.data && typeof record.data === 'object' && !Array.isArray(record.data)
+    ? record.data
+    : {}
+  const sourceLabels = {
+    dinamalar: 'Dinamalar',
+    imd_city_madurai: 'India Meteorological Department',
+    tn_agri_marketing: 'Tamil Nadu Agriculture Marketing',
+  }
+  const sourceId = String(record?.source_id || record?.source_type || 'Source not specified')
+  const location = record?.location || {}
+  const rawLocation = String(location.raw_text || '').trim()
+  const normalizedRawLocation = rawLocation.toLocaleLowerCase()
+  const stationId = String(data.station_id || '').trim()
+  const category = classifyCommonRecordSource(record)
+  const isRegisteredMaduraiWeatherStation = category === 'weather'
+    && sourceId.toLocaleLowerCase() === 'imd_city_madurai'
+    && stationId === '43360'
+  const isDistrictOnly = Boolean(rawLocation && location.district
+    && normalizedRawLocation === String(location.district).toLocaleLowerCase())
+    || ['madurai', 'மதுரை'].includes(normalizedRawLocation)
+  return {
+    category,
+    recordKind: 'context',
+    id: String(record?.record_id || ''),
+    title: String(record?.title || 'Untitled record'),
+    summary: String(data.summary || data.content || '').trim(),
+    source: sourceLabels[sourceId] || sourceId.replaceAll('_', ' '),
+    sourceUrl: record?.source_url || null,
+    timestamp: record?.event_time || null,
+    location: commonRecordLocation(record),
+    locationPrecision: isRegisteredMaduraiWeatherStation
+      ? 'Approximate weather-station location'
+      : isDistrictOnly ? 'District-level location' : null,
+    commodity: data.commodity || null,
+    market: data.market || null,
+    priceUnit: data.unit || null,
+    minPrice: data.min_price ?? null,
+    maxPrice: data.max_price ?? null,
+    modalPrice: data.modal_price ?? null,
+    weatherType: String(record?.record_type || '').toLowerCase() === 'forecast'
+      ? 'Forecast'
+      : 'Observation',
+    weatherCondition: data.warning || data.forecast || data.condition || null,
+    minTemperature: data.min_temp_c ?? null,
+    maxTemperature: data.max_temp_c ?? null,
+    morningHumidity: data.relative_humidity_0830 ?? null,
+    eveningHumidity: data.relative_humidity_1730 ?? null,
+    stationId: data.station_id || null,
+    warning: data.warning || null,
+    original: record,
+  }
 }
 
 export function commonRecordDataEntries(record) {

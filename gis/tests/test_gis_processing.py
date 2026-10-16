@@ -53,6 +53,42 @@ def test_location_resolver_weather_and_news():
     assert flood_res["taluk"] == "Madurai West"
 
 
+def test_ambiguous_or_unregistered_places_remain_unmapped_without_centroid_guessing():
+    locations = [
+        {"raw_text": "Madurai", "district": "Madurai"},
+        {"raw_text": "Peraiyur", "district": "Madurai"},
+        {"raw_text": "Manamadurai", "district": "Sivaganga"},
+        {"raw_text": "Tambaram", "district": "Chengalpattu"},
+    ]
+    results = [
+        resolve_record_location({"source_type": "news", "location": location})
+        for location in locations
+    ]
+    assert all(not result["is_geocoded"] for result in results)
+    assert results[0]["location_precision"] == "area_only"
+    assert results[1]["resolution_status"] == "UNRESOLVED_AREA_ONLY"
+    assert results[2]["coordinate_origin"] is None
+    assert results[3]["coordinate_origin"] is None
+
+
+def test_invalid_incomplete_and_swapped_coordinates_are_not_corrected_silently():
+    incomplete = resolve_record_location({
+        "source_type": "news",
+        "latitude": 9.91,
+        "location": {"raw_text": "Madurai"},
+    })
+    swapped = resolve_record_location({
+        "source_type": "news",
+        "latitude": 78.12,
+        "longitude": 9.91,
+        "location": {"raw_text": "Madurai"},
+    })
+    assert not incomplete["is_geocoded"]
+    assert not swapped["is_geocoded"]
+    assert swapped["resolution_status"] == "INVALID_SOURCE_COORDINATES"
+    assert "not changed" in swapped["reason"]
+
+
 def test_deterministic_co_location_dispersion():
     """Validates that co-located items receive distinct display coordinates without modifying base coordinates."""
     records = [
@@ -95,9 +131,12 @@ def test_fastapi_endpoints(monkeypatch):
     incident = normalize_record(_saved_incident("incident-1"))
     dataset = {
         "incident_records": [incident],
+        "context_records": [],
         "all_records": [incident],
         "mapped_records": [incident],
         "unmapped_records": [],
+        "incident_mapped_records": [incident],
+        "incident_unmapped_records": [],
         "stats": {
             "totalRecords": 1,
             "incidentCount": 1,
@@ -132,12 +171,95 @@ def test_fastapi_endpoints(monkeypatch):
     geo_data = resp_geo.json()
     assert geo_data["type"] == "FeatureCollection"
     assert len(geo_data["features"]) == 1
+    resp_map_records = client.get("/api/map/records")
+    assert resp_map_records.status_code == 200
+    assert len(resp_map_records.json()) == 1
+    resp_map_geo = client.get("/api/map/geojson")
+    assert resp_map_geo.status_code == 200
+    assert len(resp_map_geo.json()["features"]) == 1
     resp_incidents = client.get("/api/incidents")
     assert resp_incidents.status_code == 200
     assert len(resp_incidents.json()) == 1
     assert resp_incidents.json()[0]["record_kind"] == "incident"
     assert client.get("/api/records").status_code == 404
     assert client.get("/").json()["documentation"] == "/docs"
+    gis_app_module._cached_dataset = None
+
+
+def test_map_layer_endpoints_filter_context_without_changing_incident_contract(monkeypatch):
+    import app as gis_app_module
+
+    incident = normalize_record(_saved_incident("incident-layer"))
+    market = normalize_record({
+        "record_id": "market-layer",
+        "source_id": "tn_agri_marketing",
+        "source_type": "agriculture",
+        "record_type": "market_price",
+        "title": "Tomato price",
+        "event_time": "2026-10-15T00:00:00+00:00",
+        "location": {"raw_text": "Anaiyur Uzhavar Santhai, Madurai"},
+        "data": {"market": "Anaiyur", "commodity": "Tomato", "min_price": 25, "max_price": 30, "unit": "kg"},
+        "source_url": "https://example.test/market",
+    })
+    news = normalize_record({
+        "record_id": "news-layer",
+        "source_id": "dinamalar",
+        "source_type": "news",
+        "record_type": "article",
+        "title": "\u0bae\u0ba4\u0bc1\u0bb0\u0bc8 \u0b9a\u0bc6\u0baf\u0bcd\u0ba4\u0bbf",
+        "event_time": "2026-10-15T00:00:00+00:00",
+        "location": {"raw_text": "Madurai", "district": "Madurai"},
+        "data": {"content": "\u0ba4\u0bae\u0bbf\u0bb4\u0bcd \u0b89\u0bb3\u0bcd\u0bb3\u0b9f\u0b95\u0bcd\u0b95\u0bae\u0bcd"},
+        "source_url": "https://example.test/news",
+    })
+    all_records = [incident, market, news]
+    assign_dispersed_coordinates(all_records)
+    mapped = [item for item in all_records if item["is_geocoded"]]
+    unmapped = [item for item in all_records if not item["is_geocoded"]]
+    dataset = {
+        "all_records": all_records,
+        "incident_records": [incident],
+        "context_records": [market, news],
+        "mapped_records": mapped,
+        "unmapped_records": unmapped,
+        "incident_mapped_records": [incident],
+        "incident_unmapped_records": [],
+        "stats": {
+            "totalRecords": 1,
+            "incidentCount": 1,
+            "mappedCount": 1,
+            "unmappedCount": 0,
+            "commonRecordCount": 2,
+            "mapRecordCount": 3,
+            "mapMappedCount": 2,
+            "mapUnmappedCount": 1,
+            "dataSourceType": "live",
+            "sourceEndpoints": {},
+            "lastRefreshed": "2026-10-15T00:00:00+00:00",
+        },
+        "data_source_type": "live",
+        "source_endpoints": {},
+    }
+    monkeypatch.setattr(gis_app_module, "load_gis_dataset", lambda: dataset)
+    gis_app_module._cached_dataset = None
+
+    map_records = client.get("/api/map/records")
+    assert map_records.status_code == 200
+    assert {record["record_kind"] for record in map_records.json()} == {"incident", "context"}
+    agriculture = client.get("/api/map/records?source_type=agriculture").json()
+    assert len(agriculture) == 1
+    assert agriculture[0]["record_id"] == "market-layer"
+    assert agriculture[0]["source_url"] == "https://example.test/market"
+    assert agriculture[0]["details"]["commodity"] == "Tomato"
+    assert client.get("/api/map/records?source_type=weather").json() == []
+    assert client.get("/api/map/unmapped?source_type=news").json()[0]["record_id"] == "news-layer"
+    geojson = client.get("/api/map/geojson?source_type=agriculture").json()
+    assert len(geojson["features"]) == 1
+    assert geojson["features"][0]["id"] == "context:market-layer"
+    assert len(client.get("/api/incidents").json()) == 1
+    assert client.get("/api/stats").json()["incidentCount"] == 1
+    assert client.get("/api/stats").json()["commonRecordCount"] == 2
+    assert "\u0ba4\u0bae\u0bbf\u0bb4\u0bcd" in client.get("/api/map/records").text
     gis_app_module._cached_dataset = None
 
 

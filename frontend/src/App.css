@@ -2850,18 +2850,189 @@
 
 .common-record-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: end;
-  gap: 16px;
+  gap: 12px;
   margin: 18px 0 8px;
 }
 
 .common-record-controls .search-control {
-  max-width: 420px;
-  flex: 1 1 280px;
+  max-width: 460px;
+  flex: 2 1 260px;
 }
 
-.common-record-controls .sort-control {
-  width: 210px;
+.record-filter-control {
+  display: grid;
+  min-width: 135px;
+  flex: 1 1 145px;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.record-filter-control input,
+.record-filter-control select {
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.record-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.district-record-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.district-record-card h3 {
+  margin: 0;
+  color: var(--navy);
+  font-size: 15px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.district-record-card-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.record-facts {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.record-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.record-facts dt {
+  color: var(--text-secondary);
+}
+
+.record-facts dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-weight: 650;
+  text-align: right;
+}
+
+.record-summary,
+.record-weather-condition {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.record-warning {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warning-border);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg);
+  color: #6c4207;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.record-meta {
+  display: grid;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.record-meta small,
+.record-meta time {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.record-source {
+  font-weight: 600;
+}
+
+.district-record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.district-record-actions a,
+.record-source-missing {
+  color: var(--blue);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.record-source-missing {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.news-outcome {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.news-outcome-accepted-incident {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.news-outcome-needs-review {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.news-outcome-information-only {
+  border-color: var(--line);
+  background: var(--bg);
 }
 
 @media (max-width: 640px) {
@@ -2870,7 +3041,70 @@
     flex-direction: column;
   }
 
-  .common-record-controls .sort-control {
+  .common-record-controls .search-control,
+  .record-filter-control {
     width: 100%;
   }
+}
+
+.district-signals {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.district-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 12px;
+}
+
+.district-signal {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--blue);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.district-signal-weather {
+  border-left-color: var(--warning);
+}
+
+.district-signal-agriculture {
+  border-left-color: var(--success);
+}
+
+.district-signal > span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.district-signal strong {
+  color: var(--navy);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.district-signal small,
+.district-signal time {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.district-signal:hover {
+  background: var(--bg);
 }

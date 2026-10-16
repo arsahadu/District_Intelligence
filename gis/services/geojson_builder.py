@@ -60,6 +60,7 @@ def build_incident_feature(record: Dict[str, Any]) -> Dict[str, Any]:
             "taluk": record.get("taluk"),
             "location_name": record.get("location_name"),
             "administrative_level": record.get("administrative_level"),
+            "location_precision": record.get("location_precision"),
             "raw_location_text": record.get("raw_location_text"),
             "base_lat": record.get("base_lat"),
             "base_lng": record.get("base_lng"),

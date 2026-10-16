@@ -790,6 +790,56 @@
   color: var(--error);
 }
 
+.gis-result-panel {
+  border-top: 1px solid var(--line);
+}
+
+.gis-result-category {
+  width: fit-content;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.gis-result-incident { color: #a93d38; }
+.gis-result-news { color: #2f65b0; }
+.gis-result-weather { color: #16777d; }
+.gis-result-agriculture { color: #287d58; }
+
+.gis-load-more {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--blue);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.gis-load-more:hover {
+  background: var(--blue-light);
+}
+
+.gis-source-facts {
+  margin-top: 14px;
+}
+
+.gis-legend {
+  flex-wrap: wrap;
+}
+
+.gis-map-count-row {
+  flex-wrap: wrap;
+}
+
 .gis-error-state p {
   max-width: 850px;
   margin: 0;

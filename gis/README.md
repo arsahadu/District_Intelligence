@@ -10,15 +10,19 @@ connect directly to PostgreSQL or run the intelligence pipeline.
 1. The ingestion and intelligence pipeline process incoming source material.
 2. The pipeline stores its output through the existing backend `POST /incidents`
    API. PostgreSQL is owned and accessed by that backend.
-3. The GIS service requests `GET {BACKEND_API_BASE_URL}/incidents`. The backend
-   returns persisted intelligence documents as a JSON API response. GIS keeps
-   only documents explicitly marked `record_kind: "incident"`; stored forecasts
-   and context documents are not treated as GIS incidents.
-4. GIS normalizes those saved incidents for location resolution, map display,
-   and GeoJSON. It preserves the incident's metadata, provenance, and evidence.
-   It never reads `GET /records` or source/sample incident JSON files.
-5. The React Map View requests the GIS incident, GeoJSON, statistics, health,
-   unmapped-location, and taluk-boundary APIs.
+3. The GIS service requests `GET {BACKEND_API_BASE_URL}/incidents` and
+   `GET {BACKEND_API_BASE_URL}/records`. It retains only actual
+   `record_kind: "incident"` documents in the incident layer and normalizes
+   eligible news, weather, and agriculture source records as separate context
+   records. Forecasts and market information are never promoted to incidents.
+4. GIS preserves each source record's identity, content, timestamp, location,
+   source URL, and any associated intelligence validation status. It resolves
+   only validated source coordinates, explicit registered places, and the
+   registered IMD Madurai station. District/taluk-level descriptions remain
+   unmapped instead of being assigned a guessed point.
+5. The React Map View requests the backward-compatible incident APIs plus the
+   combined map-record, GeoJSON, and unmapped-record APIs. The card pages use
+   URL-based map selection to reopen the exact record.
 
 There are no bundled incident/source sample datasets or sample severity
 overrides. The only local GeoJSON input is
@@ -27,12 +31,14 @@ incident or intelligence records. The backend's JSON response is only the
 transport format for records already persisted by the intelligence workflow;
 it is not a separate JSON-file data source.
 
-GIS uses valid coordinates stored on an incident's location or a supported
-named-place registry entry. District/taluk-only descriptions remain unmapped,
+GIS validates coordinate ranges and rejects incomplete, non-finite, and
+district-swapped coordinate pairs without changing the source values. District
+or taluk-only descriptions (including Tamil place labels) remain unmapped,
 rather than being assigned a centroid. Registry coordinates are approximate
-facility anchors. Co-location offsets are deterministic display-only offsets;
-source/base coordinates remain unchanged. Taluk coloring aggregates only saved
-incidents. A taluk without mapped incidents remains unassessed (unknown).
+facility or station anchors and are labelled as such. Co-location offsets are
+deterministic display-only offsets; source/base coordinates remain unchanged.
+Taluk coloring aggregates only saved incidents. A taluk without mapped
+incidents remains unassessed (unknown).
 
 ## Configuration
 
@@ -45,9 +51,11 @@ incidents. A taluk without mapped incidents remains unassessed (unknown).
 | `GIS_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Allowed browser origins, comma-separated |
 | `VITE_GIS_API_BASE_URL` | `http://127.0.0.1:8080` | GIS API origin used by React |
 
-The GIS API expects the backend's direct JSON-list response from `/incidents`.
+The GIS API expects direct JSON-list responses from `/incidents` and `/records`.
 It does not expect an envelope and adds no database connection or authentication
-headers. Set `GIS_CORS_ORIGINS` if the Collector uses another browser origin.
+headers. A source-record request failure is reported as partial map
+availability; it does not make contextual records into incidents. Set
+`GIS_CORS_ORIGINS` if the Collector uses another browser origin.
 
 ## Run locally
 
@@ -87,12 +95,20 @@ is at `http://127.0.0.1:8080/docs`.
 - `GET /api/geojson` — RFC 7946 FeatureCollection for mapped incidents;
   coordinates are `[longitude, latitude]`. Supports category, source type,
   severity, status, taluk, date, and search filters.
+- `GET /api/map/records` — incidents and eligible news, weather, and
+  agriculture source records with distinct record kinds. Supports category,
+  source type, incident kind, severity, status, taluk, date, and search filters.
+- `GET /api/map/geojson` — combined mapped-record FeatureCollection with
+  collision-resistant feature IDs and RFC 7946 coordinates.
+- `GET /api/map/unmapped` — all map records without a reliable point, including
+  their location-precision explanation.
 - `GET /api/talukas?mode=aggregated` — administrative boundaries with severity
   derived only from mapped saved incidents.
-- `GET /api/stats` — persisted incident and map-location totals.
-- `GET /api/health` — backend incident API availability and refresh timestamp;
-  returns HTTP 503 when the backend cannot be reached.
-- `POST /api/reload` — invalidate the cache and refetch persisted incidents.
+- `GET /api/stats` — incident-only totals plus separate combined map totals.
+- `GET /api/health` — incident and source-record availability with refresh time;
+  returns HTTP 503 when the incidents service cannot be reached.
+- `POST /api/reload` — invalidate the cache and refetch incidents and source
+  records.
 
 ## Tests
 

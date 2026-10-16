@@ -10,17 +10,7 @@ function EvidenceCard({ evidence }) {
         <p className="evidence-no-quote">No source excerpt was provided for this evidence item.</p>
       )}
       <dl className="evidence-meta">
-        <div><dt>Source</dt><dd>{evidence.source_id || 'Not specified'} · {evidence.source_type || 'type not specified'}</dd></div>
-        <div><dt>Source record</dt><dd>{evidence.record_id || 'Not specified'}</dd></div>
-        {evidence.field ? <div><dt>Source field</dt><dd>{evidence.field}</dd></div> : null}
-        {Number.isInteger(evidence.char_start) || Number.isInteger(evidence.char_end) ? (
-          <div><dt>Character offsets</dt><dd>{evidence.char_start ?? '—'}–{evidence.char_end ?? '—'}</dd></div>
-        ) : null}
-        {evidence.span_validation ? <div><dt>Span validation</dt><dd>{evidence.span_validation.replaceAll('_', ' ')}</dd></div> : null}
-        {evidence.method ? <div><dt>Extraction method</dt><dd>{evidence.method.replaceAll('_', ' ')}</dd></div> : null}
-        {Number.isFinite(evidence.confidence) ? (
-          <div><dt>Evidence confidence</dt><dd>{Math.round(evidence.confidence * 100)}%</dd></div>
-        ) : null}
+        <div><dt>Source</dt><dd>{(evidence.source_id || 'Source not specified').replaceAll('_', ' ')}</dd></div>
       </dl>
       {url ? (
         <a className="evidence-link" href={url} target="_blank" rel="noopener noreferrer">

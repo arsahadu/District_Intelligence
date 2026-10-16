@@ -137,6 +137,8 @@ _TALUK_ALIASES = {
     "kalligudi": "Kallikudi",
 }
 
+_DISTRICT_ALIASES = ("madurai", "மதுரை")
+
 
 def _text_value(value: Any) -> str:
     if isinstance(value, dict):
@@ -161,6 +163,7 @@ def _unresolved(status: str, reason: str, raw_text: str = "") -> Dict[str, Any]:
         "resolution_status": status,
         "reason": reason,
         "coordinate_origin": None,
+        "location_precision": "area_only" if status == "UNRESOLVED_AREA_ONLY" else "unavailable",
     }
 
 
@@ -175,7 +178,15 @@ def resolve_record_location(record: Dict[str, Any]) -> Dict[str, Any]:
         location = {}
     latitude = record.get("latitude", record.get("lat", location.get("latitude")))
     longitude = record.get("longitude", record.get("lng", location.get("longitude")))
-    raw_text = _text_value(location) or _text_value(record.get("raw_location_text"))
+    data = record.get("data")
+    if isinstance(data, dict):
+        latitude = latitude if latitude is not None else data.get("latitude", data.get("lat"))
+        longitude = longitude if longitude is not None else data.get("longitude", data.get("lng"))
+    raw_text = (
+        _text_value(location)
+        or _text_value(record.get("raw_location_text"))
+        or _text_value(location.get("district"))
+    )
 
     if latitude is not None or longitude is not None:
         try:
@@ -193,6 +204,13 @@ def resolve_record_location(record: Dict[str, Any]) -> Dict[str, Any]:
                 "Source coordinates are non-finite or outside valid latitude/longitude ranges.",
                 raw_text,
             )
+        southwest, northeast = MADURAI_DISTRICT_BOUNDS["bounds"]
+        if southwest[1] <= lat <= northeast[1] and southwest[0] <= lng <= northeast[0]:
+            return _unresolved(
+                "INVALID_SOURCE_COORDINATES",
+                "Source coordinates appear to have latitude and longitude reversed for this district; the values were not changed.",
+                raw_text,
+            )
         return {
             "is_geocoded": True,
             "lat": lat,
@@ -203,6 +221,7 @@ def resolve_record_location(record: Dict[str, Any]) -> Dict[str, Any]:
             "resolution_status": "RESOLVED_EXPLICIT",
             "reason": "Latitude and longitude were supplied directly by the source.",
             "coordinate_origin": "source",
+            "location_precision": "source_coordinates",
         }
 
     canonical_id = location.get("canonical_location_id")
@@ -219,12 +238,31 @@ def resolve_record_location(record: Dict[str, Any]) -> Dict[str, Any]:
                     "resolution_status": "RESOLVED_REGISTRY",
                     "reason": f"Matched the canonical location ID to the supported {item['facility_type']} registry.",
                     "coordinate_origin": "registry_approximate",
+                    "location_precision": "approximate_named_place",
                 }
 
     source_type = str(record.get("source_type") or "").strip().casefold()
     data = record.get("data")
     if not isinstance(data, dict):
         data = {}
+
+    if source_type == "weather":
+        station_id = str(data.get("station_id") or record.get("station_id") or "").strip()
+        source_id = str(record.get("source_id") or "").strip().casefold()
+        if station_id == "43360" or source_id == "imd_city_madurai":
+            item = MADURAI_GEO_REGISTRY["imd_madurai"]
+            return {
+                "is_geocoded": True,
+                "lat": item["lat"],
+                "lng": item["lng"],
+                "taluk": item["taluk"],
+                "resolved_name": item["name"],
+                "administrative_level": item["administrative_level"],
+                "resolution_status": "RESOLVED_REGISTRY",
+                "reason": "Matched the explicit IMD Madurai station identifier 43360.",
+                "coordinate_origin": "registry_approximate",
+                "location_precision": "approximate_weather_station",
+            }
 
     candidate = ""
     if source_type == "agriculture":
@@ -250,24 +288,18 @@ def resolve_record_location(record: Dict[str, Any]) -> Dict[str, Any]:
                     "Coordinates are an approximate administrative/facility anchor."
                 ),
                 "coordinate_origin": "registry_approximate",
+                "location_precision": "approximate_named_place",
             }
 
-    if source_type == "weather":
-        station_id = str(data.get("station_id") or record.get("station_id") or "").strip()
-        source_id = str(record.get("source_id") or "").strip().casefold()
-        if station_id == "43360" or source_id == "imd_city_madurai":
-            item = MADURAI_GEO_REGISTRY["imd_madurai"]
-            return {
-                "is_geocoded": True,
-                "lat": item["lat"],
-                "lng": item["lng"],
-                "taluk": item["taluk"],
-                "resolved_name": item["name"],
-                "administrative_level": item["administrative_level"],
-                "resolution_status": "RESOLVED_REGISTRY",
-                "reason": "Matched the explicit IMD Madurai station identifier 43360.",
-                "coordinate_origin": "registry_approximate",
-            }
+    if (
+        location.get("district")
+        and raw_text.casefold() == str(location["district"]).strip().casefold()
+    ) or any(_contains_alias(raw_text, alias) for alias in _DISTRICT_ALIASES):
+        return _unresolved(
+            "UNRESOLVED_AREA_ONLY",
+            "The source provides a district-level location only; no point location or centroid is asserted.",
+            raw_text,
+        )
 
     if raw_text:
         for alias, taluk in _TALUK_ALIASES.items():
