@@ -32,6 +32,7 @@ from intelligence.tests.record_fixtures import market_price, weather_forecast, w
 from intelligence.tests.test_linking import NOW, flood_en, flood_ta, judged, verdict
 from intelligence.tests.test_locations import FIRE_TA, VILLAGE, place
 from intelligence.tests.test_locations import read as read_place
+from intelligence.tests.test_stored_report_quotes import field_text
 
 OUTPUT_FIELDS = (
     "category",
@@ -193,10 +194,8 @@ def test_a_forecast_and_a_price_line_are_kept_out_of_the_incident_total():
     assert counts["Accepted context"] == 2
     assert sum(summary.buckets().values()) == summary.attempted == 3
 
-    assert [item.incident.incident_id for item in summary.postable] == [
-        incident.incident_id,
-    ]
-    assert RecordKind.UNRESOLVED not in POSTABLE_KINDS
+    assert POSTABLE_KINDS == (RecordKind.INCIDENT,)
+    assert [item.incident.incident_id for item in summary.postable] == [incident.incident_id]
 
 
 def test_the_report_never_moves_an_accepted_forecast_into_the_incident_block():
@@ -231,7 +230,7 @@ def test_every_accepted_claim_resolves_to_a_quote_that_replays_in_the_field_it_c
             assert row.raw_reference == incident.provenance.raw_reference
 
 
-def test_a_copied_field_value_is_cited_by_path_url_and_timestamp_instead_of_a_quote():
+def test_a_copied_field_value_is_cited_by_its_own_text_path_url_and_timestamp():
     price = process_record(market_price())
 
     assert price.context_facts
@@ -239,13 +238,29 @@ def test_a_copied_field_value_is_cited_by_path_url_and_timestamp_instead_of_a_qu
         row = price.evidence_by_id()[fact.evidence_ids[0]]
         assert (row.method, row.quote, row.span_validation) == (
             ExtractionMethod.SOURCE_METADATA,
-            None,
-            SpanValidation.NOT_APPLICABLE,
+            str(fact.value),
+            SpanValidation.VALIDATED,
         )
+        assert (row.char_start, row.char_end) == (0, len(str(fact.value)))
         assert row.field == fact.field
         assert fact.confidence is None
         assert row.source_url == price.provenance.source_url
         assert row.retrieved_at == price.provenance.retrieved_at
+
+
+def test_no_reading_of_any_kind_leaves_an_evidence_row_without_the_text_it_cites():
+    readings = (
+        (waterlogging(), read()),
+        (market_price(), process_record(market_price())),
+        (weather_forecast(), process_record(weather_forecast())),
+    )
+
+    for record, incident in readings:
+        assert incident.evidence
+        for row in incident.evidence:
+            assert row.quote is not None, row.field
+            assert row.span_validation is SpanValidation.VALIDATED, (row.field, row.span_validation)
+            assert field_text(record, row.field)[row.char_start:row.char_end] == row.quote
 
 
 def test_a_band_or_a_completion_the_feed_printed_about_itself_stays_a_declaration():

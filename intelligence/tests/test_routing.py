@@ -73,14 +73,6 @@ def test_known_news_publisher_metadata_is_used_without_admitting_other_records()
     assert route(unknown_article) is Mode.STRUCTURED
 
 
-def test_local_documents_are_narrative_only_when_explicitly_enabled():
-    document = base_record(record_id="OCR-1", source_type="document",
-                           data={"content": "page text"})
-
-    assert route(document) is Mode.STRUCTURED
-    assert route(document, allow_document=True) is Mode.SEMANTIC
-
-
 @pytest.mark.parametrize(
     "record",
     [

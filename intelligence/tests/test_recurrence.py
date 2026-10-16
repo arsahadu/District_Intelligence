@@ -15,6 +15,7 @@ from intelligence.contract import (
     EventType,
     Incident,
     IncidentCategory,
+    PriorityLevel,
     ReviewState,
     TimePrecision,
 )
@@ -90,6 +91,8 @@ def note(
     department_quote: Optional[str] = None,
     severity: Optional[str] = None,
     severity_quote: Optional[str] = None,
+    priority: Optional[str] = None,
+    priority_quote: Optional[str] = None,
     status: str = "reported",
     status_quote: Optional[str] = None,
     place: Optional[str] = None,
@@ -123,6 +126,7 @@ def note(
         ("category", category, category_quote),
         ("department", department, department_quote),
         ("severity", severity, severity_quote),
+        ("priority", priority, priority_quote),
     ):
         if value is not None:
             answer[name] = quote(content, words or kind_quote) | {"value": value}
@@ -572,6 +576,24 @@ def test_an_unresolved_severity_and_a_missing_filter_are_both_honest():
     assert quiet.severity.value == "unresolved"
     assert Filters(min_severity=SeverityLevel.INFO).keeps(quiet) is False
     assert Filters().describe() == "no filter"
+
+
+@pytest.mark.parametrize(
+    ("declared", "minimum", "kept"),
+    [
+        (PriorityLevel.HIGH.value, PriorityLevel.HIGH, True),
+        (PriorityLevel.CRITICAL.value, PriorityLevel.HIGH, True),
+        (PriorityLevel.HIGH.value, PriorityLevel.CRITICAL, False),
+        (PriorityLevel.LOW.value, PriorityLevel.MEDIUM, False),
+        (None, PriorityLevel.HIGH, False),
+    ],
+)
+def test_a_priority_filter_keeps_only_the_records_that_stated_one(declared, minimum, kept):
+    urgent = supply(priority=declared, priority_quote="நான்கு வாரமாக")
+    assert urgent.priority == declared
+    assert Filters(min_priority=minimum).keeps(urgent) is kept
+    assert Filters(min_priority=minimum).describe() == f"priority at least {minimum.value}"
+    assert Filters().keeps(urgent) is True
 
 
 def test_an_event_the_record_never_dated_is_outside_the_period_and_named_as_a_limitation():

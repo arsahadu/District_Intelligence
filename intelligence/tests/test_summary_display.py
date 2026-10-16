@@ -180,9 +180,9 @@ def test_the_warning_keeps_the_declared_value_evidence_the_structured_path_gives
     assert evidence.field == "data.warning"
     assert evidence.method is ExtractionMethod.SOURCE_METADATA
     assert evidence.modality is Modality.STRUCTURED_DATA
-    assert evidence.quote is None
-    assert (evidence.char_start, evidence.char_end) == (None, None)
-    assert evidence.span_validation is SpanValidation.NOT_APPLICABLE
+    assert evidence.quote == HEAVY_RAIN
+    assert (evidence.char_start, evidence.char_end) == (0, len(HEAVY_RAIN))
+    assert evidence.span_validation is SpanValidation.VALIDATED
     assert evidence.field_text_hash == compute_field_hash(HEAVY_RAIN)
 
 

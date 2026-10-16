@@ -22,10 +22,10 @@ from intelligence.contract import (
     Evidence,
     Incident,
     IncidentCategory,
+    PriorityLevel,
     RecordKind,
     ReviewState,
 )
-from intelligence.documents import DOCUMENT_SOURCE_TYPE
 from intelligence.fallback import Chain, ChainExhaustedError
 from intelligence.linking import (
     DEFAULT_CONFIDENCE,
@@ -55,7 +55,7 @@ from intelligence.recurrence import (
 )
 from intelligence.trends import NOT_ASKED, Trend, claim_words_in
 
-COPILOT_PROMPT_VERSION = "copilot-1"
+COPILOT_PROMPT_VERSION = "copilot-6"
 ANSWER_PROMPT_VERSION = "answer-1"
 ANSWERS_FILENAME = "answers.jsonl"
 COPILOT_SUMMARY_FILENAME = "copilot.json"
@@ -68,8 +68,10 @@ MAX_PLACES_PRINTED = 60
 MIN_QUOTED_EVENTS = 2
 MAX_DAYS_BACK = 365
 
-DOCUMENT_MODALITIES = frozenset({Modality.SCANNED_DOCUMENT, Modality.PDF})
 NO_CORPUS = "no accepted incident was read, so the question was never searched"
+NOT_A_RECORD_QUESTION = (
+    "the question asks nothing these records were filed to answer, so no answer was sought from them"
+)
 
 TAMIL_LOW = 0x0B80
 TAMIL_HIGH = 0x0BFF
@@ -81,8 +83,8 @@ class QuestionIntent(str, Enum):
     PERIOD_CHANGE = "period_change"
     SUPPORTING_EVIDENCE = "supporting_evidence"
     DEPARTMENT_LOAD = "department_load"
-    DOCUMENT_EVIDENCE = "document_evidence"
     COUNTING = "counting"
+    GENERAL = "general"
     OTHER = "other"
 
 
@@ -91,6 +93,7 @@ CATEGORY_TOKENS = ", ".join(item.value for item in IncidentCategory)
 TYPE_TOKENS = ", ".join(item.value for item in EventType)
 DEPARTMENT_TOKENS = ", ".join(item.value for item in Department)
 SEVERITY_TOKENS = ", ".join(item.value for item in SeverityLevel)
+PRIORITY_TOKENS = ", ".join(item.value for item in PriorityLevel)
 STATUS_TOKENS = ", ".join(item.value for item in EventStatus)
 
 
@@ -208,11 +211,17 @@ ASK_RULES = "\n".join(
         "2. intent is one of: " + INTENT_TOKENS + ". Choose repeated_areas when the question asks where the "
         "same problem keeps happening, open_followups when it asks what still needs action, period_change "
         "when it compares one period with another, supporting_evidence when it asks which reports back a "
-        "claim, department_load when it names a department, document_evidence when it asks about uploaded "
-        "documents, counting when it asks how many or which, other when none of these fit.",
+        "claim, department_load when it names a department, counting when it asks how many or which, general "
+        "when the question asks nothing about what these records would carry, whatever language it is "
+        "written in - a greeting, a courtesy, what you yourself are or can do, or a fact about the wider "
+        "world such as how many countries there are or who holds a national office - and other when none of "
+        "these fit. A question about how things stand in this district, its situation, what is going on here "
+        "or what needs attention is about these records and never general: choose other, leave places out and "
+        "let the whole corpus be searched.",
         "3. places: copy the place wording the question uses. Only add a place the question names, and never "
         "add a district, taluk or ward it leaves out.",
-        "4. category, incident_type, department and min_severity take one token from the lists printed below. "
+        "4. category, incident_type, department, min_severity and min_priority take one token from the lists "
+        "printed below. "
         "Leave one out when the question does not ask for it, and never infer a department from a kind of "
         "problem.",
         "5. days_back is how many days of records the question needs, counted back from the newest dated "
@@ -226,6 +235,12 @@ ASK_RULES = "\n".join(
         "guess narrows the search wrongly.",
         "9. confidence is how sure you are of the search you set, from 0.0 to 1.0; answer below 0.5 when "
         "guessing.",
+        "10. An earlier question from the same conversation is printed above only when there is one. This "
+        "question may then be nothing but a request about its answer - more detail, the same answer in "
+        "another language, a longer or shorter period, one part of it, or what to do about it. When it is, "
+        "set follow_up true and read the two questions as one: set every field above from the earlier "
+        "question, changing only what this one changes. When it asks about something else, or greets, or is "
+        "a question of general knowledge, leave follow_up out.",
     )
 )
 
@@ -239,9 +254,11 @@ class InterpretationDraft(BaseModel):
     incident_type: Optional[str] = None
     department: Optional[str] = None
     min_severity: Optional[str] = None
+    min_priority: Optional[str] = None
     days_back: Optional[int] = None
     compare: Optional[bool] = None
     understood: Optional[str] = None
+    follow_up: Optional[bool] = None
     confidence: Optional[float] = None
 
 
@@ -320,6 +337,7 @@ class Interpretation(StrictModel):
     places_asked: list[str] = Field(default_factory=list)
     places_matched: list[str] = Field(default_factory=list)
     understood: Optional[str] = None
+    follow_up: bool = False
     findings: list[str] = Field(default_factory=list)
     confidence: Confidence
     review: ReviewState
@@ -469,7 +487,6 @@ class Answer(StrictModel):
     only_in_previous: list[str] = Field(default_factory=list)
     followups: list[OpenFollowUp] = Field(default_factory=list)
     recorded: list[RecordedResponse] = Field(default_factory=list)
-    document_records: list[str] = Field(default_factory=list)
     numbers: list[str] = Field(default_factory=list)
     citations: list[AnswerCitation] = Field(default_factory=list)
     statements: list[AnswerStatement] = Field(default_factory=list)
@@ -648,12 +665,6 @@ def rows_of(units: Sequence[Unit], limit: int) -> list[Row]:
     return rows
 
 
-def is_document(incident: Incident) -> bool:
-    if incident.provenance.source_type == DOCUMENT_SOURCE_TYPE:
-        return True
-    return any(item.modality in DOCUMENT_MODALITIES for item in incident.evidence)
-
-
 def value_line(values: Iterable[Any]) -> str:
     named = sorted({clean(getattr(item, "value", item)) for item in values if clean(getattr(item, "value", item))})
     return ", ".join(named) or "none"
@@ -686,11 +697,11 @@ class Corpus:
     latest: Optional[datetime] = None
     latest_basis: str = "none"
     undated: int = 0
-    document_records: list[str] = field(default_factory=list)
     categories: set[IncidentCategory] = field(default_factory=set)
     types: set[EventType] = field(default_factory=set)
     departments: set[Department] = field(default_factory=set)
     severities: set[SeverityLevel] = field(default_factory=set)
+    priorities: set[PriorityLevel] = field(default_factory=set)
     statuses: set[str] = field(default_factory=set)
 
     @property
@@ -726,13 +737,11 @@ def corpus_of(pool: Sequence[Incident], links: Sequence[EventLink]) -> Corpus:
         latest=latest,
         latest_basis=basis,
         undated=len([unit for unit in units if unit.when is None]),
-        document_records=sorted(
-            {incident.provenance.record_id for incident in pool if is_document(incident)}
-        ),
         categories=union_of(units, "categories"),
         types=union_of(units, "types"),
         departments=union_of(units, "departments"),
         severities=union_of(units, "severities"),
+        priorities=union_of(units, "priorities"),
         statuses=status_values(units),
     )
 
@@ -754,7 +763,6 @@ class Retrieved:
     recorded: list[RecordedResponse] = field(default_factory=list)
     status_unstated: int = 0
     status_unquoted: int = 0
-    document_records: list[str] = field(default_factory=list)
     undated: int = 0
     outside_window: int = 0
     truncated: int = 0
@@ -829,14 +837,6 @@ def search(
         truncated=len(ordered) - len(shown),
         undated=len([unit for unit in units if unit.when is None]),
         anchor=anchor,
-        document_records=sorted(
-            {
-                incident.provenance.record_id
-                for unit in ordered
-                for incident in unit.incidents
-                if is_document(incident)
-            }
-        ),
     )
     found.outside_window = len(units) - len(ordered)
     found.areas, found.precision = areas_of(ordered)
@@ -910,11 +910,17 @@ def ask_lines(
     corpus: Corpus,
     families: Sequence[IssueFamily],
     measured: Sequence[Trend],
+    previous: Optional[str] = None,
 ) -> list[str]:
     named = corpus.vocabulary
     shown_names = named[:MAX_PLACES_PRINTED]
     lines = [
         f"Question: {question}",
+        *(
+            [f"Earlier in this conversation, the same person asked: {clean(previous)}"]
+            if clean(previous)
+            else []
+        ),
         f"The question uses {script.value} characters.",
         f"The records read hold {len(corpus.units)} distinct event(s) from {corpus.incidents} accepted "
         f"incident(s) in {corpus.records} record(s) filed by {corpus.sources} publisher(s).",
@@ -929,9 +935,8 @@ def ask_lines(
         "event types here: " + value_line(corpus.types),
         "departments here: " + value_line(corpus.departments),
         "severities here: " + value_line(corpus.severities),
+        "priorities here: " + value_line(corpus.priorities),
         "statuses here: " + (", ".join(sorted(corpus.statuses)) or "none"),
-        f"{len(corpus.document_records)} record(s) here came from a document read locally rather than the "
-        "live records endpoint.",
     ]
     if families:
         lines.append(
@@ -953,7 +958,7 @@ def ask_lines(
     lines += [
         "Set the search with these fields only, each taking one token from the lists below: "
         f"category: {CATEGORY_TOKENS}; incident_type: {TYPE_TOKENS}; department: {DEPARTMENT_TOKENS}; "
-        f"min_severity: {SEVERITY_TOKENS}.",
+        f"min_severity: {SEVERITY_TOKENS}; min_priority: {PRIORITY_TOKENS}.",
         "No record content is printed here: set how to look, do not answer.",
     ]
     return lines
@@ -965,10 +970,11 @@ def interpret_request(
     corpus: Corpus,
     families: Sequence[IssueFamily],
     measured: Sequence[Trend],
+    previous: Optional[str] = None,
 ) -> LLMRequest:
     return LLMRequest(
         system=ASK_RULES,
-        user="\n".join(ask_lines(question, script, corpus, families, measured)),
+        user="\n".join(ask_lines(question, script, corpus, families, measured, previous)),
         json_schema=ASK_SCHEMA,
         meta={"answer_id": answer_id_for(question), "prompt_version": COPILOT_PROMPT_VERSION},
     )
@@ -986,17 +992,13 @@ def event_block(index: int, unit: Unit, rows: Sequence[Row]) -> list[str]:
     lines.append("category: " + (value_line(unit.categories) if unit.categories else "not stated"))
     lines.append("department: " + (value_line(unit.departments) if unit.departments else "not stated"))
     lines.append("severity: " + (value_line(unit.severities) if unit.severities else "not stated"))
+    lines.append("priority: " + (value_line(unit.priorities) if unit.priorities else "not stated"))
     lines.append(
         "places: "
         + (", ".join(f"{name} ({kind.value})" for name, kind, _ids in unit.areas) or "none named")
     )
     statuses = [f"{key}: {value[0]}" for key, value in sorted(unit.statuses.items())]
     lines.append("recorded status: " + ("; ".join(statuses) if statuses else "none recorded"))
-    documents = sorted({row.record_id for row in own if is_document(row.incident)})
-    lines.append(
-        "from: "
-        + (f"a document read locally ({', '.join(documents)})" if documents else "the records endpoint")
-    )
     lines.append("evidence:")
     lines += [f"[{row.evidence.evidence_id}] {row.record_id} {row.evidence.field}: {row.evidence.quote}" for row in own]
     return lines
@@ -1082,13 +1084,6 @@ def answer_lines(
         f"{len(retrieved.recorded)} carry a recorded action or resolution, {retrieved.status_unstated} state "
         f"no status the record evidenced, {retrieved.status_unquoted} state one with no words to quote."
     )
-    if retrieved.document_records:
-        summary.append(
-            f"{len(retrieved.document_records)} matched record(s) came from a document read locally: "
-            + ", ".join(retrieved.document_records)
-        )
-    if interpretation.intent is QuestionIntent.DOCUMENT_EVIDENCE and not retrieved.document_records:
-        summary.append("None of the matched records came from a document.")
     saved = saved_lines(families, measured)
     blocks: list[str] = []
     counted = list(summary)
@@ -1166,6 +1161,7 @@ def build_interpretation(
     incident_type: Optional[EventType] = None
     department: Optional[Department] = None
     min_severity: Optional[SeverityLevel] = None
+    min_priority: Optional[PriorityLevel] = None
     method = ExtractionMethod.UNRESOLVED
     if draft is None:
         findings.append("the question was never read into a search, so nothing was retrieved for it")
@@ -1194,6 +1190,7 @@ def build_interpretation(
         incident_type = token(draft.incident_type, EventType, "incident_type", findings)
         department = token(draft.department, Department, "department", findings)
         min_severity = token(draft.min_severity, SeverityLevel, "min_severity", findings)
+        min_priority = token(draft.min_priority, PriorityLevel, "min_priority", findings)
         if draft.days_back is not None:
             if not 1 <= draft.days_back <= MAX_DAYS_BACK:
                 findings.append(
@@ -1240,12 +1237,14 @@ def build_interpretation(
             incident_type=incident_type,
             department=department,
             min_severity=min_severity,
+            min_priority=min_priority,
         ),
         days_back=days_back,
         compare=compare,
         places_asked=places,
         places_matched=matched,
         understood=understood,
+        follow_up=bool(draft is not None and draft.follow_up),
         findings=findings,
         confidence=confidence,
         review=review,
@@ -1507,7 +1506,6 @@ def build_answer(
         only_in_previous=retrieved.only_in_previous,
         followups=retrieved.followups,
         recorded=retrieved.recorded,
-        document_records=retrieved.document_records,
         numbers=sorted(allowed, key=lambda item: int(item)),
         citations=citations,
         statements=statements,
@@ -1572,7 +1570,6 @@ class AskReport:
     sources: int = 0
     units: int = 0
     undated: int = 0
-    document_records: int = 0
     skipped_review: int = 0
     families: int = 0
     measured: int = 0
@@ -1625,11 +1622,6 @@ class AskReport:
                 f"{self.undated} distinct event(s) carry no date the record gave, so they fall in no window "
                 "and answer no question about a period"
             )
-        if not self.document_records:
-            lines.append(
-                "no record here came from a document read locally, so a question about uploaded documents "
-                "has nothing to answer from"
-            )
         if not self.families:
             lines.append(
                 "no saved recurring issue was available, so a question about repetition was answered from "
@@ -1676,7 +1668,6 @@ class AskReport:
             "Publishers": self.sources,
             "Distinct events": self.units,
             "Events with no date": self.undated,
-            "Document records": self.document_records,
             "Left out (waiting for a person)": self.skipped_review,
             "Saved recurring issues": self.families,
             "Measured increases": self.measured,
@@ -1703,6 +1694,7 @@ def ask_copilot(
     store: Optional[AnswerStore] = None,
     max_requests: int = MAX_QUESTIONS_PER_RUN,
     now: Optional[datetime] = None,
+    previous: Optional[str] = None,
 ) -> AskReport:
     every = list(incidents)
     filed = [item for item in every if item.record_kind is RecordKind.INCIDENT]
@@ -1725,7 +1717,6 @@ def ask_copilot(
         sources=corpus.sources,
         units=len(corpus.units),
         undated=corpus.undated,
-        document_records=len(corpus.document_records),
         skipped_review=len([item for item in filed if item.review_required]),
         families=len(grouped),
         measured=len(measured),
@@ -1743,7 +1734,9 @@ def ask_copilot(
     for question in unique:
         answer_id = answer_id_for(question)
         script = script_of(question)
-        ask_request = interpret_request(question, script, corpus, grouped, measured)
+        ask_request = interpret_request(
+            question, script, corpus, grouped, measured, previous if question is unique[0] else None
+        )
         ask_shown = shown_hash(ask_request)
         read = store.reusable_read(answer_id, ask_shown) if store is not None else None
         if read is not None:
@@ -1787,10 +1780,16 @@ def ask_copilot(
                 shown=ask_shown,
                 decided_at=decided_at,
             )
-        retrieved = search(corpus, interpretation, links)
-        answer_req, counted = answer_request(
-            question, interpretation, retrieved, grouped, measured, deduplicated=report.deduplicated
-        )
+        general = interpretation.intent is QuestionIntent.GENERAL
+        if general:
+            retrieved = Retrieved()
+            # An empty request hashes stable, so a saved general refusal is reused like any other answer.
+            answer_req, counted = LLMRequest(system="", user=""), []
+        else:
+            retrieved = search(corpus, interpretation, links)
+            answer_req, counted = answer_request(
+                question, interpretation, retrieved, grouped, measured, deduplicated=report.deduplicated
+            )
         answer_shown = shown_hash(answer_req)
         report.truncated += retrieved.truncated
         saved = store.reusable(answer_id, ask_shown, answer_shown) if store is not None else None
@@ -1801,7 +1800,10 @@ def ask_copilot(
         extras = []
         draft = None
         provider = model = ""
-        if interpretation.method is not ExtractionMethod.LLM:
+        if general:
+            extras.append(NOT_A_RECORD_QUESTION)
+            missing = NOT_A_RECORD_QUESTION
+        elif interpretation.method is not ExtractionMethod.LLM:
             extras.append("the question was never read into a search, so no answer was sought for it")
         elif retrieved.empty_reason:
             extras.append(retrieved.empty_reason)
@@ -1969,8 +1971,6 @@ def print_answers(report: AskReport, *, detailed: bool = False, stream: Any = No
                 f"{len(answer.recorded)}, no status evidenced: {answer.status_unstated}",
                 file=out,
             )
-        if answer.document_records:
-            print(f"     from documents: {', '.join(answer.document_records)}", file=out)
         if answer.explanation is not None and answer.explanation.headline:
             print(
                 f"     answer: {answer.explanation.headline} (confidence "
@@ -2051,7 +2051,6 @@ __all__ = [
     "COPILOT_PROMPT_VERSION",
     "COPILOT_SUMMARY_FILENAME",
     "Corpus",
-    "DOCUMENT_MODALITIES",
     "Drafted",
     "Interpretation",
     "InterpretationDraft",
@@ -2062,6 +2061,7 @@ __all__ = [
     "MAX_STATEMENTS",
     "MIN_QUOTED_EVENTS",
     "NO_CORPUS",
+    "NOT_A_RECORD_QUESTION",
     "QuestionIntent",
     "QuestionScript",
     "Retrieved",
@@ -2081,7 +2081,6 @@ __all__ = [
     "digit_set",
     "event_block",
     "interpret_request",
-    "is_document",
     "norm",
     "picked_evidence",
     "picked_events",
