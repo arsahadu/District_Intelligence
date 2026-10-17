@@ -19,3 +19,14 @@ data/normalized/*
 
 node_modules/
 dist/
+build/
+
+# Generated local artifacts
+ingestion/lambda_package/
+ingestion/lambda_package.zip
+tmp/intelligence-e2e/
+
+# Local database backups
+postgres-volume-backup.tar.gz
+# macOS
+.DS_Store

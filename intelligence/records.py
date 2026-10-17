@@ -276,21 +276,30 @@ def _text(value: Any, path: str, obj: Any) -> str:
     )
 
 
+
 def _moment(value: Any, path: str, obj: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day)
     if isinstance(value, str):
+        candidate = value.strip()
+
+        # Python 3.10 compatibility: normalize UTC "Z" suffix.
+        if candidate.endswith("Z"):
+            candidate = candidate[:-1] + "+00:00"
+
         try:
-            return datetime.fromisoformat(value)
+            return datetime.fromisoformat(candidate)
         except ValueError as error:
             raise RecordShapeError(
                 f"{_describe(obj)} field {path!r} is not an ISO timestamp: {error}"
             ) from error
+
     raise RecordShapeError(
         f"{_describe(obj)} field {path!r} must be a datetime, got {type(value).__name__}"
     )
+
 
 
 def declared_precision(value: Any) -> Optional[TimePrecision]:
