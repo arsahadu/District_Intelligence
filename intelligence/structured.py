@@ -26,7 +26,7 @@ TITLE_PATH = "title"
 
 PROVIDER = "intelligence.structured"
 MODEL = "none"
-MAPPING_VERSION = "structured-3"
+MAPPING_VERSION = "structured-4"
 NO_MODEL = "no language model was called: every value here was copied from the record's own fields"
 NO_EVENT_FIELDS = (
     "incident_type, category, department, severity, priority and event_status each answer a "

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import AppLayout from './components/AppLayout.jsx'
+import ChatWidget from './components/ChatWidget.jsx'
 import IncidentDetailPanel from './components/IncidentDetailPanel.jsx'
 import GovernmentDocuments from './pages/GovernmentDocuments.jsx'
 import Dashboard from './pages/Dashboard.jsx'
@@ -39,6 +40,7 @@ function App() {
   const navigate = useCallback((nextView, selection = null) => {
     const url = new URL(window.location.href)
     url.searchParams.set('view', nextView)
+
     if (selection?.recordKind && selection?.recordId) {
       url.searchParams.set('recordKind', selection.recordKind)
       url.searchParams.set('recordId', selection.recordId)
@@ -46,25 +48,30 @@ function App() {
       url.searchParams.delete('recordKind')
       url.searchParams.delete('recordId')
     }
+
     window.history.pushState(null, '', `${url.pathname}${url.search}${url.hash}`)
     setView(nextView)
   }, [])
 
   useEffect(() => {
     const syncView = () => setView(viewFromLocation())
+
     window.addEventListener('popstate', syncView)
     return () => window.removeEventListener('popstate', syncView)
   }, [])
 
   useEffect(() => {
     let active = true
+
     async function loadIncidents() {
       setStatus('loading')
       setConnection('loading')
       setError('')
+
       try {
         const data = await getIncidents()
         if (!active) return
+
         const incidentDocuments = data.filter(isIncidentRecord)
         setIncidents(data)
         setStatus(incidentDocuments.length ? 'ready' : 'empty')
@@ -76,53 +83,66 @@ function App() {
         }).format(new Date()))
       } catch {
         if (!active) return
+
         setStatus('error')
         setConnection('disconnected')
         setError('Incident information is temporarily unavailable. Please try again.')
       }
     }
+
     void loadIncidents()
     return () => { active = false }
   }, [refreshKey])
 
   useEffect(() => {
     let active = true
+
     async function loadCommonRecords() {
       setCommonRecordStatus('loading')
       setCommonRecordError('')
+
       try {
         const data = await getRecords()
         if (!active) return
+
         setCommonRecords(data)
         setCommonRecordStatus('ready')
       } catch {
         if (!active) return
+
         setCommonRecordStatus('error')
         setCommonRecordError('District information is temporarily unavailable. Please try again.')
       }
     }
+
     void loadCommonRecords()
     return () => { active = false }
   }, [refreshKey])
 
   useEffect(() => {
     if (!selectedId) return undefined
+
     let active = true
+
     async function loadIncident() {
       setDetailStatus('loading')
       setSelectedIncident(null)
       setDetailError('')
+
       try {
         const incident = await getIncident(selectedId)
         if (!active) return
+
         setSelectedIncident(incident)
         setDetailStatus('ready')
       } catch {
         if (!active) return
+
         setDetailStatus('error')
         setDetailError('Incident details are temporarily unavailable. Please try again.')
       }
     }
+
     void loadIncident()
     return () => { active = false }
   }, [selectedId, detailRetryKey])
@@ -132,18 +152,23 @@ function App() {
     setSelectedIncident(null)
     window.requestAnimationFrame(() => returnFocus.current?.focus())
   }, [])
+
   const retryDetails = useCallback(() => {
     setDetailRetryKey((current) => current + 1)
   }, [])
+
   const refresh = useCallback(() => {
     setRefreshKey((current) => current + 1)
   }, [])
+
   const selectIncident = useCallback((incidentId) => {
     returnFocus.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null
+
     setSelectedId(incidentId)
   }, [])
+
   const selectMapRecord = useCallback((recordKind, recordId) => {
     setSelectedId(null)
     setSelectedIncident(null)
@@ -177,9 +202,11 @@ function App() {
             onNavigate={navigate}
           />
         </div>
+
         {view === 'documents' ? <GovernmentDocuments /> : null}
         {view === 'map' ? <GISMapView onSelectIncident={selectIncident} /> : null}
       </AppLayout>
+
       {selectedId ? (
         <IncidentDetailPanel
           incident={selectedIncident}
@@ -190,6 +217,8 @@ function App() {
           onSelectMapRecord={selectMapRecord}
         />
       ) : null}
+
+      <ChatWidget />
     </>
   )
 }

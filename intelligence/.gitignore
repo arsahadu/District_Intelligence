@@ -3,7 +3,8 @@
 !.env.example
 __pycache__/
 
-# Bulk-run progress: results.jsonl and checkpoint.json land here when --state-dir is used.
+# Bulk-run progress: a --state-dir holds results.jsonl and checkpoint.json, plus posted.json,
+# ingested.json and the link/issue/trend artifacts when those passes are asked for.
 runs/
 /tests/state-agri-manual-test/
 /tests/state-agri-verify-stage230/

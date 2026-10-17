@@ -210,8 +210,8 @@ def silent(incidents: Sequence[Incident], **fields: Any) -> BriefReport:
 
 
 def test_the_briefing_prompt_is_pinned_and_puts_every_measure_before_the_model():
-    assert BRIEF_PROMPT_VERSION == "brief-1"
-    assert BRIEF_PROMPT_DIGEST == "0b6f0fefb6212216"
+    assert BRIEF_PROMPT_VERSION == "brief-2"
+    assert BRIEF_PROMPT_DIGEST == "ab6db9ec4909d6a2"
     for phrase in (
         "Every count, total, date, window, place list and status printed was measured from the records",
         "Never write a number that is not printed above",
@@ -238,7 +238,7 @@ def test_the_briefing_prompt_is_pinned_and_puts_every_measure_before_the_model()
 def test_the_request_prints_only_what_the_pipeline_measured():
     judge, report = asked()
     user = judge.asked[0].user
-    assert judge.asked[0].meta == {"prompt_version": "brief-1", "period": "2026-07-21..2026-09-28"}
+    assert judge.asked[0].meta == {"prompt_version": "brief-2", "period": "2026-07-21..2026-09-28"}
     assert (
         "Period: 2026-07-21..2026-09-28 - 70 day(s) counted back from 2026-09-28, the newest dated "
         "record here (its date read from event_time)." in user
@@ -700,11 +700,11 @@ def test_a_line_that_copies_digits_out_of_an_item_identifier_is_left_out():
 
 
 def test_a_section_the_period_measured_nothing_for_cannot_be_written():
-    _, report = asked(drafting(lines=lambda seen: [situation(seen["events"], seen["quoted"], section="documents")]))
+    _, report = asked(drafting(lines=lambda seen: [situation(seen["events"], seen["quoted"], section="recurring")]))
     brief = one(report)
     assert brief.lines == []
     assert any(
-        "a documents line was written although nothing was measured for that section" in line
+        "a recurring line was written although nothing was measured for that section" in line
         for line in brief.findings
     )
 
@@ -1056,7 +1056,7 @@ def test_the_summary_file_holds_the_briefing_and_the_document_a_component_would_
     judge, report = asked(three(), days_back=DAYS)
     BriefStore(tmp_path).save(report)
     summary = json.loads((tmp_path / BRIEF_SUMMARY_FILENAME).read_text(encoding="utf-8"))
-    assert summary["prompt_version"] == "brief-1"
+    assert summary["prompt_version"] == "brief-2"
     assert summary["prompt_digest"] == BRIEF_PROMPT_DIGEST
     assert summary["period"] == "2026-07-21..2026-09-28"
     assert summary["counts"]["Distinct events"] == 3
@@ -1137,7 +1137,7 @@ def test_the_console_prints_the_briefing_and_the_limits_a_reader_needs():
     out = io.StringIO()
     print_briefings(report, stream=out)
     printed = out.getvalue()
-    assert f"District briefing (brief-1, {BRIEF_PROMPT_DIGEST}, incident contract 2.0)" in printed
+    assert f"District briefing (brief-2, {BRIEF_PROMPT_DIGEST}, incident contract 2.0)" in printed
     assert "  Period: 2026-07-21..2026-09-28" in printed
     assert "  Distinct events: 3" in printed
     assert "  Suggested actions: 1" in printed
@@ -1212,7 +1212,7 @@ def test_the_console_writes_one_district_briefing_over_the_records_it_read(tmp_p
     code = main(argv, provider=judge, environ={}, transport=responder(listing(*records)))
     printed = capsys.readouterr().out
     assert code == EXIT_OK, printed
-    assert f"District briefing (brief-1, {BRIEF_PROMPT_DIGEST}" in printed
+    assert f"District briefing (brief-2, {BRIEF_PROMPT_DIGEST}" in printed
     assert "  Distinct events: 5" in printed
     assert "  Briefing drafted: 1" in printed
     assert "  suggested (follow_up, briefing):" in printed
@@ -1395,7 +1395,6 @@ def test_the_counts_a_briefing_prints_are_the_counts_the_pipeline_made():
     assert counts["Events outside the period"] == brief.outside_period
     assert counts["Open with a quote"] == len(brief.open_followups)
     assert counts["Action or resolution recorded"] == len(brief.recorded_responses)
-    assert counts["Document records"] == len(brief.document_records)
     assert counts["Suggested actions"] == len(brief.actions)
     assert isinstance(brief.filters, Filters)
     assert brief.schema_version == "2.0"

@@ -8,8 +8,9 @@ from typing import Any, Callable
 import pytest
 from pydantic import ValidationError
 
+from intelligence.chat import GENERAL_PROMPT_VERSION, ROUTE_PROMPT_VERSION
 from intelligence.checkpoint import CheckpointError
-from intelligence.contract import Incident, RecordKind, ReviewState
+from intelligence.contract import Incident, PriorityLevel, RecordKind, ReviewState
 from intelligence.copilot import (
     ANSWER_PROMPT_DIGEST,
     ANSWER_PROMPT_VERSION,
@@ -22,7 +23,6 @@ from intelligence.copilot import (
     COPILOT_PROMPT_DIGEST,
     COPILOT_PROMPT_VERSION,
     COPILOT_SUMMARY_FILENAME,
-    DOCUMENT_MODALITIES,
     MAX_DAYS_BACK,
     MAX_EVENTS_SHOWN,
     MAX_PLACES_PRINTED,
@@ -30,6 +30,7 @@ from intelligence.copilot import (
     MAX_STATEMENTS,
     MIN_QUOTED_EVENTS,
     NO_CORPUS,
+    NOT_A_RECORD_QUESTION,
     Answer,
     AnswerState,
     AnswerStore,
@@ -46,18 +47,15 @@ from intelligence.copilot import (
     corpus_of,
     digit_runs,
     event_block,
-    is_document,
     print_answers,
     rows_of,
     script_of,
     search,
     unknown_digits,
 )
-from intelligence.documents import DOCUMENT_SOURCE_TYPE, parse_tsv
 from intelligence.fallback import Chain
 from intelligence.llm import LLMError, LLMRequest, QuotaExhaustedError
 from intelligence.linking import eligible, link_incidents
-from intelligence.models.enums import Modality
 from intelligence.pipeline import (
     ENV_API_BASE_URL,
     EXIT_CHECKPOINT,
@@ -67,9 +65,8 @@ from intelligence.pipeline import (
     main,
 )
 from intelligence.recurrence import Filters, recurring_issues
-from intelligence.tests.builders import listing, responder, unreachable, water_answer
+from intelligence.tests.builders import listing, responder, water_answer
 from intelligence.tests.record_fixtures import waterlogging
-from intelligence.tests.test_documents import ENGINES, NOTICE_TSV, engines, flood_answer, scan
 from intelligence.tests.test_linking import NOW, Answering
 from intelligence.tests.test_recurrence import flood, supply, undated
 from intelligence.tests.test_trends import RECENT, merged, reading, steady
@@ -78,7 +75,6 @@ from intelligence.trends import emerging_trends
 TA_ASK = "சோழவந்தானில் வெள்ளம் மீண்டும் வந்த பகுதிகள் எவை?"
 EN_ASK = "Which areas have reported repeated flooding?"
 MIXED_ASK = "In Sholavandan, what days reported வெள்ளம்?"
-DOC_ASK = "Summarize the evidence from these uploaded documents."
 FLOODED = "சோழவந்தான் கிராமத்தில் வைகை ஆற்று வெள்ளம் 40 வீடுகளை மூழ்கடித்தது"
 COUNTED = "ஒரே ஊரில் வெள்ளம் பல முற பதிவாகியுளளது"
 
@@ -149,13 +145,35 @@ def never() -> Callable[[LLMRequest], dict[str, Any]]:
     return answer
 
 
-def answering(question_read: Any, answer_said: Any) -> Callable[[LLMRequest], dict[str, Any]]:
+def answering(
+    question_read: Any,
+    answer_said: Any,
+    background: Any = None,
+    route: Any = None,
+) -> Callable[[LLMRequest], dict[str, Any]]:
     def answer(request: LLMRequest) -> dict[str, Any]:
         version = request.meta.get("prompt_version")
+        if version == ROUTE_PROMPT_VERSION:
+            decided = {"needs_records": True, "general": False, "confidence": 0.9}
+            if route is None:
+                return decided
+            return route(request) if callable(route) else route
         if version == COPILOT_PROMPT_VERSION:
             return question_read(request) if callable(question_read) else question_read
         if version == ANSWER_PROMPT_VERSION:
             return answer_said(request) if callable(answer_said) else answer_said
+        if version == GENERAL_PROMPT_VERSION:
+            body: dict[str, Any] = {
+                "answerable": False,
+                "district_claims": False,
+                "headline": "",
+                "lines": [],
+                "needs_records": "the question is about this district and only its records answer it",
+                "confidence": 0.9,
+            }
+            if background is None:
+                return body
+            return background(request) if callable(background) else background
         raise AssertionError(f"the copilot sent a request from prompt {version!r}")
 
     return answer
@@ -205,22 +223,20 @@ def interpretation_of(draft: InterpretationDraft, pool: Any, **fields: Any) -> A
     )
 
 
-def as_document(incident: Incident, modality: Modality = Modality.PDF) -> Incident:
-    copy = incident.model_copy(deep=True)
-    copy.provenance.source_type = DOCUMENT_SOURCE_TYPE
-    for item in copy.evidence:
-        item.modality = modality
-    return copy
-
-
 def test_the_two_copilot_prompts_are_pinned_and_ask_for_no_number_of_its_own():
-    assert (COPILOT_PROMPT_VERSION, ANSWER_PROMPT_VERSION) == ("copilot-1", "answer-1")
-    assert COPILOT_PROMPT_DIGEST == "3b3af481362e31d4"
+    assert (COPILOT_PROMPT_VERSION, ANSWER_PROMPT_VERSION) == ("copilot-6", "answer-1")
+    assert COPILOT_PROMPT_DIGEST == "d72ed86219d64762"
     assert ANSWER_PROMPT_DIGEST == "20ba0d754c1c4750"
     for phrase in (
         "The question may be Tamil, English or a mix of both",
         "counted back from the newest dated record the pipeline holds",
         "Never write a date yourself",
+        "general when the question asks nothing about what these records would carry, whatever language it "
+        "is written in",
+        "A question about how things stand in this district, its situation, what is going on here or what "
+        "needs attention is about these records and never general",
+        "set follow_up true and read the two questions as one",
+        "category, incident_type, department, min_severity and min_priority take one token",
     ):
         assert phrase in ASK_RULES
     for phrase in (
@@ -234,8 +250,8 @@ def test_the_two_copilot_prompts_are_pinned_and_ask_for_no_number_of_its_own():
     ):
         assert phrase in ANSWER_RULES
     assert sorted(ASK_SCHEMA["properties"]) == [
-        "category", "compare", "confidence", "days_back", "department", "incident_type",
-        "intent", "min_severity", "places", "understood",
+        "category", "compare", "confidence", "days_back", "department", "follow_up", "incident_type",
+        "intent", "min_priority", "min_severity", "places", "understood",
     ]
     assert sorted(ANSWER_SCHEMA["properties"]) == [
         "caveats", "confidence", "events", "evidence", "headline", "saved", "statements",
@@ -246,6 +262,29 @@ def test_the_two_copilot_prompts_are_pinned_and_ask_for_no_number_of_its_own():
     assert "No record content is printed here: set how to look, do not answer." in ask.user
     assert "சோழவந்தான் கிராமத்தில் வைகை" not in ask.user
     assert ask.meta == {"answer_id": answer_id_for(EN_ASK), "prompt_version": COPILOT_PROMPT_VERSION}
+
+
+def test_the_read_is_shown_the_question_that_came_before_it():
+    judge, _ = asked(three(), [EN_ASK], read(), said(), previous="and what about the roads?")
+    lines = judge.asked[0].user.splitlines()
+    assert lines[0] == f"Question: {EN_ASK}"
+    assert lines[1] == "Earlier in this conversation, the same person asked: and what about the roads?"
+    assert lines[2] == "The question uses latin characters."
+    plain = asked(three(), [EN_ASK], read(), said())[0].asked[0].user
+    assert "Earlier in this conversation" not in plain
+    blank = asked(three(), [EN_ASK], read(), said(), previous="   ")[0].asked[0].user
+    assert blank == plain
+
+
+def test_a_read_that_declares_a_follow_up_is_one_and_a_silent_read_is_not():
+    declared = interpretation_of(
+        InterpretationDraft.model_validate(read(follow_up=True)), three()
+    )
+    assert declared.follow_up is True
+    silent = interpretation_of(InterpretationDraft.model_validate(read()), three())
+    assert silent.follow_up is False
+    refused = interpretation_of(None, three())
+    assert refused.follow_up is False
 
 
 def test_a_tamil_an_english_and_a_mixed_question_are_labelled_as_written():
@@ -479,6 +518,31 @@ def test_a_severity_a_category_and_a_department_the_question_names_narrow_the_se
     assert asked_versions(judge) == [COPILOT_PROMPT_VERSION]
 
 
+def test_a_priority_the_question_names_narrows_to_the_records_that_stated_one():
+    corpus = [*three(), supply(record_id="NEWS-SUP", priority="high", priority_quote="நான்கு வாரமாக")]
+    judge, report = asked(
+        corpus,
+        [EN_ASK],
+        read(places=["கருங்காலக்குடி"], min_priority="high"),
+        said(),
+    )
+    answer = report.answers[0]
+    assert answer.interpretation.filters.min_priority is PriorityLevel.HIGH
+    assert answer.events == 1 and answer.state is AnswerState.GROUNDED
+    assert "priority at least high" in answer.interpretation.filters.describe()
+    assert "priorities here: high" in judge.asked[0].user.splitlines()
+    assert "priority: high" in judge.asked[1].user.splitlines()
+    _, silent = asked(corpus, [EN_ASK], read(places=["கருங்காலக்குடி"], min_priority="critical"), never())
+    assert silent.answers[0].state is AnswerState.NOT_ANSWERABLE
+    assert any("no accepted incident matches" in line for line in silent.answers[0].findings)
+    broad, shown = asked(corpus, [EN_ASK], read(places=["சோழவந்தான்"]), said())
+    assert "priorities here: high" in broad.asked[0].user.splitlines()
+    assert "priority: not stated" in broad.asked[1].user.splitlines()
+    assert shown.answers[0].interpretation.filters.min_priority is None
+    bare, _ = asked(three(), [EN_ASK], read(), said())
+    assert "priorities here: none" in bare.asked[0].user.splitlines()
+
+
 def test_a_record_that_is_not_an_incident_is_never_answered_from():
     note = flood("NEWS-NOTE", "ஆகஸ்ட் 2 அன்று", "2026-08-02").model_copy(
         update={"record_kind": RecordKind.CONTEXT}
@@ -704,37 +768,6 @@ def test_a_reading_and_a_suggestion_are_kept_apart_from_a_fact():
     out = printed.getvalue()
     assert "a suggestion for a person, never recorded as done" in out
     assert "a reading of the numbers, not a record" in out
-
-
-def test_a_document_question_answers_from_pages_read_locally():
-    docs = [as_document(three()[0]), *three()[1:]]
-    assert is_document(docs[0]) and not is_document(docs[1])
-    assert docs[0].evidence[0].modality in DOCUMENT_MODALITIES
-    judge, report = asked(docs, [DOC_ASK], read(intent="document_evidence"), said())
-    answer = report.answers[0]
-    assert report.document_records == 1 and answer.document_records == ["NEWS-A"]
-    assert answer.state is AnswerState.GROUNDED
-    ask, say = judge.asked[0].user, judge.asked[-1].user
-    assert "1 record(s) here came from a document read locally" in ask
-    assert "1 matched record(s) came from a document read locally: NEWS-A" in say
-    assert "from: a document read locally (NEWS-A)" in say
-    block = event_block(1, corpus_of(eligible([docs[0]]), []).units[0],
-                        rows_of(corpus_of(eligible([docs[0]]), []).units, 10))
-    assert "from: a document read locally (NEWS-A)" in "\n".join(block)
-    assert "from: the records endpoint" in "\n".join(
-        event_block(1, corpus_of(eligible([three()[0]]), []).units[0],
-                    rows_of(corpus_of(eligible([three()[0]]), []).units, 10))
-    )
-
-
-def test_a_document_question_over_news_records_says_the_gap_out_loud():
-    judge, report = asked(three(), [DOC_ASK], read(intent="document_evidence"), said())
-    answer = report.answers[0]
-    assert answer.document_records == []
-    assert "None of the matched records came from a document." in judge.asked[-1].user
-    assert any("a question about uploaded documents has nothing to answer from" in line
-               for line in report.limitations())
-    assert answer.state is AnswerState.GROUNDED
 
 
 def test_a_saved_recurring_issue_and_a_measured_increase_are_citable_by_id():
@@ -1028,32 +1061,32 @@ def test_a_damaged_saved_answer_aborts_the_console_and_keeps_the_file(tmp_path, 
     assert asked_versions(judge) == []
 
 
-def test_the_copilot_answers_from_a_document_read_locally(tmp_path, capsys):
-    page = scan(tmp_path, "panchayat-note.png")
-    text = parse_tsv(NOTICE_TSV)[0].text
-    judge = Answering(document_reading(text))
-    code = main(
-        ["--document", str(page), "--ask", DOC_ASK, "--json"],
-        provider=judge,
-        environ=ENGINES | {ENV_API_BASE_URL: "http://backend.test"},
-        transport=unreachable(AssertionError("a document run never reads GET /records")),
-        document_runner=engines(ocr=NOTICE_TSV),
+def general_read(**changes: Any) -> dict[str, Any]:
+    return read(
+        intent="general", places=[], understood="Not a record question.", confidence=0.95, **changes
     )
-    printed = capsys.readouterr()
-    assert code == EXIT_OK, printed.out + printed.err
-    assert "Document records: 1" in printed.out
-    assert "from documents: DOC-" in printed.out
-    assert "1 matched record(s) came from a document read locally:" in judge.asked[-1].user
-    assert "scanned_document" in printed.out and "data.page_001" in printed.out
 
 
-def document_reading(text: str) -> Callable[[LLMRequest], dict[str, Any]]:
-    def answer(request: LLMRequest) -> dict[str, Any]:
-        version = request.meta.get("prompt_version")
-        if version == COPILOT_PROMPT_VERSION:
-            return read(intent="document_evidence", places=["கருங்காலக்குடி"])
-        if version == ANSWER_PROMPT_VERSION:
-            return said()(request)
-        return flood_answer(text)
+def test_a_question_the_model_calls_general_skips_the_search_and_the_answer_call():
+    judge, report = asked(three(), ["how many countries are there"], general_read(), never())
+    answer = report.answers[0]
+    assert answer.interpretation.intent is QuestionIntent.GENERAL
+    assert answer.state is AnswerState.NOT_ANSWERABLE
+    assert answer.missing == NOT_A_RECORD_QUESTION
+    assert answer.events == 0 and answer.citations == [] and answer.statements == []
+    assert versions(judge) == [COPILOT_PROMPT_VERSION]
+    assert (report.read, report.asked, report.not_asked) == (1, 0, 0)
+    assert not any("never put to a provider" in line for line in report.limitations())
 
-    return answer
+
+def test_a_general_refusal_is_saved_and_reused_because_its_empty_request_hashes_stable(tmp_path):
+    judge, first = asked(three(), ["who is the prime minister of india"], general_read(), never(),
+                         store=AnswerStore(tmp_path).load())
+    assert versions(judge) == [COPILOT_PROMPT_VERSION]
+    assert first.answers[0].shown_hash
+
+    judge, again = asked(three(), ["who is the prime minister of india"], general_read(), never(),
+                         store=AnswerStore(tmp_path).load())
+    assert versions(judge) == []
+    assert (again.reused, again.reused_read, again.read, again.asked) == (1, 1, 0, 0)
+    assert again.answers[0].missing == NOT_A_RECORD_QUESTION

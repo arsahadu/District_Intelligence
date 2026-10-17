@@ -206,10 +206,12 @@ def test_every_source_geography_entry_points_at_the_field_it_copies():
         evidence = incident.resolve_evidence(entry.evidence_ids)
         assert [item.field for item in evidence] == [entry.field]
         assert evidence[0].method is ExtractionMethod.SOURCE_METADATA
-        assert evidence[0].has_span is False
+        assert evidence[0].has_span is True
         held = next(field.text for field in context.geography if field.field == entry.field)
         assert entry.value == held
-        assert revalidate(evidence[0], held)[1].validation is SpanValidation.NOT_APPLICABLE
+        assert evidence[0].quote == held
+        assert (evidence[0].char_start, evidence[0].char_end) == (0, len(held))
+        assert revalidate(evidence[0], held)[1].validation is SpanValidation.VALIDATED
 
     assert Incident.model_validate(incident.to_storage_document()) == incident
 

@@ -4,9 +4,15 @@ from typing import Any
 
 from intelligence.contract import Department, EventStatus, IncidentCategory, IssueCode, RecordKind, ReviewState
 from intelligence.intelligence import extract_incident
-from intelligence.models.enums import EventType, SeverityLevel, TimePrecision
+from intelligence.models.enums import (
+    ExtractionMethod,
+    EventType,
+    SeverityLevel,
+    SpanValidation,
+    TimePrecision,
+)
 from intelligence.tests.builders import CONTENT, Scripted, quote
-from intelligence.tests.record_fixtures import base_record
+from intelligence.tests.record_fixtures import DISTRICT, STATE, base_record
 
 SHOCK_ID = "NEWS-MDU-caf0c933c1a793e2"
 SHOCK_URL = "https://www.dinamalar.com/news/tamil-nadu-district-news-madurai/one-dead/4345173"
@@ -51,8 +57,16 @@ def read(payload: dict[str, Any], record: dict[str, Any] | None = None):
     return extract_incident(record or shock_quotes_record(), provider=Scripted(payload=payload))
 
 
+def field_text(record: dict[str, Any], path: str) -> str:
+    held: Any = record
+    for part in path.split("."):
+        held = held.get(part) if isinstance(held, dict) else None
+    return "" if held is None else str(held)
+
+
 def test_the_electric_shock_quotes_ground_verbatim_in_tamil_and_borrow_no_clock():
-    found = read(shock_answer())
+    record = shock_quotes_record()
+    found = read(shock_answer(), record)
 
     assert found.validation.state is ReviewState.ACCEPTED, found.validation.issues
     assert found.record_kind is RecordKind.INCIDENT
@@ -70,8 +84,11 @@ def test_the_electric_shock_quotes_ground_verbatim_in_tamil_and_borrow_no_clock(
     for item in found.evidence:
         if item.quote is None or item.char_start is None:
             continue
-        text = STORED_QUOTES_ONLY if item.field == CONTENT else SHOCK_TITLE
-        assert text[item.char_start:item.char_end] == item.quote
+        text = field_text(record, item.field)
+        assert text[item.char_start:item.char_end] == item.quote, item.describe()
+    declared = [item for item in found.evidence if item.method is ExtractionMethod.SOURCE_METADATA]
+    assert declared and all(item.span_validation is SpanValidation.VALIDATED for item in declared)
+    assert {item.quote for item in declared} == {DISTRICT, STATE}
     place = found.locations[0]
     assert place.text == SHOCK_PLACE
     assert place.canonical_location_id is None

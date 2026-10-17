@@ -92,57 +92,57 @@ def _parse_datetime(value: Any) -> datetime | None:
 def _normalize_incident_document(document: Any) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Incident payload must be an object",
         )
 
     unknown_fields = sorted(set(document) - _ALLOWED_TOP_LEVEL_FIELDS)
     if unknown_fields:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported Incident field(s): {', '.join(unknown_fields)}",
         )
 
     schema_version = document.get("schema_version")
     if schema_version != SCHEMA_VERSION:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported Incident schema_version {schema_version!r}; expected {SCHEMA_VERSION!r}",
         )
 
     incident_id = document.get("incident_id")
     if not isinstance(incident_id, str) or not incident_id.strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Incident `incident_id` is required",
         )
 
     provenance = document.get("provenance")
     if provenance is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Incident `provenance` is required",
         )
     if not isinstance(provenance, dict):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Incident `provenance` must be an object",
         )
     if not provenance.get("record_id") or not provenance.get("source_id") or not provenance.get("source_type"):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Incident provenance requires `record_id`, `source_id` and `source_type`",
         )
     if provenance is not None:
         if not isinstance(provenance, dict):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Incident `provenance` must be an object",
             )
         unknown_provenance = sorted(set(provenance) - _ALLOWED_PROVENANCE_FIELDS)
         if unknown_provenance:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Unsupported provenance field(s): {', '.join(unknown_provenance)}",
             )
 
@@ -154,7 +154,7 @@ def _record_from_incident(incident: Incident | dict[str, Any]) -> IncidentRecord
     incident_id = document.get("incident_id")
     if not isinstance(incident_id, str):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Incident `incident_id` is required",
         )
 
@@ -224,7 +224,7 @@ def list_incidents(
 ) -> list[dict[str, Any]]:
     if start_date is not None and end_date is not None and start_date > end_date:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="start_date must be on or before end_date",
         )
 

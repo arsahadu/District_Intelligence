@@ -9,13 +9,13 @@ import urllib.error
 import urllib.request
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 from pydantic import ValidationError
 
-from intelligence.api_client import IncidentAPIError, PostResult, PostTransport, post_incident
+from intelligence.api_client import PostTransport
 from intelligence.briefing import (
     DEFAULT_BRIEF_DAYS,
     MAX_BRIEF_DAYS,
@@ -47,15 +47,6 @@ from intelligence.copilot import (
     AskReport,
     ask_copilot,
     print_answers,
-)
-from intelligence.documents import (
-    DEFAULT_LANGUAGES,
-    LANGUAGE_CHOICES,
-    DocumentError,
-    Runner as DocumentRunner,
-    document_record,
-    parse_languages,
-    read_document,
 )
 from intelligence.fallback import (
     ENV_CHAIN_FILE,
@@ -95,6 +86,12 @@ from intelligence.models.enums import (
     SeverityLevel,
     TimePrecision,
 )
+from intelligence.posting import (
+    PostLedger,
+    PostingError,
+    post_all,
+    print_postings,
+)
 from intelligence.records import CONTENT_PATH, MappingError
 from intelligence.recurrence import (
     Filters,
@@ -105,6 +102,13 @@ from intelligence.recurrence import (
     recurring_issues,
 )
 from intelligence.router import Mode, route
+from intelligence.snapshot import (
+    Baseline,
+    Delta,
+    IngestionSnapshot,
+    NO_BASELINE,
+    SnapshotError,
+)
 from intelligence.structured import MAPPING_VERSION, process_record as process_structured
 from intelligence.trends import (
     BASELINE_BLOCKS,
@@ -132,8 +136,8 @@ MAX_SEMANTIC_CONCURRENCY = 8
 
 RECORDS_PATH = "/records"
 
-# a forecast and a market line are records the platform can store too, filed under their own record_kind;
-# an unresolved kind has nothing evidenced in it, so it stays local until a human says what it is
+# /incidents stores incidents: a forecast, a market line or any other context record is read, kept and
+# answered like every other record, it just is not an incident, so only this kind is ever sent back
 POSTABLE_KINDS = (RecordKind.INCIDENT,)
 
 LINE_FIELDS = (
@@ -161,7 +165,6 @@ EXIT_PROVIDER = 3
 EXIT_DEFERRED = 4
 EXIT_CHECKPOINT = 5
 EXIT_POST = 6
-EXIT_DOCUMENT = 7
 
 CATEGORY_CHOICES = tuple(item.value for item in IncidentCategory)
 INCIDENT_TYPE_CHOICES = tuple(item.value for item in EventType)
@@ -226,9 +229,8 @@ def process_record(
     environ: Optional[Mapping[str, str]] = None,
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
-    allow_document: bool = False,
 ) -> Incident:
-    if route(record, allow_document=allow_document) is Mode.STRUCTURED:
+    if route(record) is Mode.STRUCTURED:
         return process_structured(record, text_keys=text_keys, extra_keys=extra_keys)
     if provider is None:
         provider = build_provider(config, environ=environ)
@@ -405,6 +407,12 @@ class RunSummary:
     outcomes: list[Outcome] = field(default_factory=list)
     reused: list[Outcome] = field(default_factory=list)
     chain: Optional[Chain] = None
+    baseline: str = ""
+    newly_ingested: Optional[int] = None
+    already_ingested: Optional[int] = None
+    awaiting_review: Optional[int] = None
+    left_by_limit: Optional[int] = None
+    duplicate_rows: Optional[int] = None
 
     def add(self, outcome: Outcome) -> None:
         self.outcomes.append(outcome)
@@ -546,12 +554,24 @@ class RunSummary:
         found: dict[str, Any] = {
             "Backend URL": self.base_url,
             "Records fetched": self.fetched,
-            "Records selected": self.selected,
-            "Records reused": len(self.reused),
-            "Records attempted": self.attempted,
-            "Structured (no model)": len(self.structured),
-            "Narrative (model needed)": len(self.semantic),
         }
+        if self.baseline:
+            found["Ingestion baseline"] = self.baseline
+        if self.newly_ingested is not None:
+            found["Records newly ingested"] = self.newly_ingested
+        if self.already_ingested is not None:
+            found["Records ingested earlier"] = self.already_ingested
+        if self.awaiting_review:
+            found["Records already awaiting a decision"] = self.awaiting_review
+        found["Records selected"] = self.selected
+        if self.left_by_limit:
+            found["Records left for the next run"] = self.left_by_limit
+        if self.duplicate_rows:
+            found["Records the backend returned twice"] = self.duplicate_rows
+        found["Records reused"] = len(self.reused)
+        found["Records attempted"] = self.attempted
+        found["Structured (no model)"] = len(self.structured)
+        found["Narrative (model needed)"] = len(self.semantic)
         if self.chain is not None:
             found["Model chain"] = self.chain.describe()
             if len(self.chain.candidates) > 1:
@@ -651,13 +671,12 @@ def run_record(
     text_keys: Sequence[str] = (CONTENT_PATH,),
     extra_keys: Sequence[str] = (),
     chain: Optional[Chain] = None,
-    allow_document: bool = False,
 ) -> Outcome:
     payload = record if isinstance(record, Mapping) else {}
     record_id = str(payload.get("record_id") or "?")
     source_type = str(payload.get("source_type") or "")
     record_type = str(payload.get("record_type") or "")
-    mode = route(record, allow_document=allow_document)
+    mode = route(record)
 
     def stopped(error: str, turns: Sequence[str] = ()) -> Outcome:
         return Outcome(
@@ -679,11 +698,7 @@ def run_record(
         try:
             answered = chain.read(
                 lambda asked: process_record(
-                    record,
-                    provider=asked,
-                    text_keys=text_keys,
-                    extra_keys=extra_keys,
-                    allow_document=allow_document,
+                    record, provider=asked, text_keys=text_keys, extra_keys=extra_keys
                 )
             )
         except ChainExhaustedError as error:
@@ -712,7 +727,6 @@ def run_record(
             environ=environ,
             text_keys=text_keys,
             extra_keys=extra_keys,
-            allow_document=allow_document,
         )
     except MappingError as error:
         return stopped(f"record unreadable: {error}")
@@ -737,14 +751,13 @@ class _Job:
     prompt_version: str
     source_type: str = ""
     record_type: str = ""
-    allow_document: bool = False
     input_hash: Optional[str] = None
     prompt_digest: str = ""
 
 
-def _job(record: Any, *, allow_document: bool = False) -> _Job:
+def _job(record: Any) -> _Job:
     payload = record if isinstance(record, Mapping) else {}
-    mode = route(record, allow_document=allow_document)
+    mode = route(record)
     return _Job(
         record=payload,
         record_id=str(payload.get("record_id") or "?"),
@@ -752,7 +765,6 @@ def _job(record: Any, *, allow_document: bool = False) -> _Job:
         prompt_version=prompt_version_for(mode),
         source_type=str(payload.get("source_type") or ""),
         record_type=str(payload.get("record_type") or ""),
-        allow_document=allow_document,
         prompt_digest=prompt_digest_for(mode),
     )
 
@@ -826,7 +838,6 @@ def _read_batch(
             config=config,
             environ=environ,
             chain=chain,
-            allow_document=job.allow_document,
         )
 
     for job in structured:
@@ -903,7 +914,7 @@ def run_pipeline(
     chain: Optional[Chain] = None,
     chain_path: Optional[str] = None,
     records: Optional[Sequence[Mapping[str, Any]]] = None,
-    allow_documents: bool = False,
+    ingestion: Optional[IngestionSnapshot] = None,
 ) -> RunSummary:
     if batch_size < 1:
         raise ValueError(f"--batch-size must be at least 1, got {batch_size}")
@@ -914,6 +925,7 @@ def run_pipeline(
         )
 
     origin = base_url or api_base_url(environ)
+    delta: Optional[Delta] = None
     if records is not None:
         selected = list(records)
         fetched = len(selected)
@@ -926,14 +938,25 @@ def run_pipeline(
         ]
         fetched = 1
     else:
-        records = fetch_records(
+        listed = fetch_records(
             base_url=origin, transport=transport, timeout_seconds=timeout_seconds
         )
-        fetched = len(records)
-        selected = records if all_records or limit is None else records[:limit]
+        fetched = len(listed)
+        if ingestion is not None:
+            delta = ingestion.delta(listed, limit=limit)
+            selected = delta.records
+        else:
+            selected = listed if all_records or limit is None else listed[:limit]
 
-    jobs = [_job(record, allow_document=allow_documents) for record in selected]
+    jobs = [_job(record) for record in selected]
     summary = RunSummary(base_url=origin, fetched=fetched, selected=len(jobs), store=store)
+    if delta is not None and ingestion is not None:
+        summary.baseline = ingestion.baseline
+        summary.newly_ingested = delta.found
+        summary.already_ingested = delta.already
+        summary.awaiting_review = delta.pending
+        summary.left_by_limit = delta.left
+        summary.duplicate_rows = delta.duplicates
 
     if chain is not None:
         ask_chain = chain
@@ -1161,7 +1184,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         prog="python -m intelligence.pipeline",
         description=(
             "Read CommonRecords and run the intelligence pipeline. --post-incidents opts in to "
-            "writing accepted incident results back."
+            "writing accepted Incidents, forecasts and context records back."
         ),
     )
     selection = parser.add_argument_group("selection")
@@ -1183,6 +1206,36 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     selection.add_argument(
         "--record-id",
         help="process only this record, read with GET /records/{record_id}",
+    )
+    selection.add_argument(
+        "--newly-ingested",
+        action="store_true",
+        dest="newly_ingested",
+        help=(
+            "process only the records this state directory has never settled, in the order the backend "
+            "returned them; needs --state-dir, and takes all of them unless --limit caps the set"
+        ),
+    )
+    selection.add_argument(
+        "--mark-baseline",
+        action="store_true",
+        dest="mark_baseline",
+        help=(
+            "settle the table into --state-dir without processing it: one GET /records, no model call, "
+            "no reading, no posting. Every record whose arrival stamp is older than --baseline-older-than "
+            "is written to ingested.json as already ingested; today's arrivals, records with no usable "
+            "stamp and records still awaiting a decision are left selectable, so the next "
+            "--newly-ingested run reads only what is actually new"
+        ),
+    )
+    selection.add_argument(
+        "--baseline-older-than",
+        metavar="YYYY-MM-DD",
+        dest="baseline_older_than",
+        help=(
+            "the date --mark-baseline cuts at, defaulting to today in UTC; a cutoff past today settles "
+            "the whole table, including rows whose arrival stamp carries no clock"
+        ),
     )
     bulk = parser.add_argument_group("bulk processing")
     bulk.add_argument(
@@ -1221,30 +1274,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             f"{ENV_CHAIN_FILE}"
         ),
     )
-    documents = parser.add_argument_group("documents")
-    documents.add_argument(
-        "--document",
-        action="append",
-        metavar="PATH",
-        help="read this PDF or image instead of GET /records, and repeat it for more; a PDF is read "
-             "from its text layer and an image by Tesseract OCR",
-    )
-    documents.add_argument(
-        "--document-language",
-        choices=LANGUAGE_CHOICES,
-        help=f"the languages the documents are written in (default {DEFAULT_LANGUAGES}); OCR "
-             "needs each one's Tesseract language pack",
-    )
-    documents.add_argument(
-        "--source-url",
-        help="where the one --document was published, kept as its source_url",
-    )
     parser.add_argument("--json", action="store_true", help="also print each Incident in full")
     parser.add_argument(
         "--post-incidents",
         action="store_true",
-        help="POST accepted incident results to the platform API, newly read or reused from a "
-             "checkpoint; context, forecast, review-required and unresolved results are not posted",
+        help="POST accepted Incidents, forecasts and context records to the platform API, newly "
+             "read or reused from a checkpoint; review-required and unresolved results are not posted",
     )
     parser.add_argument(
         "--link-events",
@@ -1339,21 +1374,57 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                                "in the script the record used")
     args = parser.parse_args(argv)
 
-    if args.document and (args.record_id is not None or args.all or args.limit is not None):
-        parser.error(
-            "--document reads local files instead of GET /records; do not combine it with "
-            "--record-id, --limit or --all"
-        )
-    if not args.document and (args.document_language or args.source_url):
-        parser.error("--document-language and --source-url only mean something with --document")
-    if args.source_url and len(args.document) != 1:
-        parser.error("--source-url names where one document came from; give exactly one --document")
     if args.record_id is not None and (args.all or args.limit is not None):
         parser.error("--record-id selects one record; do not combine it with --limit or --all")
     if args.all and args.limit is not None:
         parser.error("--all already means every record; do not also set --limit")
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1, or use --all")
+    if args.newly_ingested and not args.state_dir:
+        parser.error(
+            "--newly-ingested compares the table against what the state directory has settled; give it "
+            "--state-dir"
+        )
+    if args.newly_ingested and (args.all or args.record_id is not None):
+        parser.error(
+            "--newly-ingested already says which records to read: the ones this state directory has "
+            "never settled. --all and --record-id each say that themselves"
+        )
+    if args.baseline_older_than is not None:
+        if not args.mark_baseline:
+            parser.error(
+                "--baseline-older-than only sets where --mark-baseline cuts; without it no record is "
+                "settled and no date is applied"
+            )
+        try:
+            args.baseline_older_than = date.fromisoformat(args.baseline_older_than.strip())
+        except ValueError:
+            parser.error("--baseline-older-than must be a date written YYYY-MM-DD")
+    if args.mark_baseline:
+        if not args.state_dir:
+            parser.error(
+                "--mark-baseline writes the settled record ids into ingested.json, which lives in a "
+                "state directory; give it --state-dir"
+            )
+        if args.all or args.record_id is not None or args.newly_ingested or args.limit is not None:
+            parser.error(
+                "--mark-baseline settles records without reading any of them, so --all, --record-id, "
+                "--newly-ingested and --limit choose nothing here"
+            )
+        choosing = (
+            ("--post-incidents", args.post_incidents),
+            ("--link-events", args.link_events),
+            ("--recurring-issues", args.recurring_issues),
+            ("--emerging-trends", args.emerging_trends),
+            ("--ask", args.ask),
+            ("--briefing", args.briefing),
+        )
+        asked = [name for name, set_ in choosing if set_]
+        if asked:
+            parser.error(
+                f"{' and '.join(asked)} work on the incidents a run produces; --mark-baseline produces "
+                "none, it only settles which records count as already ingested"
+            )
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
     if not 1 <= args.semantic_concurrency <= MAX_SEMANTIC_CONCURRENCY:
@@ -1378,11 +1449,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "for"
         )
     if (args.ask or args.briefing) and not (
-        args.all or args.document or args.record_id or args.limit is not None
+        args.all or args.record_id or args.newly_ingested or args.limit is not None
     ):
         parser.error(
             f"--ask answers and --briefing writes from the records this run read, so say which to read: "
-            f"--all for every record, --document for local files, --record-id for one, or --limit N to use "
+            f"--all for every record, --record-id for one, --newly-ingested "
+            f"for what arrived since the last run, or --limit N to use "
             f"the first N instead of the default {DEFAULT_LIMIT}"
         )
     if args.since is not None and args.until is not None and args.until < args.since:
@@ -1481,25 +1553,35 @@ def use_utf8_stdout() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
 
 
-def read_documents(
-    paths: Sequence[str],
-    *,
-    languages: Sequence[str],
-    source_url: Optional[str] = None,
-    environ: Optional[Mapping[str, str]] = None,
-    runner: Optional[DocumentRunner] = None,
-) -> list[dict[str, Any]]:
-    records: dict[str, dict[str, Any]] = {}
-    for path in paths:
-        record = document_record(
-            read_document(path, languages=languages, environ=environ, runner=runner),
-            source_url=source_url,
+def settled_ids(store: Optional[Checkpoint]) -> set[str]:
+    if store is None:
+        return set()
+    # only a completed reading counts as settled here: a review_required document is one a person
+    # still owes a decision on, so seeding from it would drop it out of the daily run
+    return {record_id for record_id, entry in store.entries.items() if entry.state == COMPLETED}
+
+
+def print_baseline(baseline: Baseline, snapshot: IngestionSnapshot, *, fetched: int) -> None:
+    print(f"Baseline: {snapshot.path}")
+    print(f"Arrival cutoff: records stamped before {baseline.older_than} are settled")
+    print(f"Records fetched: {fetched}")
+    print(f"Records settled: {baseline.marked}")
+    if baseline.settled_undated:
+        print(
+            f"Settled without an arrival clock: {baseline.settled_undated} "
+            f"(the cutoff is past today, so the whole table was settled)"
         )
-        if record["record_id"] in records:
-            print(f"{path}: the same bytes as an earlier --document, read once as {record['record_id']}")
-            continue
-        records[record["record_id"]] = record
-    return list(records.values())
+    for reason, count in sorted(baseline.kept.items(), key=lambda item: (-item[1], item[0])):
+        print(f"Records left selectable: {count} ({reason})")
+    if not baseline.kept:
+        print("Records left selectable: 0 (nothing)")
+    print(f"Snapshot now settles: {snapshot.known} record id(s)")
+    if snapshot.pending:
+        print(f"Snapshot still owes a decision: {snapshot.pending} record id(s)")
+    print(
+        "Next run: --newly-ingested --state-dir "
+        f"{snapshot.directory} reads only what arrived after {baseline.older_than}"
+    )
 
 
 def abort(kind: str, detail: str, code: int) -> int:
@@ -1514,29 +1596,43 @@ def main(
     environ: Optional[Mapping[str, str]] = None,
     transport: Optional[Transport] = None,
     incident_transport: Optional[PostTransport] = None,
-    document_runner: Optional[DocumentRunner] = None,
 ) -> int:
     use_utf8_stdout()
     args = parse_args(argv)
     limit = DEFAULT_LIMIT if args.limit is None else args.limit
     store = Checkpoint(args.state_dir) if args.state_dir else None
-    documents: Optional[list[dict[str, Any]]] = None
-    if args.document:
-        try:
-            documents = read_documents(
-                args.document,
-                languages=parse_languages(args.document_language or DEFAULT_LANGUAGES),
-                source_url=args.source_url,
-                environ=environ,
-                runner=document_runner,
-            )
-        except DocumentError as error:
-            return abort("document", str(error), EXIT_DOCUMENT)
+    snapshot: Optional[IngestionSnapshot] = None
     try:
         if store is not None:
             store.load()
+        if args.mark_baseline:
+            origin = api_base_url(environ)
+            snapshot = IngestionSnapshot(args.state_dir, base_url=origin).load()
+            if snapshot.unreadable:
+                return abort("ingestion", snapshot.unreadable, EXIT_CHECKPOINT)
+            listed = fetch_records(base_url=origin, transport=transport)
+            baseline = snapshot.mark(
+                listed,
+                older_than=args.baseline_older_than or datetime.now(timezone.utc).date(),
+            )
+            try:
+                snapshot.flush()
+            except SnapshotError as error:
+                return abort("ingestion", str(error), EXIT_CHECKPOINT)
+            print_baseline(baseline, snapshot, fetched=len(listed))
+            return EXIT_OK
+        if args.newly_ingested:
+            snapshot = IngestionSnapshot(args.state_dir, base_url=api_base_url(environ)).load()
+            if snapshot.unreadable:
+                return abort("ingestion", snapshot.unreadable, EXIT_CHECKPOINT)
+            if snapshot.absent:
+                snapshot.seed(settled_ids(store))
+                snapshot.baseline = f"the checkpoint ({snapshot.known} records it settled)"
+            if not snapshot.known:
+                return abort("ingestion", NO_BASELINE, EXIT_CHECKPOINT)
+        uncapped = args.all or (args.newly_ingested and args.limit is None)
         summary = run_pipeline(
-            limit=None if args.all else limit,
+            limit=None if uncapped else limit,
             all_records=args.all,
             record_id=args.record_id,
             provider=provider,
@@ -1547,8 +1643,7 @@ def main(
             resume=not args.no_resume,
             semantic_concurrency=args.semantic_concurrency,
             chain_path=args.llm_chain,
-            records=documents,
-            allow_documents=bool(args.document),
+            ingestion=snapshot,
         )
     except BackendError as error:
         return abort("backend", str(error), EXIT_BACKEND)
@@ -1557,6 +1652,20 @@ def main(
     except LLMError as error:
         return abort("provider", str(error), EXIT_PROVIDER)
     print_report(summary, detailed=args.json)
+    if snapshot is not None:
+        states = [*summary.outcomes, *summary.reused]
+        snapshot.settle(
+            [item.record_id for item in states if item.state == COMPLETED],
+            review=[item.record_id for item in states if item.state == REVIEW_REQUIRED],
+        )
+        try:
+            snapshot.flush()
+        except SnapshotError as error:
+            return abort("ingestion", str(error), EXIT_CHECKPOINT)
+        print(
+            f"Ingestion state: {snapshot.path} settles {snapshot.known} record id(s)"
+            + (f" and leaves {snapshot.pending} owed to a decision" if snapshot.pending else "")
+        )
     read = [item.incident for item in [*summary.outcomes, *summary.reused] if item.incident is not None]
     linked: Optional[LinkReport] = None
     if args.link_events:
@@ -1654,33 +1763,45 @@ def main(
             return abort("checkpoint", str(error), EXIT_CHECKPOINT)
         print_briefings(briefed, detailed=args.json)
     if args.post_incidents:
-        postable = summary.postable
-        if not postable:
+        accepted = [item.incident for item in summary.postable]
+        if not accepted:
+            kept = len(summary.accepted_context)
             print(
                 "POST /incidents: nothing to send — the run produced no accepted incident"
+                + (
+                    f"; its {kept} accepted context/forecast record(s) were read and kept, and are "
+                    "not incidents"
+                    if kept
+                    else ""
+                )
             )
-        post_failed = False
-        for outcome in postable:
-            incident = outcome.incident
-            try:
-                result: PostResult = post_incident(
-                    incident,
-                    base_url=summary.base_url,
-                    transport=incident_transport,
-                )
-            except IncidentAPIError as error:
-                post_failed = True
+        else:
+            if args.state_dir is None:
                 print(
-                    f"POST /incidents failed for {incident.incident_id}: {error}",
-                    file=sys.stderr,
+                    "Posting ledger: none, because --state-dir was not given, so nothing is remembered "
+                    "between runs — every accepted record is sent again and the platform answers "
+                    "HTTP 409 for the ones it already holds"
                 )
-                continue
-            state = "already exists (duplicate)" if result.duplicate else "created"
-            kind = incident.record_kind
-            label = "" if kind is RecordKind.INCIDENT else f"{kind.value} "
-            print(f"POST /incidents: {label}{result.incident_id} {state} (HTTP {result.status_code})")
-        if post_failed:
-            return EXIT_POST
+            ledger = (
+                PostLedger(args.state_dir, base_url=summary.base_url).load()
+                if args.state_dir
+                else None
+            )
+            posted = post_all(
+                accepted,
+                base_url=summary.base_url,
+                transport=incident_transport,
+                ledger=ledger,
+            )
+            print_postings(posted)
+            if ledger is not None:
+                try:
+                    ledger.flush()
+                except PostingError as error:
+                    print(f"Posting ledger: {error}", file=sys.stderr)
+                    return EXIT_POST
+            if posted.failed:
+                return EXIT_POST
     if summary.stop_reason or (linked is not None and linked.stop_reason) or (
         issues is not None and issues.stop_reason
     ) or (trends is not None and trends.stop_reason) or (asked is not None and asked.stop_reason) or (
@@ -1708,7 +1829,6 @@ __all__ = [
     "ENV_CHAIN_FILE",
     "EXIT_CHECKPOINT",
     "EXIT_DEFERRED",
-    "EXIT_DOCUMENT",
     "EXIT_POST",
     "Incident",
     "LLMConfig",
@@ -1730,7 +1850,6 @@ __all__ = [
     "print_report",
     "process_record",
     "process_structured",
-    "read_documents",
     "prompt_digest_for",
     "prompt_version_for",
     "provider_identity",

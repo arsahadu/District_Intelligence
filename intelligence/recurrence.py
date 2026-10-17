@@ -19,6 +19,7 @@ from intelligence.contract import (
     EventType,
     Incident,
     IncidentCategory,
+    PriorityLevel,
     RecordKind,
     ReviewState,
 )
@@ -78,6 +79,12 @@ SEVERITY_RANK = {
     SeverityLevel.HIGH: 3,
     SeverityLevel.CRITICAL: 4,
 }
+PRIORITY_RANK = {
+    PriorityLevel.LOW: 1,
+    PriorityLevel.MEDIUM: 2,
+    PriorityLevel.HIGH: 3,
+    PriorityLevel.CRITICAL: 4,
+}
 PRECISION_RANK = {
     MentionType.DISTRICT: 1,
     MentionType.TALUK: 2,
@@ -103,6 +110,7 @@ class Filters(StrictModel):
     incident_type: Optional[EventType] = None
     department: Optional[Department] = None
     min_severity: Optional[SeverityLevel] = None
+    min_priority: Optional[PriorityLevel] = None
     place: Optional[str] = None
 
     def describe(self) -> str:
@@ -119,6 +127,8 @@ class Filters(StrictModel):
             parts.append(f"department {self.department.value}")
         if self.min_severity is not None:
             parts.append(f"severity at least {self.min_severity.value}")
+        if self.min_priority is not None:
+            parts.append(f"priority at least {self.min_priority.value}")
         if self.place:
             parts.append(f"place containing {self.place!r}")
         return "; ".join(parts) or "no filter"
@@ -133,6 +143,10 @@ class Filters(StrictModel):
         if self.min_severity is not None:
             rank = SEVERITY_RANK.get(incident.severity)
             if rank is None or rank < SEVERITY_RANK[self.min_severity]:
+                return False
+        if self.min_priority is not None:
+            rank = PRIORITY_RANK.get(incident.priority)
+            if rank is None or rank < PRIORITY_RANK[self.min_priority]:
                 return False
         if self.place:
             wanted = " ".join(self.place.casefold().split())
@@ -234,6 +248,7 @@ class Unit:
     departments: set[Department]
     severities: set[SeverityLevel]
     statuses: dict[str, tuple[str, str, list[str]]]
+    priorities: set[PriorityLevel] = field(default_factory=set)
 
     @property
     def incident_ids(self) -> list[str]:
@@ -308,6 +323,9 @@ def event_units(pool: Sequence[Incident], links: Sequence[EventLink]) -> list[Un
                 departments={item.department for item in members if _known(item.department)},
                 severities={item.severity for item in members if _known(item.severity)},
                 statuses=statuses,
+                priorities={
+                    item.priority for item in members if item.priority is not None and _known(item.priority)
+                },
             )
         )
     return sorted(units, key=lambda unit: unit.event_id)
