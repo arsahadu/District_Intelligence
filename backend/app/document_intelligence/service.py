@@ -112,6 +112,25 @@ class DocumentIntelligenceService:
         key = f"{self.settings.results_prefix.rstrip('/')}/{job_id}-insights.json"
         self._save_json(key, payload)
 
+    def _update_job_metadata(
+        self, job_key: str, metadata: dict[str, Any], result: dict[str, Any]
+    ) -> None:
+        updated = {
+            **metadata,
+            "status": result["status"],
+        }
+        for key in (
+            "completed_at",
+            "status_message",
+            "warnings",
+            "page_count",
+            "line_count",
+        ):
+            if key in result:
+                updated[key] = result[key]
+
+        self._save_json(job_key, updated)
+
     def get_job(self, job_id: str) -> dict[str, Any]:
         job_key = f"{self.settings.jobs_prefix.rstrip('/')}/{job_id}.json"
         metadata = self._load_json(job_key)
@@ -121,6 +140,10 @@ class DocumentIntelligenceService:
         result_key = f"{self.settings.results_prefix.rstrip('/')}/{job_id}.json"
         cached = self._load_json(result_key)
         if cached is not None:
+            if cached.get("status") in {
+                "SUCCEEDED", "FAILED", "PARTIAL_SUCCESS"
+            }:
+                self._update_job_metadata(job_key, metadata, cached)
             return cached
 
         first = self.textract.get_document_text_detection(JobId=job_id, MaxResults=1000)
@@ -140,6 +163,7 @@ class DocumentIntelligenceService:
                 "completed_at": self._now(),
             }
             self._save_json(result_key, result)
+            self._update_job_metadata(job_key, metadata, result)
             return result
 
         blocks = list(first.get("Blocks", []))
@@ -172,5 +196,6 @@ class DocumentIntelligenceService:
             "next_step": "Pass the extracted text to the existing Gemini/intelligence adapter for insights.",
         }
         self._save_json(result_key, result)
+        self._update_job_metadata(job_key, metadata, result)
         return result
 
