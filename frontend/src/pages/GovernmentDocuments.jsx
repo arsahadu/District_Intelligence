@@ -476,7 +476,7 @@ export default function GovernmentDocuments() {
     <div className="dashboard-page government-documents-page">
       <div className="page-intro">
         <div>
-          <p className="eyebrow">DISTRICT INTELLIGENCE / GOVERNMENT DOCUMENTS</p>
+          <p className="eyebrow">TAMILNADU DISTRICT INTELLIGENCE (TNDI) / GOVERNMENT DOCUMENTS</p>
           <h1>Government Document Intelligence</h1>
           <p>Process official documents, inspect extracted text, and review evidence-backed AI findings.</p>
         </div>

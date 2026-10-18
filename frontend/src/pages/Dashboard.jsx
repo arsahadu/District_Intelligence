@@ -55,7 +55,7 @@ function PageIntro({ view, count, onRefresh }) {
   return (
     <div className="page-intro">
       <div>
-        <p className="eyebrow">DISTRICT INTELLIGENCE / {title.toUpperCase()}</p>
+        <p className="eyebrow">TAMILNADU DISTRICT INTELLIGENCE (TNDI) / {title.toUpperCase()}</p>
         <h1>{title}</h1>
         <p>{description}</p>
       </div>

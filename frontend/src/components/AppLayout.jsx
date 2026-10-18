@@ -50,14 +50,13 @@ function Sidebar({ activeView, onNavigate, open, onClose, sidebarRef }) {
       <aside ref={sidebarRef} className={`sidebar ${open ? 'sidebar-open' : ''}`}>
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 40 40" fill="none">
-              <path d="M20 5.5 31 11.8v12.6L20 30.7 9 24.4V11.8L20 5.5Z" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M20 12v16M12.8 16.1l14.4 7.8M27.2 16.1l-14.4 7.8" stroke="currentColor" strokeWidth="1.2" opacity=".76" />
-              <circle cx="20" cy="20" r="3" fill="currentColor" />
-            </svg>
+            <img src="/logo.png" alt="Tamilnadu District Intelligence" className="brand-logo-img" />
           </div>
           <div className="brand-copy">
-            <span>District Intelligence</span>
+            <div className="brand-title-wrap">
+              <span className="brand-title">Tamilnadu District Intelligence</span>
+              <span className="brand-badge">TNDI</span>
+            </div>
             <strong>Collectorate Platform</strong>
           </div>
           <button
@@ -93,8 +92,10 @@ function Sidebar({ activeView, onNavigate, open, onClose, sidebarRef }) {
         </nav>
 
         <div className="sidebar-footer">
-          <span className="sidebar-footer-mark" aria-hidden="true">TN</span>
-          <span><strong>Madurai District</strong><small>Government of Tamil Nadu</small></span>
+          <span className="sidebar-footer-mark" aria-hidden="true">
+            <img src="/logo.png" alt="" className="sidebar-footer-logo" />
+          </span>
+          <span><strong>Madurai District</strong><small>Government of Tamil Nadu · TNDI</small></span>
         </div>
       </aside>
     </>
@@ -158,11 +159,20 @@ export default function AppLayout({
             <span className="menu-glyph" aria-hidden="true"><i /><i /><i /></span>
           </button>
           <div className="district-context">
-            <strong>Madurai District Administration</strong>
-            <span>Government of Tamil Nadu</span>
+            <div className="topbar-brand">
+              <img src="/logo.png" alt="TNDI Logo" className="topbar-logo-img" />
+              <div className="topbar-headings">
+                <div className="topbar-primary">
+                  <strong>Tamilnadu District Intelligence</strong>
+                  <span className="topbar-badge">TNDI</span>
+                </div>
+                <span className="topbar-secondary">Madurai District Administration · Government of Tamil Nadu</span>
+              </div>
+            </div>
           </div>
           <div className="topbar-tools">
             <time className="today-date" dateTime={new Date().toISOString()}>
+              <span className="today-date-icon" aria-hidden="true">📅</span>
               {date}
             </time>
             {showConnection ? (
@@ -192,7 +202,10 @@ export default function AppLayout({
         <main className="main-content">
           {children}
           <footer className="page-footer">
-            <span>District Intelligence Platform · Office of the District Collector, Madurai</span>
+            <div className="footer-brand-info">
+              <img src="/logo.png" alt="" className="footer-logo-img" aria-hidden="true" />
+              <span>Tamilnadu District Intelligence (TNDI) · Office of the District Collector</span>
+            </div>
             {lastUpdated ? <span>District information updated {lastUpdated}</span> : null}
           </footer>
         </main>

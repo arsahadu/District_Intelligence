@@ -157,7 +157,7 @@ function GISMapCanvas({
         maxZoom={18}
         scrollWheelZoom
         className="gis-map"
-        aria-label="Interactive map of Madurai District intelligence records"
+        aria-label="Interactive map of Tamilnadu District Intelligence (TNDI) records"
       >
         <TileLayer
           attribution="&copy; OpenStreetMap contributors"
@@ -652,7 +652,7 @@ export default function GISMapView({ onSelectIncident }) {
     <div className="gis-page">
       <div className="gis-page-header">
         <div>
-          <p className="gis-eyebrow">DISTRICT INTELLIGENCE / SPATIAL VIEW</p>
+          <p className="gis-eyebrow">TAMILNADU DISTRICT INTELLIGENCE (TNDI) / SPATIAL VIEW</p>
           <h1>District map</h1>
           <p>Explore incidents, news, weather, and market information. Locations without a reliable point remain available in the record list.</p>
         </div>
