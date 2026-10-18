@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { askChat, getChatHealth } from '../services/chat.js'
 import { formatDateTime, safeHttpUrl } from '../utils/incidents.js'
 
@@ -187,9 +187,12 @@ export default function ChatWidget() {
           aria-labelledby="chat-title"
         >
           <header className="chat-header">
-            <div>
-              <span className="chat-eyebrow">COLLECTOR ASSISTANT</span>
-              <h2 id="chat-title">Ask about the records, or anything else</h2>
+            <div className="chat-header-brand">
+              <img src="/logo.png" alt="" className="chat-header-logo" aria-hidden="true" />
+              <div>
+                <span className="chat-eyebrow">TNDI COLLECTOR ASSISTANT</span>
+                <h2 id="chat-title">Ask about the records, or anything else</h2>
+              </div>
             </div>
             <button className="icon-button chat-close" type="button" aria-label="Close district chat" onClick={close}>
               ×

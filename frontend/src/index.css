@@ -1,52 +1,71 @@
 :root {
-  font-family: Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  font-family: "Plus Jakarta Sans", Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-weight: 400;
-  color: #1F2937;
-  background: #F4F6F9;
+  color: #111827;
+  background: #f4f6fa;
   color-scheme: light;
 
-  /* Official Government Operations Design Tokens */
-  --navy: #183153;
-  --blue: #285EA8;
-  --blue-hover: #1e4b87;
-  --blue-light: #EAF1F8;
-  --bg: #F4F6F9;
-  --surface: #FFFFFF;
-  --text-primary: #1F2937;
-  --text-secondary: #596579;
-  --text-muted: #768396;
-  --line: #DCE2EA;
-  --line-subtle: #EAEFF5;
+  /* Tamilnadu District Intelligence (TNDI) Official State Operations Palette */
+  --navy: #0e223d;
+  --navy-deep: #09172a;
+  --navy-light: #18375f;
+  --navy-muted: #244773;
 
-  /* Semantic Status Colors */
-  --success: #287D58;
-  --success-bg: #EBF6F0;
-  --success-border: #C6E7D5;
+  --blue: #1b5cb3;
+  --blue-hover: #14498f;
+  --blue-light: #edf4fc;
+  --blue-border: #c9ddf5;
 
-  --warning: #A9650B;
-  --warning-bg: #FDF6E9;
-  --warning-border: #F6DFBA;
+  /* Official TN Emblem Gold / Amber */
+  --gold: #c89332;
+  --gold-hover: #b07e24;
+  --gold-light: #fcf4e3;
+  --gold-border: #f0d59b;
+  --gold-glow: rgba(200, 147, 50, 0.28);
 
-  --error: #B4232F;
-  --error-bg: #FDE8E9;
-  --error-border: #F7C4C7;
+  --bg: #f4f7fb;
+  --surface: #ffffff;
+  --surface-alt: #f8fafc;
+  --surface-hover: #f1f5fa;
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --line: #d9e2ed;
+  --line-subtle: #ebf0f7;
+
+  /* Semantic Status Colors — High Administrative Clarity */
+  --success: #15803d;
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
+
+  --warning: #b45309;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+
+  --error: #b91c1c;
+  --error-bg: #fef2f2;
+  --error-border: #fecaca;
 
   /* Legacy compatibility aliases */
   --ink: var(--text-primary);
   --ink-soft: var(--text-secondary);
   --muted: var(--text-muted);
 
-  /* Shadows & Radii */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --shadow-sm: 0 1px 2px rgba(24, 49, 83, 0.05);
-  --shadow-md: 0 2px 6px rgba(24, 49, 83, 0.07), 0 1px 2px rgba(24, 49, 83, 0.04);
-  --shadow-lg: 0 12px 32px rgba(24, 49, 83, 0.12);
+  /* Precise Elevation & Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --shadow-sm: 0 1px 2px rgba(14, 34, 61, 0.04), 0 1px 3px rgba(14, 34, 61, 0.02);
+  --shadow-md: 0 3px 8px -1px rgba(14, 34, 61, 0.07), 0 1px 3px rgba(14, 34, 61, 0.04);
+  --shadow-lg: 0 12px 30px -4px rgba(14, 34, 61, 0.12), 0 4px 12px rgba(14, 34, 61, 0.05);
 }
 
 * {
